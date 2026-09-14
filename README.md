@@ -2,11 +2,10 @@
 
 *🇬🇧 An English version of this document is available [at the bottom of this page](#publipostage-for-grist).*
 
-Rédigez un modèle de courrier une seule fois, avec de vraies variables piochées dans vos tables Grist,
-et générez un PDF personnalisé pour chaque ligne, en un clic ou par centaines d'un coup. Pas de champs
-de fusion Word à bricoler, pas d'export CSV vers un autre outil : tout se passe directement dans Grist,
-dans un éditeur de texte riche aussi confortable qu'un traitement de texte classique, et le PDF produit
-a un texte réellement sélectionnable, pas une capture d'écran de votre mise en page.
+Il s'agit d'un éditeur de texte avec publipostage et puces intelligentes. Il permet à n'importe qui de
+rédiger des contrats, factures ou étiquettes sans écrire la moindre ligne de code, tout en pouvant
+référencer une variable de n'importe quelle table du document et la reformater à l'affichage si
+nécessaire !
 
 ## Aperçu
 
@@ -21,6 +20,8 @@ a un texte réellement sélectionnable, pas une capture d'écran de votre mise e
 - [Configuration](#configuration)
 - [Sécurité et permissions](#sécurité-et-permissions)
 - [Dépendances](#dépendances)
+- [Note sur l'IA](#note-sur-lia)
+- [Roadmap](#roadmap)
 - [Licence](#licence)
 
 Moteur d'édition : [TipTap](https://tiptap.dev/)/ProseMirror. Le widget est une simple page statique
@@ -114,6 +115,52 @@ chargées à l'exécution, à des versions toujours figées :
 | html2pdf.js 0.10.1 | Export PDF qualité raster | `cdnjs.cloudflare.com` |
 | JSZip 3.10.1 | Export en lot (archive zip) | `cdnjs.cloudflare.com` |
 
+## Note sur l'IA
+
+Ce widget a été réalisé avec l'aide de Claude Code, avec le modèle Claude Sonnet 5 en mode Ultra Code.
+Le code a été relu par un humain (moi), mais je manque de tokens pour être aussi efficace que Claude.
+
+La version Alpha sera aussi l'occasion de corriger ou refacto certains éléments si nécessaire : le
+dépôt est ouvert à la collaboration (cf. ci-après).
+
+## Roadmap
+
+De nombreuses fonctionnalités sont prévues et seront ajoutées progressivement dans les prochaines
+semaines. N'hésitez pas à réagir aux issues de ce dépôt, ou à m'écrire sur Tchap, pour m'aider à les
+prioriser.
+
+**Édition collaborative**
+- Sauvegarde automatique (Beta)
+- Co-édition, commentaires et suivi des modifications (Beta)
+
+**Publipostage conditionnel**
+- Boucles et conditions pour afficher plusieurs lignes d'une même colonne à partir d'une seule variable
+  (Beta)
+
+**Édition augmentée**
+- Nouveaux blocs et puces (citations, légendes, bloc de code, bloc de signature) (Beta)
+- Filigrane (V1)
+- Génération de QR code (V1)
+- Fusion conditionnelle de plusieurs modèles, par exemple pour adapter les annexes tout en gardant une
+  première page identique (Beta)
+- Rechercher / remplacer (Beta)
+
+**Import / Export**
+- Export DOCX (Beta)
+- Export en Markdown
+- Import Markdown, avec une fiabilité totale sur les imports depuis Docs de La Suite (Beta)
+- Nouveaux formats de page (paysage, A3 à A6) (V1)
+- Export PDF : impression navigateur, impression full HD, PDF compressé (Beta)
+
+**Confort d'utilisation**
+- Dossier de gestion des modèles (V1)
+- Optimisation du chargement (V1)
+
+**Sécurité**
+- Version lecture seule : préparer un modèle sur Docs, puis exporter/importer pour une session en
+  lecture seule, avant export (V1)
+- Version avec les dépendances embarquées, pour éviter tout appel externe (V1)
+
 ## Licence
 
 Ce projet est distribué sous licence [GNU General Public License v3.0](LICENSE) (GPLv3).
@@ -127,11 +174,9 @@ Copyright (C) 2026 lombre33
 
 *🇫🇷 Une version française de ce document est disponible [en haut de cette page](#publipostage-grist).*
 
-Write a letter template once, with real variables pulled straight from your Grist tables, and generate
-a personalized PDF for each row, one at a time or by the hundred in one go. No mail-merge fields to
-wrangle in Word, no CSV export to some other tool: it all happens inside Grist, in a rich text editor
-as comfortable as a regular word processor, and the resulting PDF has genuinely selectable text, not a
-screenshot of your layout.
+This is a text editor with mail merge and smart chips. It lets anyone write contracts, invoices or
+labels without writing a single line of code, while being able to reference a variable from any table
+in the document and reformat it on display if needed!
 
 ## Preview
 
@@ -146,6 +191,8 @@ screenshot of your layout.
 - [Configuration](#configuration-1)
 - [Security and permissions](#security-and-permissions)
 - [Dependencies](#dependencies)
+- [A note on AI](#a-note-on-ai)
+- [Roadmap](#roadmap-1)
 - [License](#license)
 
 Editing engine: [TipTap](https://tiptap.dev/)/ProseMirror. The widget is a plain static page hosted on
@@ -233,6 +280,50 @@ pinned versions:
 | pdfmake 0.2.7 + `vfs_fonts` | Vector PDF export | `cdnjs.cloudflare.com` |
 | html2pdf.js 0.10.1 | Raster quality PDF export | `cdnjs.cloudflare.com` |
 | JSZip 3.10.1 | Batch export (zip archive) | `cdnjs.cloudflare.com` |
+
+## A note on AI
+
+This widget was built with the help of Claude Code, using the Claude Sonnet 5 model in Ultra Code mode.
+The code was reviewed by a human (me), but I don't have enough tokens to be as thorough as Claude.
+
+The Alpha release will also be a chance to fix or refactor certain parts if needed: this repository is
+open to collaboration (see below).
+
+## Roadmap
+
+Plenty of features are planned and will be rolled out gradually over the coming weeks. Feel free to
+react to this repository's issues, or write to me on Tchap, to help me prioritize them.
+
+**Collaborative editing**
+- Autosave (Beta)
+- Co-editing, comments and track changes (Beta)
+
+**Conditional mail merge**
+- Loops and conditions to display several rows of the same column from a single variable (Beta)
+
+**Enhanced editing**
+- New blocks and bullets (quotes, captions, code blocks, signature blocks) (Beta)
+- Watermark (V1)
+- QR code generation (V1)
+- Conditional merging of several templates, for example adapting appendices while keeping an identical
+  first page (Beta)
+- Find / replace (Beta)
+
+**Import / export**
+- DOCX export (Beta)
+- Markdown export
+- Markdown import, with full reliability on imports from La Suite Docs (Beta)
+- New page formats (landscape, A3 to A6) (V1)
+- PDF export: browser print, full HD print, compressed PDF (Beta)
+
+**Quality of life**
+- Template management folder (V1)
+- Loading time optimization (V1)
+
+**Security**
+- Read-only version: prepare a template in Docs, then export/import for a read-only session, before
+  exporting (V1)
+- Version with bundled dependencies, to avoid any external calls (V1)
 
 ## License
 
