@@ -29,29 +29,31 @@ hébergée sur GitHub Pages, sans backend ni étape de build.
 
 ## Fonctionnalités
 
-**Éditeur de texte riche** : gras, italique, souligné, barré, couleur de texte et de surlignage, tailles
-réelles en points et choix de police (5 polices web embarquées dans le PDF), alignement, titres H1 à H6
-avec numérotation automatique et sommaire généré à la volée. Listes à puces, numérotées ou cases à
-cocher, tableaux redimensionnables, zones 2 colonnes, images en habillage ou en calque devant/derrière
-le texte, sauts de page, notes de bas de page, en-têtes et pieds de page avec numérotation. Interface
-disponible en français et en anglais.
+**Mise en page**
+- Mise en forme complète : gras, italique, souligné, barré, couleurs, polices et tailles réelles en
+  points, alignement, titres, listes à puces
+- Tableaux, zones 2 colonnes
+- Images, y compris flottantes (habillage de texte, calque devant/derrière)
+- En-têtes et pieds de page
+- Aperçu « format A4 » fidèle, WYSIWYG (ce que vous voyez est ce que vous obtenez)
 
-**Variables** : tapez `#` pour insérer une variable issue d'une colonne de votre table, avec
-autocomplétion. Une variable peut aussi venir d'une autre table que celle liée au widget : la première
-fois, une petite configuration vous demande comment relier les deux tables, puis c'est mémorisé pour la
-suite.
+**Variables Grist intelligentes**
+- Autocomplétion `#Table.Colonne` sur toutes les tables, avec des références personnalisées si
+  nécessaire, et un formatage sur mesure des dates et des nombres
+- Chips intelligents (date du jour, e-mail de l'utilisateur connecté)
 
-**Deux modes** : en édition, les variables restent affichées comme des badges. En lecture, elles sont
-remplacées par les vraies valeurs de la ligne actuellement sélectionnée dans Grist, et se mettent à jour
-automatiquement quand vous changez de ligne.
+**Export PDF**
+- Export en PDF vectorisé
+- Export en lot (ZIP) sur toutes les lignes d'une table, en un clic
+- Nomenclature de fichier personnalisable avec des variables
 
-**Modèles** : autant de modèles que nécessaire, enregistrés directement dans votre document Grist. Une
-galerie de modèles prêts à l'emploi (contrat de prestation, facture...) permet de démarrer en un clic,
-avec la table de données correspondante créée automatiquement si besoin.
+**Modèles**
+- Gestion multi-modèles, sauvegardés directement dans le document Grist
+- Galerie de modèles prêts à l'emploi
 
-**Export PDF** : en qualité vectorielle (texte sélectionnable, fidèle à la mise en page), en impression
-navigateur, ou en raster basse/haute qualité. Le nom du fichier peut lui-même contenir des variables.
-Export en lot possible : un PDF par ligne de la table, regroupés dans un zip téléchargé en une fois.
+**Autres**
+- Interface bilingue français/anglais
+- Choix de la touche utilisée pour déclencher les variables (`#` par défaut)
 
 ## Installation dans Grist
 
@@ -200,27 +202,31 @@ GitHub Pages, with no backend and no build step.
 
 ## Features
 
-**Rich text editor**: bold, italic, underline, strikethrough, text and highlight color, real point sizes
-and font choice (5 web fonts embedded in the PDF), alignment, H1 to H6 headings with automatic numbering
-and an on-the-fly table of contents. Bullet, numbered or checkbox lists, resizable tables, two-column
-zones, images with text wrap or layered in front of/behind the text, page breaks, footnotes, headers and
-footers with page numbering. Interface available in French and English.
+**Layout**
+- Full formatting: bold, italic, underline, strikethrough, colors, real point sizes and fonts,
+  alignment, headings, bullet lists
+- Tables, two-column zones
+- Images, including floating ones (text wrap, layered in front of/behind)
+- Headers and footers
+- Faithful "A4 format" preview, WYSIWYG (what you see is what you get)
 
-**Variables**: type `#` to insert a variable from one of your table's columns, with autocomplete. A
-variable can also come from a table other than the one linked to the widget: the first time, a short
-setup step asks how to relate the two tables, then it's remembered for next time.
+**Smart Grist variables**
+- `#Table.Column` autocomplete across every table, with custom references when needed, and tailored
+  formatting for dates and numbers
+- Smart chips (today's date, connected user's email)
 
-**Two modes**: in editing mode, variables stay shown as badges. In reading mode, they're replaced with
-the real values of whichever row is currently selected in Grist, and update automatically as you move
-between rows.
+**PDF export**
+- Vector PDF export
+- Batch export (ZIP) on every row of a table, in one click
+- Customizable file naming with variables
 
-**Templates**: as many templates as you need, stored directly in your Grist document. A gallery of
-ready-made templates (service agreement, invoice...) lets you get started in one click, creating the
-matching data table automatically if it doesn't exist yet.
+**Templates**
+- Multi-template management, saved directly in the Grist document
+- Gallery of ready-to-use templates
 
-**PDF export**: vector quality (selectable text, faithful to the editor's layout), browser print, or
-low/high quality raster. The file name itself can contain variables. Batch export is also available:
-one PDF per row of the table, bundled into a single downloaded zip.
+**Other**
+- Bilingual French/English interface
+- Choice of key used to trigger variables (`#` by default)
 
 ## Installing in Grist
 
