@@ -1,0 +1,227 @@
+/* Refonte UI/UX de la ligne "modèle/export" (.bar-row) et de la ligne de mise en forme (#v2-toolbar). Fichier séparé de editor-v2.css (qui ne couvre que
+   .tiptap) : ce qui suit touche le CHROME de l'app (barre du haut), pas l'éditeur lui-même.
+
+   Volontairement PAS dans ../css/style.css (partagé avec la V1) : les sélecteurs ci-dessous n'existent que dans le HTML de index.html - la V1 garde son
+   propre mécanisme (icône seule + libellé révélé au survol, cf. css/style.css `.btn-text`), inchangé. */
+
+/* === Cluster "modèle courant" (sélecteur + renommage) === Remplace les deux champs séparés (select V1 + input#template-name toujours visible) par UN seul
+   contrôle : le select affiche/choisit le modèle, un crayon fait apparaître l'input à sa place pour renommer - même geste que Google Docs/Notion. */
+.title-cluster { display: inline-flex; align-items: center; height: 28px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); background: var(--surface); overflow: hidden; }
+.title-cluster select { border: none; height: 26px; background: transparent; padding: 0 6px 0 8px; max-width: 168px; border-radius: 0; }
+.title-cluster select:focus-visible { outline: 2px solid var(--accent-soft-border); outline-offset: -2px; }
+.title-cluster .title-cluster-input { border: none; height: 26px; background: var(--accent-soft); padding: 0 8px; width: 160px; outline: none; }
+.title-cluster button.rename-btn { border: none; border-left: 1px solid var(--border); border-radius: 0; height: 26px; width: 26px; padding: 0; background: transparent; color: var(--text-faint); }
+.title-cluster button.rename-btn:hover, .title-cluster button.rename-btn:focus-visible { color: var(--text); background: var(--surface-sunken); }
+/* Crayon de renommage : délibérément plus petit/discret que celui du mode Édition pour ne pas laisser croire aux deux boutons la même fonction. */
+#toolbar-top #btn-rename-template::before { width: 12px; height: 12px; -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2'%3E%3Cpath d='M12 20h9'/%3E%3Cpath d='M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z'/%3E%3C/svg%3E"); mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2'%3E%3Cpath d='M12 20h9'/%3E%3Cpath d='M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z'/%3E%3C/svg%3E"); }
+
+/* === Cluster "actions document" (Nouveau/Enregistrer/Dupliquer/Supprimer/Tables liées) === Juste un regroupement par ESPACEMENT (gap), sans boîte visuelle
+   autour (un encadré gris testé puis retiré, pas dans le style du reste de l'app). Enregistrer/Supprimer/Exporter restent distingués par COULEUR. */
+.action-cluster { display: inline-flex; align-items: center; gap: 4px; }
+
+/* Icône "Tables liées" : deux mini-tableaux reliés par un trait - distincte du bouton "Insérer un tableau" (un seul tableau). Remplace le carré plein
+   résultant de l'absence de règle ::before pour ce bouton. */
+#btn-link-rules::before { -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='1.8'%3E%3Crect x='2' y='3' width='8' height='8' rx='1'/%3E%3Cpath d='M2 7h8M6 3v8'/%3E%3Crect x='14' y='13' width='8' height='8' rx='1'/%3E%3Cpath d='M14 17h8M18 13v8'/%3E%3Cpath d='M10 7h2a2 2 0 0 1 2 2v2'/%3E%3C/svg%3E"); mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='1.8'%3E%3Crect x='2' y='3' width='8' height='8' rx='1'/%3E%3Cpath d='M2 7h8M6 3v8'/%3E%3Crect x='14' y='13' width='8' height='8' rx='1'/%3E%3Cpath d='M14 17h8M18 13v8'/%3E%3Cpath d='M10 7h2a2 2 0 0 1 2 2v2'/%3E%3C/svg%3E"); }
+
+/* Icône "Réglages" (roue crantée) - même famille d'icône que .bar-row (masque ::before, PAS Icons.svg()/applyToolbarIcons qui ne couvre que #v2-toolbar).
+   Poussé tout à droite par #status-msg juste avant lui (margin-left:auto), sans CSS de positionnement supplémentaire. */
+#v2-btn-settings::before { -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2'%3E%3Ccircle cx='12' cy='12' r='3.2'/%3E%3Cpath d='M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z'/%3E%3C/svg%3E"); mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2'%3E%3Ccircle cx='12' cy='12' r='3.2'/%3E%3Cpath d='M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z'/%3E%3C/svg%3E"); }
+
+/* === Infobulle classique (bulle sombre sous le bouton), remplace "libellé révélé au survol" de la V1 (`.btn-text`, qui élargit le bouton). Déclenchée par
+   [data-tip] plutôt que `title` (les deux natifs ne cohabitent pas bien) - l'accessibilité passe par aria-label. Pas de flèche : les icônes ::before
+   occupent déjà le seul autre pseudo-élément disponible. */
+.bar-row [data-tip], #v2-toolbar [data-tip] { position: relative; }
+.bar-row [data-tip]::after, #v2-toolbar [data-tip]::after {
+  content: attr(data-tip);
+  position: absolute; left: 50%; top: calc(100% + 7px); transform: translateX(-50%) translateY(-3px);
+  background: var(--text); color: #fff; font-family: var(--font-ui); font-weight: 600; font-size: 11.5px;
+  padding: 5px 8px; border-radius: 6px; white-space: nowrap; pointer-events: none;
+  opacity: 0; transition: opacity .12s ease .35s, transform .12s ease .35s; z-index: 50;
+  box-shadow: 0 4px 10px rgba(15, 23, 42, .25);
+}
+.bar-row [data-tip]:hover::after, .bar-row [data-tip]:focus-visible::after,
+#v2-toolbar [data-tip]:hover::after, #v2-toolbar [data-tip]:focus-visible::after { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+/* === Menu "Titre" fusionné (niveau + numérotation des titres) === Remplace deux contrôles jusqu'ici séparés (un <select> "Normal/Titre 1-6" + une pastille
+   de numérotation isolée), qui portent tous deux sur les titres. Un seul chip (.v2-format-chip) déclenche un flyout listant les niveaux PUIS, séparé par un
+   filet, le style de numérotation (.v2-segmented). Les DEUX <select> natifs restent dans le DOM (masqués) : js/main.js s'appuie encore dessus pour
+   lire/poser la valeur au chargement d'un modèle. */
+#v2-header-select[hidden], #v2-heading-numbering-select[hidden] { display: none; }
+
+/* === Contours retirés sur la ligne du haut aussi - transparent au repos, révélé au survol seulement. Override V2-only (spécificité égale à la règle
+   partagée de css/style.css, gagne car chargé après) : les boutons déjà distingués par couleur ou état gardent leurs propres règles plus spécifiques. */
+#toolbar-top button { border-color: transparent; }
+#toolbar-top button:hover { border-color: var(--border-strong); }
+.title-cluster { border-color: transparent; }
+.a4-toggle { border-color: transparent; background: transparent; }
+.a4-toggle:hover { border-color: var(--border-strong); background: var(--surface-sunken); }
+
+/* === Nom de fichier PDF masqué derrière un crayon (même geste que le renommage de modèle ci-dessus) - reste visible si un nom est déjà configuré (cf.
+   js/main.js:wirePdfFilenameToggle/loadTemplateIntoEditor), pour ne pas cacher un réglage actif derrière une icône anodine. */
+.v2-pdf-filename-cluster { display: inline-flex; align-items: center; gap: 4px; }
+#pdf-filename-template { height: 28px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); padding: 0 8px; min-width: 220px; background: var(--surface); color: var(--text); }
+#btn-toggle-pdf-filename::before { -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2'%3E%3Cpath d='M12 20h9'/%3E%3Cpath d='M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z'/%3E%3C/svg%3E"); mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2'%3E%3Cpath d='M12 20h9'/%3E%3Cpath d='M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z'/%3E%3C/svg%3E"); }
+
+/* === Qualité PDF : bouton + panneau au survol (même mécanisme que les styles de puce/numérotation de la ligne de mise en forme) plutôt qu'un <select>
+   toujours affiché - js/main.js:onExportPdf lit encore v2-pdf-quality.value directement, inchangé. */
+/* Page (coin plié, même silhouette que l'icône "saut de page" - ancre ce bouton comme "propre au PDF/document") + petites barres ascendantes (niveaux de
+   qualité) - retenu après plusieurs essais moins concluants (jauge à aiguille, trame de points, curseurs). */
+#v2-btn-quality::before { -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 2h8l4 4v16H6z'/%3E%3Cpath d='M14 2v4h4'/%3E%3Cpath d='M9 17v-2.5M12.5 17v-5M16 17v-3'/%3E%3C/svg%3E"); mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 2h8l4 4v16H6z'/%3E%3Cpath d='M14 2v4h4'/%3E%3Cpath d='M9 17v-2.5M12.5 17v-5M16 17v-3'/%3E%3C/svg%3E"); }
+#v2-pdf-quality[hidden] { display: none; }
+
+/* === Modale "Correspondance de tables" (#link-config-modal) === Maquette sobre : les 2 radios à égalité laissent place au cas normal ("Ligne
+   correspondante", toujours affiché) avec le cas rare ("Ligne fixe") relégué à un simple lien texte. Les deux <select> portent chacun leur propre
+   étiquette JUSTE AU-DESSUS (association select ↔ table sans ambiguïté). */
+.link-config-modal-content { font-family: var(--font-ui); width: 360px; }
+.link-config-modal-content h3 { font-size: 14.5px; font-weight: 800; margin: 0 0 14px; color: var(--text); }
+.link-config-bridge { display: flex; align-items: flex-end; gap: 8px; margin-bottom: 10px; }
+.link-config-bridge[hidden] { display: none; }
+.link-config-bridge-col { flex: 1; min-width: 0; }
+.link-config-bridge-col label { display: block; font-size: 11px; font-weight: 700; color: var(--text-muted); margin-bottom: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.link-config-bridge-col select { width: 100%; height: 30px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); font-size: 12.5px; padding: 0 6px; background: var(--surface); color: var(--text); }
+.link-config-eq { flex: none; padding-bottom: 6px; color: var(--text-faint); font-weight: 700; font-size: 13px; }
+.link-config-preview { display: flex; align-items: center; gap: 8px; font-size: 12px; padding: 7px 10px; border-radius: 6px; margin-bottom: 10px; background: var(--surface-sunken); border: 1px solid var(--border); color: var(--text-muted); min-height: 1.2em; }
+.link-config-preview.is-good { background: var(--good-soft, #e5f6ee); color: var(--good, #1a8f5e); border-color: var(--good-soft-border, #bfe6d3); }
+.link-config-toggle-link { font-size: 12px; color: var(--accent); background: none; border: none; padding: 0; cursor: pointer; font-family: var(--font-ui); font-weight: 600; display: block; margin-bottom: 4px; }
+.link-config-toggle-link:hover { color: var(--accent-hover); text-decoration: underline; }
+.link-config-toggle-link[hidden] { display: none; }
+.link-config-modal-content .modal-actions,
+.link-rules-modal-content .modal-actions { margin-top: 16px; }
+.link-config-modal-content .modal-actions button,
+.link-rules-modal-content .modal-actions button { font-family: var(--font-ui); font-weight: 600; font-size: 13px; height: 30px; padding: 0 12px; border-radius: var(--radius-sm); border: 1px solid var(--border-strong); background: var(--surface); color: var(--text); cursor: pointer; }
+.link-config-modal-content .modal-actions button:hover,
+.link-rules-modal-content .modal-actions button:hover { background: var(--surface-sunken); }
+.link-config-modal-content .modal-actions .link-config-btn-primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.link-config-modal-content .modal-actions .link-config-btn-primary:hover { background: var(--accent-hover); }
+
+/* === Modale "Tables liées" (#link-rules-modal) === Liste des règles configurées ; chaque ligne avait 2 boutons texte bruts sans style, remplacés par des
+   icônes cohérentes avec le reste de la toolbar (même crayon que le renommage, même corbeille que Supprimer). */
+.link-rules-modal-content { font-family: var(--font-ui); width: 340px; }
+.link-rules-modal-content h3 { font-size: 14.5px; font-weight: 800; margin: 0 0 12px; color: var(--text); }
+.link-rules-list { display: flex; flex-direction: column; gap: 2px; max-height: 240px; overflow: auto; }
+.link-rule-row { display: flex; align-items: center; gap: 6px; padding: 7px 4px; border-bottom: 1px solid var(--border); }
+.link-rule-row:last-child { border-bottom: none; }
+.link-rule-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; color: var(--text); }
+.link-rule-btn { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px; padding: 0; border: 1px solid transparent; border-radius: var(--radius-sm); background: transparent; color: var(--text-faint); cursor: pointer; }
+.link-rule-btn:hover { background: var(--surface-sunken); border-color: var(--border-strong); color: var(--text); }
+.link-rule-btn::before { content: ""; display: inline-block; width: 14px; height: 14px; background-color: currentColor; -webkit-mask-size: contain; mask-size: contain; -webkit-mask-repeat: no-repeat; mask-repeat: no-repeat; -webkit-mask-position: center; mask-position: center; }
+.link-rule-btn-edit::before { -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2'%3E%3Cpath d='M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z'/%3E%3C/svg%3E"); mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2'%3E%3Cpath d='M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z'/%3E%3C/svg%3E"); }
+.link-rule-btn-delete:hover { background: var(--danger-soft, #fbe9e9); border-color: var(--danger, #d84343); color: var(--danger, #d84343); }
+.link-rule-btn-delete::before { -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2.1'%3E%3Cpath d='M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14'/%3E%3C/svg%3E"); mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2.1'%3E%3Cpath d='M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14'/%3E%3C/svg%3E"); }
+.link-rules-empty { font-size: 12.5px; color: var(--text-faint); margin: 0; }
+
+/* === Galerie de templates (#template-gallery-modal/#template-preview-modal) === Même overlay que #link-rules-modal, mais contenu bien plus large
+   (mosaïque) : .modal-content plafonne à 440px, élargi + repassé en colonne (en-tête fixe, grille scrollable, actions en bas). */
+.template-gallery-modal-content, .template-preview-modal-content {
+  font-family: var(--font-ui); width: min(920px, 92vw); max-width: none;
+  max-height: 85vh; display: flex; flex-direction: column;
+}
+.template-gallery-modal-content h3, .template-preview-modal-content h3 { font-size: 14.5px; font-weight: 800; margin: 0 0 12px; color: var(--text); }
+.tpl-gallery-filters { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; }
+.tpl-gallery-filters input[type="search"] { flex: 1; min-width: 180px; height: 30px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); padding: 0 10px; font-size: 12.5px; background: var(--surface); color: var(--text); }
+.tpl-gallery-tags { display: flex; gap: 6px; flex-wrap: wrap; }
+.tpl-gallery-tag { font-family: var(--font-ui); font-size: 12px; font-weight: 600; height: 26px; padding: 0 10px; border-radius: 13px; border: 1px solid var(--border-strong); background: var(--surface); color: var(--text-muted); cursor: pointer; }
+.tpl-gallery-tag:hover { background: var(--surface-sunken); }
+.tpl-gallery-tag.is-active { background: var(--accent); border-color: var(--accent); color: #fff; }
+.tpl-gallery-grid { flex: 1; overflow: auto; display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 14px; padding: 2px; }
+.tpl-gallery-card { font-family: var(--font-ui); display: flex; flex-direction: column; gap: 6px; padding: 8px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); background: var(--surface); cursor: pointer; text-align: left; }
+.tpl-gallery-card:hover { border-color: var(--accent); box-shadow: 0 2px 10px rgba(20, 28, 46, .08); }
+.tpl-gallery-card img { width: 100%; aspect-ratio: 3 / 4; object-fit: cover; border-radius: 4px; border: 1px solid var(--border); background: var(--surface-sunken); }
+.tpl-gallery-card-name { font-size: 13px; font-weight: 700; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tpl-gallery-card-tags { display: flex; gap: 4px; flex-wrap: wrap; }
+.tpl-gallery-card-tags span { font-size: 10.5px; font-weight: 600; color: var(--text-faint); background: var(--surface-sunken); border-radius: 8px; padding: 1px 7px; }
+.tpl-gallery-empty { grid-column: 1 / -1; font-size: 12.5px; color: var(--text-faint); text-align: center; padding: 30px 0; }
+
+.tpl-preview-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
+.tpl-preview-actions { display: flex; gap: 8px; flex: none; }
+.tpl-preview-actions button, .template-gallery-modal-content .modal-actions button, .template-preview-modal-content .modal-actions button {
+  font-family: var(--font-ui); font-weight: 600; font-size: 13px; height: 30px; padding: 0 12px;
+  border-radius: var(--radius-sm); border: 1px solid var(--border-strong); background: var(--surface); color: var(--text); cursor: pointer;
+}
+.tpl-preview-actions button:hover, .template-gallery-modal-content .modal-actions button:hover, .template-preview-modal-content .modal-actions button:hover { background: var(--surface-sunken); }
+.tpl-preview-actions #tpl-preview-use-empty, .tpl-preview-actions #tpl-preview-use-data { background: var(--accent); border-color: var(--accent); color: #fff; }
+.tpl-preview-actions #tpl-preview-use-empty:hover, .tpl-preview-actions #tpl-preview-use-data:hover { background: var(--accent-hover); }
+.tpl-preview-body { flex: 1; overflow: auto; background: var(--surface-sunken); padding: 16px; border-radius: 6px; }
+/* Le "look page A4" de .v2-page-sheet/.tiptap est normalement posé par des règles SCOPÉES à #editor-container.a4-preview - cette prévisualisation vit dans
+   une modale, donc aucune ne s'applique ici. Reprend seulement les 2 constantes nécessaires (mêmes valeurs que editor-v2.css) ; tout le reste (styles des
+   titres/listes/tableaux/badges #Variable) est générique, non scopé, donc déjà actif ici tel quel. */
+.tpl-preview-body .v2-page-sheet { box-sizing: border-box; width: 793.71px; max-width: 100%; margin: 0 auto; background: #fff; box-shadow: 0 0 0 1px var(--border-strong), 0 4px 16px rgba(20, 28, 46, .1); }
+.tpl-preview-body .tiptap { box-sizing: border-box; padding: 37.33px; background: transparent; }
+.template-gallery-modal-content .modal-actions, .template-preview-modal-content .modal-actions { margin-top: 14px; }
+
+/* === Panneau Réglages (langue / touche de déclenchement / crédits) === Même gabarit que .link-config-modal-content ci-dessus - premier système d'onglets
+   du projet : une rangée de boutons + un panneau par onglet, un seul visible via l'attribut `hidden` natif (pas de librairie/état complexe). */
+.settings-modal-content { font-family: var(--font-ui); width: 360px; }
+.settings-modal-content h3 { font-size: 14.5px; font-weight: 800; margin: 0 0 12px; color: var(--text); }
+.settings-tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--border); margin-bottom: 14px; }
+.settings-tab { flex: 1; font-family: var(--font-ui); font-size: 12.5px; font-weight: 600; color: var(--text-faint); background: none; border: none; padding: 7px 4px; cursor: pointer; border-radius: var(--radius-sm) var(--radius-sm) 0 0; }
+.settings-tab:hover { background: var(--surface-sunken); }
+.settings-tab.active { color: var(--accent); box-shadow: inset 0 -2px 0 var(--accent); }
+.settings-panel-intro { font-size: 12.5px; color: var(--text-muted); margin: 0 0 12px; }
+.settings-radio-row { display: flex; gap: 16px; }
+.settings-radio-row label { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--text); cursor: pointer; }
+#settings-trigger-char { height: 30px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); padding: 0 8px; font-size: 13px; background: var(--surface); color: var(--text); }
+.settings-trigger-reload-notice { display: flex; align-items: center; gap: 8px; margin: 12px 0 0; font-size: 12.5px; color: var(--text-muted); }
+/* `display:flex` juste au-dessus a EXACTEMENT la même spécificité (0,1,0) que la règle native [hidden]{display:none} de la feuille UA - la règle AUTEUR
+   l'emporte dans la cascade, donc l'attribut `hidden` ne masquait plus rien. Re-déclaré avec [hidden] en plus (0,2,0) pour qu'il reprenne la main. */
+.settings-trigger-reload-notice[hidden] { display: none; }
+.settings-trigger-reload-notice button { font-family: var(--font-ui); font-weight: 600; font-size: 12.5px; height: 26px; padding: 0 10px; border-radius: var(--radius-sm); border: 1px solid var(--accent); background: var(--accent); color: #fff; cursor: pointer; }
+.settings-trigger-reload-notice button:hover { background: var(--accent-hover); }
+.settings-credits-list { display: grid; grid-template-columns: auto 1fr; gap: 6px 12px; margin: 0; font-size: 13px; }
+.settings-credits-list dt { font-weight: 700; color: var(--text-muted); }
+.settings-credits-list dd { margin: 0; color: var(--text); }
+.settings-modal-content .modal-actions { margin-top: 16px; }
+.settings-modal-content .modal-actions button { font-family: var(--font-ui); font-weight: 600; font-size: 13px; height: 30px; padding: 0 12px; border-radius: var(--radius-sm); border: 1px solid var(--border-strong); background: var(--surface); color: var(--text); cursor: pointer; }
+.settings-modal-content .modal-actions button:hover { background: var(--surface-sunken); }
+
+/* === Barre flottante de formatage nombre/date d'une bulle #Variable === Réutilise le chrome .v2-floating-toolbar ; ce qui suit ne couvre que le CONTENU
+   propre (segmenté FR/US/aucun, décimales, devise, bascule lettres, préréglages de date) - ses boutons ont besoin d'une largeur variable (libellés texte),
+   contrairement aux boutons icône-seule des autres barres flottantes. */
+.v2-varfmt-toolbar { align-items: center; }
+.v2-varfmt-toolbar [data-var-panel] { display: flex; align-items: center; gap: 4px; }
+.v2-varfmt-toolbar [data-var-panel][hidden] { display: none; }
+.v2-varfmt-seg { display: inline-flex; border: 1px solid var(--border, #d7dde3); border-radius: 4px; overflow: hidden; }
+.v2-varfmt-toolbar .v2-varfmt-seg button { width: auto; height: 26px; padding: 0 8px; font-size: 11.5px; font-weight: 700; border-radius: 0; border-left: 1px solid var(--border, #d7dde3); }
+.v2-varfmt-toolbar .v2-varfmt-seg button:first-child { border-left: none; }
+.v2-varfmt-toolbar select, .v2-varfmt-toolbar input[type="text"] { height: 26px; border: 1px solid var(--border, #d7dde3); border-radius: 4px; font-size: 12px; padding: 0 6px; background: #fff; color: #3a4452; }
+.v2-varfmt-toolbar input[data-role="num-currency"] { width: 56px; }
+.v2-varfmt-toolbar select[data-role="date-preset"] { width: 190px; }
+.v2-varfmt-toolbar button[data-action="num-words"], .v2-varfmt-toolbar button[data-action="date-words"] { width: auto; padding: 0 8px; font-size: 12px; font-weight: 600; }
+/* Écriture en lettres active : le style de séparateur (FR/US/aucun) n'a plus de sens - grisé, pas retiré. Les décimales RESTENT actives : la partie
+   décimale s'écrit elle aussi en toutes lettres ("virgule cinquante-six"), pas d'arrondi silencieux ; la devise reste utilisable ("mille euros"). */
+[data-var-panel="number"].v2-varfmt-words-active .v2-varfmt-seg { opacity: .4; pointer-events: none; }
+
+/* Boutons/groupes sans aucun sens pendant l'édition d'en-tête/pied de page - pointer-events (pas juste disabled, la numérotation des titres est un GROUPE
+   au survol) hérite vers tous les descendants, bloquant aussi le panneau flottant révélé au survol. `.v2-floating-toolbar .v2-hf-locked` en plus : les
+   boutons "devant/derrière le texte" de la barre flottante d'image vivent hors de #v2-toolbar, verrouillés car pdf-export.js ne résout pas la position
+   d'une image en calque dans cette zone. */
+#v2-toolbar .v2-hf-locked, .v2-floating-toolbar .v2-hf-locked { pointer-events: none; opacity: .35; }
+
+/* === Pastille flottante d'édition d'en-tête/pied de page (#v2-hf-pill) === Remplace l'ancien bouton de toolbar + sous-barre dockée pleine largeur - façon
+   Google Docs/Word : on entre en édition en cliquant une zone de marge de la page (cf. .v2-hf-zone), cette pastille n'apparaît qu'ENSUITE. `position:
+   sticky` (dans #editor-container, qui défile) plutôt qu'ancrée au clic : reste visible même sur un en-tête qui déborderait de la zone visible. */
+.v2-hf-pill {
+  position: sticky; top: 8px; z-index: 25; width: fit-content; margin: 0 auto 14px;
+  display: flex; align-items: center; gap: 10px; padding: 6px 8px 6px 14px;
+  background: var(--surface); border: 1px solid var(--border-strong); border-radius: 999px;
+  box-shadow: 0 6px 18px rgba(20, 28, 46, .16); font-family: var(--font-ui);
+}
+.v2-segmented { display: inline-flex; border: 1px solid var(--border-strong); border-radius: 999px; overflow: hidden; background: var(--surface); }
+.v2-segmented[hidden] { display: none; }
+.v2-segmented-btn { width: auto; height: 26px; padding: 0 10px; font-size: 12px; font-weight: 600; border: none; border-radius: 0; border-left: 1px solid var(--border-strong); background: transparent; color: var(--text-muted); cursor: pointer; }
+.v2-segmented-btn:first-child { border-left: none; }
+.v2-segmented-btn:hover { background: var(--surface-sunken); }
+.v2-segmented-btn.active { background: var(--accent); color: #fff; }
+.v2-hf-checkbox { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; font-weight: 600; color: var(--text); white-space: nowrap; cursor: pointer; }
+#v2-hf-btn-pagenum { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; padding: 0; border: 1px solid transparent; border-radius: 50%; background: transparent; color: var(--text-muted); cursor: pointer; }
+#v2-hf-btn-pagenum:hover { background: var(--surface-sunken); border-color: var(--border); }
+.v2-hf-pagenum-icon { font-family: var(--font-ui); font-weight: 800; font-size: 14px; }
+.v2-hf-btn-done { margin-left: auto; width: auto; height: 28px; padding: 0 14px; font-size: 12.5px; font-weight: 700; border-radius: 999px; border: 1px solid var(--accent); background: var(--accent); color: #fff; cursor: pointer; }
+.v2-hf-btn-done:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
+
+/* Menu "Image depuis une variable" (js/editor.js:openImageVariablePicker) - même langage visuel que #autocomplete-box (../css/style.css, #Variable en texte),
+   instance DOM séparée (id différent) pour ne rien partager entre les deux fichiers. */
+#v2-image-var-picker { position: absolute; z-index: 1000; min-width: 200px; max-width: 320px; max-height: 240px; overflow: auto; background: var(--surface); border: 1px solid var(--border-strong); box-shadow: 0 4px 14px rgba(0,0,0,.10); border-radius: 6px; font-family: var(--font-ui); font-size: 12.5px; }
+.v2-image-var-picker-item { padding: 6px 10px; cursor: pointer; color: var(--text); }
+.v2-image-var-picker-item:hover { background: var(--surface-sunken); }
+.v2-image-var-picker-empty { padding: 8px 10px; color: var(--text-faint); }

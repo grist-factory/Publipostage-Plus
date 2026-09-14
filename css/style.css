@@ -1,0 +1,215 @@
+/* Publipostage Grist – stylesheet. Référencé par index.html (mode édition) et par reader-mode.js (mode lecture via #reader-container). */
+@import url('https://fonts.googleapis.com/css2?family=Manrope:wght@500;600;700;800&display=swap');
+/* Roboto (regular/italic/bold/bold-italic) : voir css/roboto-fonts.css, lié séparément avant cette feuille. Auto-hébergée pour garantir que l'éditeur/
+   #reader-container utilisent EXACTEMENT les mêmes fichiers que ceux embarqués dans le PDF par pdfmake - sinon le texte ne coupe pas ses lignes pareil. */
+
+/* === Design tokens === --font-ui n'est appliqué qu'au chrome de l'application (barres d'outils, boutons, libellés) : le contenu du courrier garde
+   volontairement Roboto (pour matcher l'export PDF) plutôt que Manrope. */
+:root {
+  --bg: #f4f6fa;
+  --surface: #ffffff;
+  --surface-sunken: #eef1f6;
+  --border: #dde2ea;
+  --border-strong: #c3cad6;
+  --text: #1b2430;
+  --text-muted: #667085;
+  --text-faint: #98a2b3;
+  --accent: #2f6fed;
+  --accent-hover: #2558c4;
+  --accent-soft: #e8f0fe;
+  --accent-soft-border: #c7dbfd;
+  --danger: #d84343;
+  --danger-soft: #fbe9e9;
+  --dark-bg: #182238;
+  --dark-bg-raised: #263457;
+  --dark-border: #32406a;
+  --dark-text: #eef2ff;
+  --dark-text-muted: #97a3c4;
+  --radius-sm: 7px;
+  --radius-md: 11px;
+  --shadow-float: 0 14px 32px -8px rgba(9,16,35,.35), 0 2px 8px rgba(9,16,35,.12);
+  --shadow-card: 0 1px 2px rgba(20,28,46,.05);
+  --font-ui: 'Manrope', system-ui, sans-serif;
+}
+
+/* === Typographie et mise en page de base === */
+html, body { margin:0; padding:0; height:100%; font-family: Arial, sans-serif; background: var(--bg); }
+body { display:flex; flex-direction:column; }
+/* #app n'avait ni hauteur ni flex propres : un enfant flex sans flex-basis se dimensionne à son CONTENU par défaut, donc dès que l'éditeur dépassait la
+   hauteur de la fenêtre, c'est TOUTE LA PAGE qui gagnait sa barre de défilement (barre d'outils comprise) au lieu du défilement interne prévu sur
+   #editor-container. #app reproduit le même schéma flex-column contraint que body, pour que ce soit #editor-container qui défile, jamais la page. */
+#app { display:flex; flex-direction:column; height:100%; min-height:0; }
+/* Bandeau compact (maximiser la hauteur dispo pour l'éditeur) : UNE seule ligne toujours visible (.bar-row). Tous les id de bouton/input sont INCHANGÉS :
+   main.js les cible toujours pareil. */
+#toolbar-top { display:flex; flex-direction: column; border-bottom:1px solid var(--border); background: linear-gradient(180deg, #fff, #fbfcfe); font-family: var(--font-ui); }
+.bar-row { display:flex; align-items:center; gap:5px; flex-wrap: wrap; padding:6px 10px; }
+.bar-sep { width:1px; align-self:stretch; margin:2px 2px; background: var(--border); flex:none; }
+#toolbar-top select, #toolbar-top input[type="text"] {
+  font-family: Arial, sans-serif; font-size: 13px; color: var(--text);
+  background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
+  padding: 4px 8px; height: 28px;
+}
+.template-select { max-width: 160px; }
+#toolbar-top button {
+  font-family: var(--font-ui); font-weight: 600; font-size: 13px;
+  display: inline-flex; align-items: center;
+  height: 28px; padding: 0 7px; margin: 0;
+  border-radius: var(--radius-sm); border: 1px solid var(--border-strong);
+  background: transparent; color: var(--text); cursor: pointer;
+  transition: background .12s ease, border-color .12s ease;
+}
+#toolbar-top button:hover { background: var(--surface-sunken); border-color: var(--text-faint); }
+.a4-toggle { position:relative; display: inline-flex; align-items: center; height:28px; padding:0 7px; border:1px solid var(--border-strong); border-radius: var(--radius-sm); font-family: var(--font-ui); font-weight: 600; font-size: 13px; color: var(--text); cursor: pointer; user-select: none; }
+.a4-toggle:hover { background: var(--surface-sunken); border-color: var(--text-faint); }
+.a4-toggle input { position:absolute; width:1px; height:1px; opacity:0; }
+.a4-toggle-icon { display:inline-block; width:14px; height:14px; flex:none; background-color: currentColor; -webkit-mask-size: contain; mask-size: contain; -webkit-mask-repeat: no-repeat; mask-repeat: no-repeat; -webkit-mask-position: center; mask-position: center; -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2'%3E%3Cpath d='M6 2h9l5 5v13a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2Z'/%3E%3Cpath d='M14 2v6h6'/%3E%3C/svg%3E"); mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2'%3E%3Cpath d='M6 2h9l5 5v13a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2Z'/%3E%3Cpath d='M14 2v6h6'/%3E%3C/svg%3E"); }
+.a4-toggle.checked { background: var(--accent-soft); border-color: var(--accent-soft-border); color: var(--accent); }
+#toolbar-top button::before { content:""; display:inline-block; width:14px; height:14px; flex:none; background-color: currentColor; -webkit-mask-size: contain; mask-size: contain; -webkit-mask-repeat: no-repeat; mask-repeat: no-repeat; -webkit-mask-position: center; mask-position: center; }
+#btn-new::before { -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2.2'%3E%3Cpath d='M12 5v14M5 12h14'/%3E%3C/svg%3E"); mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2.2'%3E%3Cpath d='M12 5v14M5 12h14'/%3E%3C/svg%3E"); }
+#btn-save::before { -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2'%3E%3Cpath d='M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2Z'/%3E%3Cpath d='M17 21v-8H7v8M7 3v5h8'/%3E%3C/svg%3E"); mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2'%3E%3Cpath d='M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2Z'/%3E%3Cpath d='M17 21v-8H7v8M7 3v5h8'/%3E%3C/svg%3E"); }
+/* Enregistrer sous = copie du modèle courant sous un nouveau nom : icône de duplication distincte de la disquette "Enregistrer" (même symbole que celui déjà
+   utilisé ailleurs dans l'app pour "dupliquer"). */
+#btn-save-as::before { -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2'%3E%3Crect x='9' y='9' width='11' height='11' rx='1.5'/%3E%3Cpath d='M5 15H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v1'/%3E%3C/svg%3E"); mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2'%3E%3Crect x='9' y='9' width='11' height='11' rx='1.5'/%3E%3Cpath d='M5 15H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v1'/%3E%3C/svg%3E"); }
+#btn-delete::before { -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2.1'%3E%3Cpath d='M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14'/%3E%3C/svg%3E"); mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2.1'%3E%3Cpath d='M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14'/%3E%3C/svg%3E"); }
+#btn-export-pdf::before { -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2.1'%3E%3Cpath d='M12 3v12m0 0 4-4m-4 4-4-4M4 17v3a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-3'/%3E%3C/svg%3E"); mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2.1'%3E%3Cpath d='M12 3v12m0 0 4-4m-4 4-4-4M4 17v3a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-3'/%3E%3C/svg%3E"); }
+#btn-mode-edit::before { -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2'%3E%3Cpath d='M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z'/%3E%3C/svg%3E"); mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2'%3E%3Cpath d='M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z'/%3E%3C/svg%3E"); }
+#btn-mode-read::before { -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2'%3E%3Cpath d='M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z'/%3E%3Ccircle cx='12' cy='12' r='3'/%3E%3C/svg%3E"); mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2'%3E%3Cpath d='M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z'/%3E%3Ccircle cx='12' cy='12' r='3'/%3E%3C/svg%3E"); }
+/* Préfixées par #toolbar-top pour dépasser sans ambiguïté la spécificité de la règle générique #toolbar-top button ci-dessus (même compte d'ID que la règle
+   générique + type "button" s'annuleraient sinon en cas d'égalité). */
+#toolbar-top #btn-save { background: var(--accent); border-color: var(--accent); color: #fff; box-shadow: 0 1px 2px rgba(47,111,237,.35); }
+#toolbar-top #btn-save:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
+#toolbar-top #btn-delete { color: var(--danger); }
+#toolbar-top #btn-delete:hover { background: var(--danger-soft); border-color: var(--danger); }
+#toolbar-top #btn-export-pdf { background: var(--accent); border-color: var(--accent); color: #fff; box-shadow: 0 1px 2px rgba(47,111,237,.35); }
+#toolbar-top #btn-export-pdf:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
+/* Les deux boutons de mode sont fusionnés visuellement en un sélecteur segmenté (même comportement JS : ils gardent leurs id et leur classe .active togglée
+   par main.js, seul l'agencement CSS change). */
+.mode-toggle { display:inline-flex; }
+#toolbar-top #btn-mode-edit, #toolbar-top #btn-mode-read { background: var(--surface-sunken); }
+#toolbar-top #btn-mode-edit { border-radius: var(--radius-sm) 0 0 var(--radius-sm); border-right: none; }
+#toolbar-top #btn-mode-read { border-radius: 0 var(--radius-sm) var(--radius-sm) 0; }
+#toolbar-top button.active { background: var(--surface); color: var(--accent); border-color: var(--accent); box-shadow: var(--shadow-card); }
+.var-badge { display:inline-block; background:#eaf2ff; color:#12406b; border:1px solid #b7cdf2; padding:0 4px; border-radius:3px; font-size:.92em; line-height:1.4; }
+/* Variable #Variable dont la table/colonne référencée n'existe plus - posé/retiré par refreshVariableBadgeValidity() à chaque mise à jour (purement visuel,
+   rien de persisté). Le message d'erreur vit dans l'attribut `title` natif (infobulle système, sans JS de popup dédié). */
+.var-badge.var-badge-broken { background:#fbe9e9; color:#a4231c; border-color:#f0b3b3; padding-right:16px; position:relative; cursor:help; }
+.var-badge.var-badge-broken::after {
+  content:""; position:absolute; top:50%; right:3px; transform:translateY(-50%);
+  width:10px; height:10px; background-color:currentColor;
+  -webkit-mask-size:contain; mask-size:contain; -webkit-mask-repeat:no-repeat; mask-repeat:no-repeat; -webkit-mask-position:center; mask-position:center;
+  -webkit-mask-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2.4'%3E%3Cpath d='M12 3 2 20h20Z'/%3E%3Cpath d='M12 10v4M12 17h.01'/%3E%3C/svg%3E");
+  mask-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2.4'%3E%3Cpath d='M12 3 2 20h20Z'/%3E%3Cpath d='M12 10v4M12 17h.01'/%3E%3C/svg%3E");
+}
+#autocomplete-box { position:absolute; z-index:1000; min-width:160px; max-width:320px; max-height:240px; overflow:auto; background:#fff; border:1px solid #b7cdf2; box-shadow:0 4px 14px rgba(0,0,0,.10); border-radius:4px; font-size:.9em; }
+#autocomplete-box .ac-item { padding:4px 8px; cursor:pointer; }
+#autocomplete-box .ac-item:hover, #autocomplete-box .ac-item.selected { background:#eaf2ff; }
+#link-config-modal { position:fixed; inset:0; background:rgba(15,23,42,.45); display:flex; align-items:center; justify-content:center; z-index:2000; }
+.modal-content { background:#fff; border-radius:8px; padding:18px 20px; box-shadow:0 12px 32px rgba(0,0,0,.18); min-width:320px; max-width:440px; }
+.link-config-modal-content h3 { margin:0 0 10px; font-size:14px; }
+.link-config-mode { display:flex; flex-direction:column; gap:10px; margin-bottom:10px; font-size:13px; }
+.link-config-mode label { display:flex; flex-direction:column; }
+.link-config-hint { font-weight:400; font-size:11px; color: var(--text-faint); margin:2px 0 0 20px; }
+.link-config-match-fields { display:flex; flex-direction:column; gap:8px; margin-bottom:12px; }
+.link-config-match-fields select { width:100%; box-sizing:border-box; }
+.link-config-explain { margin:0; font-size:11px; color: var(--text-faint); }
+.link-config-preview { font-size:12px; background: var(--surface-sunken); border:1px solid var(--border); border-radius:4px; padding:6px 8px; margin-bottom:12px; min-height:1.2em; }
+.modal-actions { display:flex; justify-content:flex-end; gap:8px; }
+.link-rules-list { display:flex; flex-direction:column; gap:4px; max-height:120px; overflow:auto; }
+.link-rule-row { display:flex; align-items:center; gap:6px; font-size:12px; padding:3px 0; border-bottom:1px solid var(--border); }
+.link-rule-label { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.link-rule-row button { font-size:11px; padding:2px 6px; }
+.link-rules-empty { font-size:12px; color: var(--text-faint); margin:0; }
+#status-msg { margin-left:auto; font-family: var(--font-ui); font-size:12px; font-weight:600; color: var(--text-muted); }
+#editor-container { flex:1; min-height:0; padding:14px; overflow:auto; background:#fff; }
+#editor-container.a4-preview { background: var(--surface-sunken); }
+/* z-index:0 (en plus de position:relative) : force #reader-container à établir son PROPRE contexte d'empilement local - sans ça son fond opaque se peint
+   APRÈS (par-dessus) toute image en calque "derrière le texte" (z-index négatif), la rendant invisible et lui volant ses clics. */
+#reader-container { position:relative; z-index:0; flex:1; min-height:0; padding:18px 22px; overflow:auto; background:#fff; line-height:1.45; font-family: 'Roboto', Helvetica, Arial, sans-serif; }
+
+#reader-container table { width:100%; border-collapse:collapse; }
+#reader-container td, #reader-container th { border:1px solid #999; padding:6px; }
+/* margin/padding volontairement réduits au minimum : cette "chrome" d'édition n'existe pas côté PDF (twoColumnsFrom pose une marge calibrée pour matcher
+   CETTE valeur) - un padding plus généreux gonflait la zone dans l'éditeur sans contrepartie dans le PDF, décalant tout ce qui suit. */
+.two-columns-zone { position: relative; display: grid; grid-template-columns: var(--layout-left, 50%) calc(100% - var(--layout-left, 50%) - 18px); gap: 18px; margin: 0; padding: 16px 10px 4px; border: 1px dashed #8b98a5; border-radius: 3px; box-sizing: border-box; max-width: 100%; }
+.two-columns-column { min-width: 0; min-height: 48px; padding: 6px; border: 1px solid #d7dde3; box-sizing: border-box; overflow-wrap: anywhere; word-break: break-word; }
+.two-columns-resize-grip { position: absolute; top: 50%; left: var(--layout-left, 50%); width: 22px; height: 40px; transform: translate(-50%, -50%); cursor: ew-resize; z-index: 20; user-select: none; touch-action: none; display: flex; align-items: center; justify-content: center; }
+.two-columns-resize-grip::before { content: ''; width: 6px; height: 32px; border-radius: 3px; background: var(--border); }
+.two-columns-resize-grip:hover::before, .two-columns-resize-grip:active::before { background: var(--accent); }
+#reader-container .two-columns-zone { border-color: transparent; padding-top: 0; }
+#reader-container .two-columns-resize-grip { display: none; }
+
+/* === Saut de page forcé === */
+.page-break-marker { display:block; margin: 18px 0; padding: 6px 10px; border:1px dashed #d97706; color:#d97706; font-size:.85em; text-align:center; user-select:none; }
+#reader-container .page-break-marker { color: transparent; border-color: transparent; }
+
+/* === Sommaire + numérotation des titres === Configuration invisible (persistée dans le contenu). Le marqueur de sommaire (.toc-marker) affiche un APERÇU
+   en direct de la vraie liste des titres DANS l'éditeur, dans un encadré en pointillés (même traitement que .page-break-marker). En mode lecture et à
+   l'export PDF, le même marqueur est entièrement résolu (variables + numéro de page) et perd cet encadré (.toc-resolved). */
+.heading-numbering-config { display: none; }
+.toc-marker { display: block; margin: 18px 0; padding: 10px 14px; border: 1px dashed #6b7280; border-radius: 4px; color: #6b7280; font-size: .9em; }
+.toc-title { font-weight: 600; font-size: 1.15em; margin: 0 0 8px; color: inherit; }
+.toc-empty { font-style: italic; color: #6b7280; }
+.toc-entry { padding: 2px 0; }
+.toc-entry.toc-level-2 { margin-left: 14px; }
+.toc-entry.toc-level-3 { margin-left: 28px; }
+.toc-entry.toc-level-4 { margin-left: 42px; }
+.toc-entry.toc-level-5 { margin-left: 56px; }
+.toc-entry.toc-level-6 { margin-left: 70px; }
+/* Mode lecture : le placeholder éditeur (encadré en pointillés, texte muet) reste masqué tant qu'il n'est pas résolu par reader-mode.js - une fois résolu
+   (classe .toc-resolved posée par resolveTocMarkers), ré-affiché avec une mise en forme normale, intégrée au document comme un vrai bloc. */
+#reader-container .toc-marker { display: none; user-select: none; }
+#reader-container .toc-marker.toc-resolved { display: block; margin: 18px 0; padding: 0; border: none; color: inherit; font-size: 1em; user-select: text; }
+
+/* Numérotation automatique des titres H1-H6 en mode Lecture, pilotée par le data-attribute data-heading-style posé sur .reader-content (PAS #reader-container
+   lui-même : .reader-content est le seul VRAI parent direct des titres) - un pur compteur CSS (::before), à l'image des puces/numéros de liste (cf.
+   listMarkerFor dans pdf-export.js, qui MESURE ce même ::before pour le reproduire dans le PDF). L'équivalent éditeur (`.tiptap[data-heading-style]`) vit
+   dans css/editor-v2.css - les deux DOIVENT rester en phase (mêmes 3 styles décimal/alpha/romain, même cascade au-delà de h3). Uniquement les titres de
+   PREMIER NIVEAU du flux principal (`>`) : un titre dans un tableau/une colonne n'est pas numéroté. */
+.reader-content[data-heading-style] { counter-reset: h1c h2c h3c h4c h5c h6c; }
+.reader-content[data-heading-style] > h1 { counter-reset: h2c h3c h4c h5c h6c; counter-increment: h1c; }
+.reader-content[data-heading-style] > h2 { counter-reset: h3c h4c h5c h6c; counter-increment: h2c; }
+.reader-content[data-heading-style] > h3 { counter-reset: h4c h5c h6c; counter-increment: h3c; }
+.reader-content[data-heading-style] > h4 { counter-reset: h5c h6c; counter-increment: h4c; }
+.reader-content[data-heading-style] > h5 { counter-reset: h6c; counter-increment: h5c; }
+.reader-content[data-heading-style] > h6 { counter-increment: h6c; }
+
+.reader-content[data-heading-style="numeric"] > h1::before { content: counter(h1c, decimal) ") "; }
+.reader-content[data-heading-style="numeric"] > h2::before { content: counter(h2c, lower-alpha) ") "; }
+.reader-content[data-heading-style="numeric"] > h3::before { content: counter(h3c, upper-roman) ") "; }
+.reader-content[data-heading-style="numeric"] > h4::before { content: counter(h4c, decimal) ") "; }
+.reader-content[data-heading-style="numeric"] > h5::before { content: counter(h5c, lower-alpha) ") "; }
+.reader-content[data-heading-style="numeric"] > h6::before { content: counter(h6c, upper-roman) ") "; }
+
+.reader-content[data-heading-style="alpha"] > h1::before { content: counter(h1c, lower-alpha) ") "; }
+.reader-content[data-heading-style="alpha"] > h2::before { content: counter(h2c, upper-roman) ") "; }
+.reader-content[data-heading-style="alpha"] > h3::before { content: counter(h3c, decimal) ") "; }
+.reader-content[data-heading-style="alpha"] > h4::before { content: counter(h4c, lower-alpha) ") "; }
+.reader-content[data-heading-style="alpha"] > h5::before { content: counter(h5c, upper-roman) ") "; }
+.reader-content[data-heading-style="alpha"] > h6::before { content: counter(h6c, decimal) ") "; }
+
+.reader-content[data-heading-style="roman"] > h1::before { content: counter(h1c, upper-roman) ") "; }
+.reader-content[data-heading-style="roman"] > h2::before { content: counter(h2c, decimal) ") "; }
+.reader-content[data-heading-style="roman"] > h3::before { content: counter(h3c, lower-alpha) ") "; }
+.reader-content[data-heading-style="roman"] > h4::before { content: counter(h4c, upper-roman) ") "; }
+.reader-content[data-heading-style="roman"] > h5::before { content: counter(h5c, decimal) ") "; }
+.reader-content[data-heading-style="roman"] > h6::before { content: counter(h6c, lower-alpha) ") "; }
+
+/* === Mode lecture === */
+#reader-container h1, #reader-container h2, #reader-container h3 { color:#1f2d3d; }
+#reader-container p { margin: 6px 0; }
+
+/* === Images de l'éditeur : sélection, resize et repositionnement === */
+.editor-image { max-width: 100%; height: auto; cursor: grab; outline: 2px solid transparent; outline-offset: 2px; }
+.editor-image:hover { outline-color: #1f5dbf; }
+/* Poignées volontairement grandes et contrastées : ce sont elles qui portent le redimensionnement libre, les boutons zoom +/- n'étant qu'un raccourci en
+   +/-25%. position:fixed : ces poignées vivent dans document.body, hors de l'éditeur, pour échapper à la réconciliation DOM de TipTap. */
+.editor-image-handle { position: fixed; z-index: 9999; display: none; width: 14px; height: 14px; margin: -8px; border: 2px solid var(--accent); border-radius: 3px; background: var(--surface); box-shadow: 0 1px 3px rgba(0,0,0,.35); cursor: nwse-resize; }
+.editor-image-handle:hover { background: var(--accent-soft); }
+.editor-image-handle-nw { cursor: nwse-resize; }
+.editor-image-handle-ne { cursor: nesw-resize; }
+.editor-image-handle-sw { cursor: nesw-resize; }
+.editor-image-handle-se { cursor: nwse-resize; }
+.editor-image[data-align="left"] { display: block; margin-left: 0; margin-right: auto; }
+.editor-image[data-align="center"] { display: block; margin-left: auto; margin-right: auto; }
+.editor-image[data-align="right"] { display: block; margin-left: auto; margin-right: 0; }
+.editor-image[data-wrap="block"] { display: block; }
