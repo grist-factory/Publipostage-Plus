@@ -40,14 +40,6 @@
     "schema": "test-mise-en-page/schema.py"
   },
   {
-    "id": "test-images-tableaux",
-    "name": "Test — Images, tableaux & 2 colonnes",
-    "tags": ["test"],
-    "screenshot": "test-images-tableaux/screenshot.svg",
-    "html": "test-images-tableaux/template.html",
-    "schema": "test-images-tableaux/schema.py"
-  },
-  {
     "id": "vitrine-fonctionnalites",
     "name": "Vitrine des fonctionnalités",
     "tags": ["démo", "vitrine"],
