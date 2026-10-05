@@ -1,7 +1,6 @@
-// Numérotation des titres — cascade de compteurs reproduite en JS, partagée entre js/editor.js (aperçu du sommaire) et js/pdf-export.js (marqueurs + sommaire
-// du PDF). Doit produire le même texte que les compteurs CSS de editor-v2.css - jamais via `getComputedStyle(h,'::before').content` (déclaré, pas peint).
-//
-// js/reader-mode.js a besoin de la même logique mais garde sa propre copie (pas de mécanisme de module entre scripts classiques) — compromis délibéré.
+// Numérotation des titres : la cascade de compteurs CSS reproduite en JS, pour le sommaire de l'éditeur (js/editor-nodes.js), celui de la Lecture
+// (js/reader-mode.js) et les marqueurs et sommaires du PDF et du Word. Elle doit produire le même texte que les compteurs de css/editor-v2.css, que
+// `getComputedStyle(h, '::before').content` ne donnerait pas : il rend la déclaration, pas ce qui est peint.
 const HeadingNumbering = (function () {
   const SCHEMES = {
     numeric: ['decimal', 'lower-alpha', 'upper-roman', 'decimal', 'lower-alpha', 'upper-roman'],
@@ -33,14 +32,17 @@ const HeadingNumbering = (function () {
     return String(n);
   }
 
-  // Un marqueur ("1) "/"a) "/"") par titre, aligné par index à `headingEls` (ordre document) - jamais le texte complet du titre : les deux consommateurs
-  // construisent ce texte différemment (pdf-export.js préserve la mise en forme via de vrais "runs" pdfmake, le sommaire n'a besoin que du textContent brut).
+  const levelOf = h => parseInt(h.tagName.slice(1), 10) || 1;
+
+  // Un marqueur ("1) "/"a) "/"") par titre, aligné par index à `headingEls` (ordre document) - jamais le texte complet du titre : les deux
+  // consommateurs construisent ce texte différemment (pdf-export.js préserve la mise en forme via de vrais "runs" pdfmake, le sommaire n'a besoin que
+  // du textContent brut).
   function markersFor(headingEls, numberingStyle) {
     const scheme = SCHEMES[numberingStyle];
     if (!scheme) return headingEls.map(() => '');
     const counters = [0, 0, 0, 0, 0, 0];
     return headingEls.map(h => {
-      const level = parseInt(h.tagName.slice(1), 10) || 1;
+      const level = levelOf(h);
       counters[level - 1] += 1;
       for (let i = level; i < 6; i += 1) counters[i] = 0;
       return formatCounterValue(counters[level - 1], scheme[level - 1]) + ') ';
@@ -51,7 +53,7 @@ const HeadingNumbering = (function () {
   function entriesFor(headingEls, numberingStyle) {
     const markers = markersFor(headingEls, numberingStyle);
     return headingEls.map((h, i) => {
-      const level = parseInt(h.tagName.slice(1), 10) || 1;
+      const level = levelOf(h);
       return { level, text: (markers[i] + (h.textContent || '')).replace(/\s+/g, ' ').trim() };
     });
   }

@@ -1,0 +1,112 @@
+/* Habillage de TemplateTreeSelect (js/template-tree-select.js, planning/feature-rangement-tri-modeles.md). Réutilise les jetons de css/style.css
+   (--surface, --border-strong, --radius-sm...), aucune couleur en dur : le thème sombre est hérité. */
+
+/* Le <select> réel ne doit jamais redevenir visible par une règle `display` plus spécifique ailleurs : display:none est défendu par !important. */
+.tts-native-select.tts-native-select { display: none !important; }
+
+.tts-wrap { position: relative; display: inline-flex; align-items: center; min-width: 0; }
+/* [hidden] seul perd contre `display: inline-flex` ci-dessus : pendant « Renommer », le déclencheur disparaît pour laisser le champ du nom à sa
+   place (js/template-tree-select.js, syncDisabledState). */
+.tts-wrap[hidden] { display: none; }
+
+.tts-trigger { display: inline-flex; align-items: center; gap: 4px; border: none; height: 26px; background: transparent; padding: 0 6px 0 8px; max-width: 168px; min-width: 0; border-radius: 0; font: inherit; color: inherit; cursor: pointer; }
+/* .tts-trigger est un <button> de #toolbar-top : la règle générique #toolbar-top button::before (css/style.css) lui poserait un ::before de 14x14
+   en background-color: currentColor sans mask-image (chaque bouton fournit le sien), soit un carré plein avant l'icône (.tts-icon). Même remède
+   que #v2-btn-toggle-cci::before (css/toolbar-v2.css) ; préfixé par #toolbar-top pour avoir le même compte d'ID que la règle générique, sinon
+   l'ordre de déclaration les départagerait. */
+#toolbar-top .tts-trigger::before { content: none; }
+/* #toolbar-top .tts-trigger:hover (et non .tts-trigger:hover) : sans l'ID, la règle perdrait contre #toolbar-top button:hover (css/style.css, non
+   gardée par média) qui pose le même fond. Sous `not (hover: hover)`, la surcharge neutralise ce fond : sans elle, un tap tactile ou un trackpad
+   le laisse « collé » après le clic (aucun mouseleave). */
+#toolbar-top .tts-trigger:hover { background: var(--surface-sunken); }
+@media not (hover: hover) {
+  #toolbar-top .tts-trigger:hover { background: transparent; }
+}
+.tts-trigger:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.tts-trigger:disabled { opacity: .5; cursor: default; background: transparent; }
+.tts-trigger-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1 1 auto; min-width: 0; text-align: left; }
+
+.tts-icon { display: inline-block; width: 14px; height: 14px; flex: none; background-color: currentColor; -webkit-mask-size: contain; mask-size: contain; -webkit-mask-repeat: no-repeat; mask-repeat: no-repeat; -webkit-mask-position: center; mask-position: center; }
+/* « Nouveau modèle » : même tracé que #btn-new (css/style.css). */
+.tts-icon-new { -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2.2'%3E%3Cpath d='M12 5v14M5 12h14'/%3E%3C/svg%3E"); mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2.2'%3E%3Cpath d='M12 5v14M5 12h14'/%3E%3C/svg%3E"); }
+.tts-icon-document { -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='1.8' stroke-linejoin='round'%3E%3Cpath d='M7 2h7l4 4v16H7z'/%3E%3Cpath d='M14 2v4h4'/%3E%3C/svg%3E"); mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='1.8' stroke-linejoin='round'%3E%3Cpath d='M7 2h7l4 4v16H7z'/%3E%3Cpath d='M14 2v4h4'/%3E%3C/svg%3E"); }
+.tts-icon-email { -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='1.8' stroke-linejoin='round'%3E%3Crect x='2' y='4' width='20' height='16' rx='2'/%3E%3Cpath d='M3 6l9 7 9-7'/%3E%3C/svg%3E"); mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='1.8' stroke-linejoin='round'%3E%3Crect x='2' y='4' width='20' height='16' rx='2'/%3E%3Cpath d='M3 6l9 7 9-7'/%3E%3C/svg%3E"); }
+/* Macro-modèle : plusieurs pages assemblées (planning/feature-macro-modeles.md). */
+.tts-icon-macro { -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='1.8' stroke-linejoin='round'%3E%3Crect x='2' y='6' width='14' height='16' rx='1.5'/%3E%3Cpath d='M7 2h11a1.5 1.5 0 0 1 1.5 1.5V18'/%3E%3C/svg%3E"); mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='1.8' stroke-linejoin='round'%3E%3Crect x='2' y='6' width='14' height='16' rx='1.5'/%3E%3Cpath d='M7 2h11a1.5 1.5 0 0 1 1.5 1.5V18'/%3E%3C/svg%3E"); }
+/* Grille : un tableau de cases (js/grid-editor.js, planning/feature-mode-grille-excel.md). */
+.tts-icon-grille { -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='1.8' stroke-linejoin='round'%3E%3Crect x='3' y='4' width='18' height='16' rx='1.5'/%3E%3Cpath d='M3 9.3h18M3 14.6h18M9 4v16M15 4v16'/%3E%3C/svg%3E"); mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='1.8' stroke-linejoin='round'%3E%3Crect x='3' y='4' width='18' height='16' rx='1.5'/%3E%3Cpath d='M3 9.3h18M3 14.6h18M9 4v16M15 4v16'/%3E%3C/svg%3E"); }
+.tts-icon-folder { -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='1.8' stroke-linejoin='round'%3E%3Cpath d='M3 6a1 1 0 0 1 1-1h5l2 2h9a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1Z'/%3E%3C/svg%3E"); mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='1.8' stroke-linejoin='round'%3E%3Cpath d='M3 6a1 1 0 0 1 1-1h5l2 2h9a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1Z'/%3E%3C/svg%3E"); }
+/* Bouton « Organiser » de l'en-tête (.tts-organize-btn) : icône de réglages, distincte du dossier pour ne pas passer pour un dossier de plus. */
+.tts-icon-organize { -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='1.8' stroke-linecap='round'%3E%3Cline x1='4' y1='7' x2='20' y2='7'/%3E%3Ccircle cx='9' cy='7' r='2'/%3E%3Cline x1='4' y1='17' x2='20' y2='17'/%3E%3Ccircle cx='15' cy='17' r='2'/%3E%3C/svg%3E"); mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='1.8' stroke-linecap='round'%3E%3Cline x1='4' y1='7' x2='20' y2='7'/%3E%3Ccircle cx='9' cy='7' r='2'/%3E%3Cline x1='4' y1='17' x2='20' y2='17'/%3E%3Ccircle cx='15' cy='17' r='2'/%3E%3C/svg%3E"); }
+
+.tts-caret { display: inline-block; width: 10px; height: 10px; flex: none; background-color: currentColor; -webkit-mask-size: contain; mask-size: contain; -webkit-mask-repeat: no-repeat; mask-repeat: no-repeat; -webkit-mask-position: center; -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2.5'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E"); mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2.5'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E"); }
+
+/* position: fixed, rattaché à document.body (openPopup()) plutôt qu'à .tts-wrap : .tts-wrap vit dans #v2-title-cluster (css/toolbar-v2.css), qui a
+   `overflow: hidden` ; le panneau y serait rogné dès que le focus clavier à l'ouverture fait défiler ce bloc. top/left sont posés à l'ouverture
+   depuis le rect du déclencheur. */
+/* overscroll-behavior: contain : au bout de la liste, le reste d'un geste de molette ne doit pas « chaîner » vers la page : avec
+   outsideScrollHandler (js/template-tree-select.js), elle défilerait et remonterait la barre d'outils hors de portée en petite fenêtre. */
+/* color explicite : <body> ne fixe aucune couleur de texte, le panneau (fond var(--surface), sombre en thème sombre) hériterait du noir du
+   navigateur. */
+/* font-family explicite : rattaché à document.body, le panneau sort de la cascade de la barre d'outils (--font-ui) et retomberait sur l'Arial du
+   body (css/style.css). */
+/* font-size explicite : rattaché à <body>, le panneau hériterait des 16 px du navigateur, plus que le déclencheur (13 px) et que les menus au
+   survol (12,5 px, .v2-hover-row), dont il prend la taille. */
+/* z-index --z-menu (css/style.css) : la liste s'ouvre par-dessus une barre flottante de tableau ou d'image qui descendrait jusqu'à elle ; openPopup
+   la remonte au-dessus des menus déjà ouverts (Layers.raise, js/layers.js). */
+.tts-popup { display: none; position: fixed; min-width: 220px; max-width: 340px; max-height: 360px; overflow-y: auto; overscroll-behavior: contain; background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--radius-sm); box-shadow: var(--shadow-float); padding: 4px; z-index: var(--z-menu); font-family: var(--font-ui); font-size: 12.5px; color: var(--text); }
+.tts-popup.is-open { display: block; }
+
+/* En-tête du panneau : reste en haut quand la liste défile (sticky), titre à gauche et « Organiser mes modèles » à droite. Les marges négatives lui
+   font couvrir le padding de 4 px du panneau, pour que les lignes qui défilent ne se voient pas au-dessus. */
+.tts-head { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: -4px -4px 2px; padding: 4px 6px 4px 12px; background: var(--surface); border-bottom: 1px solid var(--border); border-radius: 6px 6px 0 0; }
+.tts-head-title { font-size: 11px; font-weight: 600; color: var(--text-faint); white-space: nowrap; }
+.tts-organize-btn { display: inline-flex; align-items: center; gap: 5px; height: 24px; padding: 0 8px; border: none; border-radius: var(--radius-sm); background: transparent; color: var(--text-muted); font-family: var(--font-ui); font-size: 12px; font-weight: 500; cursor: pointer; }
+.tts-organize-btn .tts-icon { width: 13px; height: 13px; }
+/* @media (hover: hover) - même piège que .tts-trigger:hover ci-dessus (fond collé après un tap). */
+@media (hover: hover) and (pointer: fine) {
+  .tts-organize-btn:hover { background: var(--surface-sunken); color: var(--text); }
+}
+.tts-organize-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; background: var(--surface-sunken); color: var(--text); }
+.tts-empty { padding: 8px 12px; font-size: 12px; color: var(--text-muted); }
+
+.tts-section-label { font-size: 11px; text-transform: uppercase; letter-spacing: .02em; color: var(--text-faint); padding: 6px 8px 2px; }
+
+.tts-row { display: flex; align-items: center; gap: 6px; padding: 5px 8px; padding-left: calc(8px + var(--tts-depth, 0) * 16px); border-radius: var(--radius-sm); cursor: pointer; }
+/* @media (hover: hover) - même piège que .tts-trigger:hover ci-dessus (fond collé après un tap). */
+@media (hover: hover) and (pointer: fine) {
+  .tts-row:hover { background: var(--surface-sunken); }
+}
+.tts-row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.tts-row[aria-selected="true"] { background: var(--accent-soft); color: var(--accent-ink); }
+.tts-row-label { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.tts-group.is-collapsed { display: none; }
+
+/* Dossiers et modèles se distinguent d'un coup d'œil, pas seulement par l'icône : nom de dossier en gras sur une bande pleine largeur, nom de
+   modèle en graisse normale sans fond, un trait vertical relie chaque dossier déplié à son contenu. Poids 700 (que toute police du système sert),
+   aucune couleur ajoutée : --surface-sunken et --border-strong suivent le thème sombre. Ces règles servent aussi la fenêtre « Organiser mes
+   modèles » ; la liste déroulante allège le gras juste après. */
+.tts-row-folder { background: var(--surface-sunken); font-weight: 700; margin-top: 2px; }
+.tts-row-folder .tts-row-label { font-weight: 700; }
+/* Liste déroulante seulement : demi-gras (600) plutôt que 700. La fenêtre Organiser garde son gras. */
+.tts-popup .tts-row-folder, .tts-popup .tts-row-folder .tts-row-label { font-weight: 600; }
+@media (hover: hover) and (pointer: fine) {
+  .tts-row-folder:hover { background: var(--border); }
+}
+.tts-group { position: relative; }
+.tts-group::before { content: ""; position: absolute; top: 0; bottom: 0; left: calc(8px + var(--tts-depth, 0) * 16px + 5px); width: 1px; background: var(--border-strong); pointer-events: none; }
+
+.tts-folder-caret { display: inline-block; width: 10px; height: 10px; flex: none; background-color: currentColor; -webkit-mask-size: contain; mask-size: contain; -webkit-mask-repeat: no-repeat; mask-repeat: no-repeat; -webkit-mask-position: center; -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2.5'%3E%3Cpath d='M9 6l6 6-6 6'/%3E%3C/svg%3E"); mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2.5'%3E%3Cpath d='M9 6l6 6-6 6'/%3E%3C/svg%3E"); transition: transform .1s ease; }
+.tts-row-folder[aria-expanded="true"] .tts-folder-caret { transform: rotate(90deg); }
+
+/* Épingle (favori personnel, section « Épinglés ») : punaise en contour, volontairement pas l'étoile, réservée au « modèle par défaut »
+   (#btn-set-default-template de css/toolbar-v2.css et ★ du libellé) : une icône = une fonction. */
+.tts-pin-btn { display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; padding: 0; flex: none; border: none; background: transparent; border-radius: var(--radius-sm); color: var(--text-faint); opacity: 0; }
+.tts-row:hover .tts-pin-btn, .tts-row:focus-within .tts-pin-btn, .tts-pin-btn.is-pinned { opacity: 1; }
+/* @media (hover: hover) - même piège que .tts-trigger:hover ci-dessus (fond collé après un tap). */
+@media (hover: hover) and (pointer: fine) {
+  .tts-pin-btn:hover { background: var(--surface-sunken); }
+}
+.tts-pin-btn.is-pinned { color: var(--accent); }
+.tts-pin-btn::before { content: ""; display: inline-block; width: 16px; height: 16px; background-color: currentColor; -webkit-mask-size: contain; mask-size: contain; -webkit-mask-repeat: no-repeat; mask-repeat: no-repeat; -webkit-mask-position: center; mask-position: center; -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='1.8' stroke-linejoin='round' stroke-linecap='round'%3E%3Cpath d='M7 3h10M9 3v6l-3 4v1.5h12V13l-3-4V3M12 14.5V21'/%3E%3C/svg%3E"); mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='1.8' stroke-linejoin='round' stroke-linecap='round'%3E%3Cpath d='M7 3h10M9 3v6l-3 4v1.5h12V13l-3-4V3M12 14.5V21'/%3E%3C/svg%3E"); }
