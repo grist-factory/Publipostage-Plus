@@ -1,11 +1,14 @@
 // Rechercher / Remplacer dans l'éditeur : un panneau fin entre la barre d'outils et le texte, jamais une fenêtre, pour que le modèle reste visible et
 // modifiable pendant qu'on cherche.
 //  - Rechercher : tous les résultats surlignés (au-delà de 500, ceux de l'écran et de ses abords), le courant plus marqué, « 3 sur 12 », précédent
-//    / suivant (Entrée, Maj+Entrée), « Respecter la casse » et « Mot entier » ;
+//    / suivant (Entrée, Maj+Entrée), « Respecter la casse », « Mot entier » et « Expression régulière » (le motif est celui de JavaScript, il
+//    ne traverse ni une bulle ni une suppression suivie ; « $1 », « $& » et « $<nom> » reprennent un groupe dans le remplacement) ;
 //  - Remplacer : « Remplacer » remplace le résultat courant puis passe au suivant, « Tout remplacer » les remplace tous. Un remplacement est une
 //    transaction ProseMirror (une seule étape d'annulation, « Tout remplacer » compris) qui garde la mise en forme du texte remplacé et passe par le
 //    mode suivi quand il est actif : l'ancien texte devient une suppression suggérée, le nouveau une insertion suggérée (js/track-changes.js ;
 //    skipTracking est l'inverse, pour ce que le widget écrit seul) ;
+//    Annuler défait le texte ouvert (le corps, l'en-tête et le pied ont chacun leur historique), sauf juste après un « Remplacer » qui a fait passer
+//    la recherche à un autre texte : Annuler rouvre d'abord le texte du remplacement, puis le défait (reopenForUndo) ;
 //  - ouverture : Ctrl+F / ⌘F (rechercher) et Ctrl+H / ⌘⇧H (remplacer), même quand le clavier est resté sur un bouton de la barre d'outils, tant que
 //    l'éditeur est à l'écran et qu'aucune fenêtre n'est ouverte (sinon la recherche du navigateur reprend la main) ; la loupe de la barre fait de
 //    même. Échap ferme et rend le clavier à l'éditeur, le dernier résultat reste sélectionné (on peut taper par-dessus).
@@ -16,7 +19,7 @@ const FindReplace = (function () {
   const el = Dom.el;
 
   // Le moteur : un document ProseMirror, une requête, des options
-  const { findMatches, OBJECT } = (function () {
+  const { findMatches, compile, expandReplacement, isBubble, replaceInBubble, escapeRegex, OBJECT } = (function () {
     // Le texte d'un bloc est lu caractère pour caractère comme le document compte ses positions : un nœud qui n'est pas du texte (bulle, image,
     // pastille) vaut autant d'OBJECT que sa taille, qu'aucune requête ne trouve et qui coupe un mot ; un saut de ligne vaut « \n ». Le texte d'une
     // suppression suivie (marque `deletion`, encore dans le document tant qu'on ne l'a pas acceptée) vaut aussi des OBJECT : pour qui lit, il n'existe
@@ -31,6 +34,11 @@ const FindReplace = (function () {
     // texte d'origine.
     const normalize = text => text.replace(SPACES, ' ').replace(SINGLE_QUOTES, "'").replace(DOUBLE_QUOTES, '"');
     const isDeletion = mark => mark.type.name === 'deletion';
+    const escapeRegex = text => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    // Un résultat d'expression régulière garde de quoi refaire sa substitution (expandReplacement) : le texte d'où il vient, sa place et la
+    // copie « collante » du motif. Hors du résultat lui-même, pour que celui-ci reste un simple { from, to }.
+    const SOURCES = new WeakMap();
+    const SEGMENT = /[^\uFFFC]+/g;
 
     function textOfBlock(block, blockPos) {
       let text = '';
@@ -64,65 +72,259 @@ const FindReplace = (function () {
       return WORD_CHAR.test(String.fromCodePoint(codePoint));
     }
 
+    // Le motif de `query` : { regex } (drapeau « g », « i » sauf « Respecter la casse », toujours « u » pour une recherche simple), { error } quand
+    // l'expression régulière est fausse, {} sans requête. Une expression régulière se compile d'abord en mode Unicode (« u » : \p{L}, lettres hors du
+    // plan de base) ; si elle y échoue sans rien lui devoir, on la retente sans : « \- », « \@ » ou « \_ » hors d'une classe, écritures courantes,
+    // n'y sont des erreurs que dans ce mode. C'est l'erreur du mode Unicode que l'on rend, la plus fidèle à ce qui a été écrit.
+    function compile(query, opts) {
+      const options = opts || {};
+      const flags = options.matchCase ? 'g' : 'gi';
+      const text = String(query == null ? '' : query).split(OBJECT).join('');
+      if (!text) return {};
+      if (!options.regex) return { regex: new RegExp(escapeRegex(normalize(text)), flags + 'u') };
+      try { return { regex: new RegExp(text, flags + 'u'), pattern: true }; } catch (error) {
+        if (!/\\[pPu]\{/.test(text)) {
+          try { return { regex: new RegExp(text, flags), pattern: true }; } catch (ignored) { /* la première erreur est celle que l'on dit */ }
+        }
+        return { error };
+      }
+    }
+
+    // Indice qui suit `index` : deux unités quand une paire de substitution (lettre hors du plan de base) y commence.
+    function advance(text, index, unicode) {
+      const code = text.charCodeAt(index);
+      return unicode && code >= 0xD800 && code <= 0xDBFF && index + 1 < text.length ? index + 2 : index + 1;
+    }
+
+    // Visite les résultats du motif dans `input`, dans l'ordre : `visit(début, fin)` (rend faux pour s'arrêter). `input` est le texte comparé (recherche
+    // simple : espaces et guillemets unifiés). Un résultat vide (« ^ », « x* ») n'est pas un résultat : il n'a ni texte à surligner ni de quoi avancer.
+    function scan(compiled, input, opts, visit) {
+      const { regex } = compiled;
+      regex.lastIndex = 0;
+      let found;
+      while ((found = regex.exec(input))) {
+        const start = found.index;
+        const end = start + found[0].length;
+        if (end === start) { regex.lastIndex = advance(input, start, regex.unicode); continue; }
+        // « Mot entier » : un mot collé à la correspondance la disqualifie ; la recherche reprend à l'indice suivant (« ana » dans « banana ana »).
+        if (opts.wholeWord && (isWordCharAt(input, start - 1) || isWordCharAt(input, end))) { regex.lastIndex = start + 1; continue; }
+        if (visit(start, end) === false) return;
+      }
+    }
+
+    // Les résultats du motif dans le texte d'un bloc, dans l'ordre. Le texte d'une expression régulière est lu tel quel (on peut chercher une espace
+    // insécable précise) et se découpe aux « objets » (bulle, image, suppression suivie) : un motif comme « \S+ » ou « .* » ne les traverse pas, un
+    // « remplacer » ne peut donc pas en effacer un.
+    function collect(compiled, text, spans, opts, matches, sticky) {
+      const { pattern } = compiled;
+      const parts = pattern ? Array.from(text.matchAll(SEGMENT), part => ({ at: part.index, input: part[0] })) : [{ at: 0, input: normalize(text) }];
+      for (const { at, input } of parts) {
+        scan(compiled, input, opts, (start, end) => {
+          const match = { from: positionAt(spans, at + start), to: positionAt(spans, at + end - 1) + 1 };
+          if (pattern) SOURCES.set(match, { input, index: start, length: end - start, sticky });
+          matches.push(match);
+        });
+      }
+    }
+
+    // Les bulles. Une bulle est un résultat quand l'un des textes qu'elle écrit à l'écran contient la requête : son nom (« #Nom », la touche de
+    // déclenchement comprise, comme on le lit), son « Avant » et son « Après », son « sinon » (nom, « Avant » et « Après »), la formule d'une bulle de
+    // calcul. UN résultat par bulle, de la taille de la bulle : jamais à cheval sur du texte ni sur une autre bulle (le texte d'à côté, lui, la lit
+    // toujours comme un OBJECT). Une bulle supprimée en suivi n'existe plus pour qui lit : elle n'est pas trouvée.
+    const BUBBLES = new WeakSet();
+    const isBubbleNode = node => node.type.name === 'varBadge' || node.type.name === 'calcBadge';
+    const isBubble = match => BUBBLES.has(match);
+
+    // Les textes d'une bulle : [{ id, text }], `id` dit lequel (name, before, after, otherwiseName, otherwiseBefore, otherwiseAfter, otherwiseText, formula).
+    function bubbleParts(node) {
+      const attrs = node.attrs;
+      if (node.type.name === 'calcBadge') return attrs.formula ? [{ id: 'formula', text: EditorNodes.calcBadgeLabel(attrs.formula) }] : [];
+      const trigger = Variables.triggerChar();
+      const parts = [];
+      const add = (id, text) => { if (text) parts.push({ id, text }); };
+      if (attrs.key) add('name', trigger + attrs.key);
+      add('before', attrs.before);
+      add('after', attrs.after);
+      const other = attrs.otherwise;
+      if (other) {
+        if (other.key) add('otherwiseName', trigger + other.key);
+        add('otherwiseBefore', other.before);
+        add('otherwiseAfter', other.after);
+      }
+      // Le sinon en texte et variables (js/variable-otherwise.js) se lit en entier, « #Clé » pour une variable.
+      if (attrs.otherwiseText) add('otherwiseText', VariableOtherwise.plainText(attrs.otherwiseText));
+      return parts;
+    }
+
+    function hasMatch(compiled, text, opts) {
+      let hit = false;
+      scan(compiled, compiled.pattern ? text : normalize(text), opts, () => { hit = true; return false; });
+      return hit;
+    }
+
+    // Les bulles du bloc `block` (à la position `blockPos`) qui contiennent la requête, dans l'ordre.
+    function bubbleMatches(block, blockPos, compiled, opts) {
+      const found = [];
+      block.forEach((child, offset) => {
+        if (child.isText || !isBubbleNode(child) || child.marks.some(isDeletion)) return;
+        if (!bubbleParts(child).some(part => hasMatch(compiled, part.text, opts))) return;
+        const at = blockPos + 1 + offset;
+        const match = { from: at, to: at + child.nodeSize };
+        BUBBLES.add(match);
+        found.push(match);
+      });
+      return found;
+    }
+
     // Les correspondances de `query` dans `doc`, dans l'ordre du document : [{ from, to }]. Chaque bloc de texte se cherche à part (une correspondance
     // ne traverse jamais deux paragraphes ni deux cases), à travers les changements de mise en forme dans le bloc (« bon<b>jour</b> » se trouve). Sans
-    // chevauchement : « aa » dans « aaaa » vaut deux. options : { matchCase, wholeWord }. Casse ignorée par défaut (`i` + `u` : « É » et « é » se
-    // valent, « e » et « é » non).
+    // chevauchement : « aa » dans « aaaa » vaut deux. options : { matchCase, wholeWord, regex }. Casse ignorée par défaut (`i` + `u` : « É » et « é » se
+    // valent, « e » et « é » non). Une expression régulière fausse ne trouve rien (`compile` dit pourquoi). Les bulles s'ajoutent à leur place
+    // (`isBubble`).
     function findMatches(doc, query, options) {
       const opts = options || {};
-      const needle = normalize(String(query == null ? '' : query).split(OBJECT).join(''));
-      if (!needle) return [];
-      const matcher = new RegExp(needle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), opts.matchCase ? 'gu' : 'giu');
+      const compiled = compile(query, opts);
+      if (!compiled.regex) return [];
+      const sticky = stickyOf(compiled);
       const matches = [];
       doc.descendants((node, pos) => {
         if (!node.isTextblock) return true;
         const { text, spans } = textOfBlock(node, pos);
         if (!spans.length) return false;
-        const haystack = normalize(text);
-        matcher.lastIndex = 0;
-        let found;
-        while ((found = matcher.exec(haystack))) {
-          const start = found.index;
-          const end = start + found[0].length;
-          // « Mot entier » : un mot collé à la correspondance la disqualifie ; la recherche reprend à l'indice suivant (« ana » dans « banana ana »).
-          if (opts.wholeWord && (isWordCharAt(haystack, start - 1) || isWordCharAt(haystack, end))) { matcher.lastIndex = start + 1; continue; }
-          matches.push({ from: positionAt(spans, start), to: positionAt(spans, end - 1) + 1 });
+        const first = matches.length;
+        collect(compiled, text, spans, opts, matches, sticky);
+        const bubbles = bubbleMatches(node, pos, compiled, opts);
+        if (bubbles.length) {
+          const block = matches.splice(first).concat(bubbles).sort((a, b) => a.from - b.from);
+          for (const match of block) matches.push(match);
         }
         return false;
       });
       return matches;
     }
 
-    return { findMatches, OBJECT };
+    // La copie « collante » du motif d'une expression régulière (rejouée à un endroit précis, expandAt), null pour une recherche simple.
+    const stickyOf = compiled => (compiled.pattern ? new RegExp(compiled.regex.source, compiled.regex.flags.replace('g', '') + 'y') : null);
+
+    // Le texte qu'écrit le motif `sticky` à `index` dans `input` (le résultat de `length` signes) : `replacement` avec ses « $1 », « $& », « $<nom> » et
+    // « $$ ». La substitution est celle de String.replace : le motif est rejoué à l'endroit du résultat, sur le texte d'où il vient, pour que les
+    // assertions (« (?<=…) ») voient la même chose qu'à la recherche.
+    function expandAt(sticky, input, index, length, replacement) {
+      sticky.lastIndex = index;
+      const replaced = input.replace(sticky, replacement);
+      return replaced.slice(index, replaced.length - (input.length - index - length));
+    }
+
+    // Le texte qui remplace `match` : `replacement` tel quel, ou, pour le résultat d'une expression régulière, avec ses groupes (expandAt).
+    function expandReplacement(match, replacement) {
+      const source = SOURCES.get(match);
+      return source ? expandAt(source.sticky, source.input, source.index, source.length, replacement) : replacement;
+    }
+
+    // `input` avec `replacement` à la place de chaque résultat du motif (le texte d'une bulle).
+    function replaceText(compiled, sticky, input, opts, replacement) {
+      let out = '';
+      let last = 0;
+      scan(compiled, compiled.pattern ? input : normalize(input), opts, (start, end) => {
+        out += input.slice(last, start) + (sticky ? expandAt(sticky, input, start, end - start, replacement) : replacement);
+        last = end;
+      });
+      return out + input.slice(last);
+    }
+
+    // Le remplacement dans une bulle : { attrs } - ceux de la bulle une fois `replacement` mis à la place de ce que `query` trouve dans son « Avant » et son
+    // « Après » (et dans ceux de son « sinon », ou dans le texte de son « sinon » en texte et variables, hors de ses variables) - ou { reason } quand rien ne change :
+    // 'name' (le résultat n'est que dans son nom ou celui de son « sinon » : la bulle suit une colonne), 'formula' (la formule d'un calcul), 'tooLong' (le nouveau
+    // texte dépasserait ce qu'un « Avant » ou un « Après » peut garder), 'tooLongOtherwise' (ou ce que peut garder le texte d'un sinon).
+    function replaceInBubble(node, query, options, replacement) {
+      const opts = options || {};
+      const compiled = compile(query, opts);
+      if (!compiled.regex) return { reason: 'name' };
+      if (node.type.name !== 'varBadge') return { reason: 'formula' };
+      const sticky = stickyOf(compiled);
+      let tooLong = false;
+      let tooLongOtherwise = false;
+      let changed = false;
+      const edit = value => {
+        if (!value) return value;
+        const out = replaceText(compiled, sticky, value, opts, replacement);
+        if (out === value) return value;
+        if (out.length > VariableFormat.AFFIX_MAX) { tooLong = true; return value; }
+        changed = true;
+        return VariableFormat.affix(out);
+      };
+      const attrs = Object.assign({}, node.attrs, { before: edit(node.attrs.before), after: edit(node.attrs.after) });
+      if (node.attrs.otherwise) attrs.otherwise = Object.assign({}, node.attrs.otherwise, { before: edit(node.attrs.otherwise.before), after: edit(node.attrs.otherwise.after) });
+      if (node.attrs.otherwiseText) {
+        // Seuls les morceaux de texte se remplacent : une variable du sinon suit sa colonne, comme le nom de la bulle.
+        let touched = false;
+        const items = FieldCodec.itemsOf(node.attrs.otherwiseText).map(item => {
+          if (!FieldCodec.isText(item)) return item;
+          const out = replaceText(compiled, sticky, item.text, opts, replacement);
+          if (out === item.text) return item;
+          touched = true;
+          return { text: out };
+        });
+        if (touched && FieldCodec.serializePlain(items).length > VariableOtherwise.TEXT_MAX) tooLongOtherwise = true;
+        else if (touched) { attrs.otherwiseText = FieldCodec.toStored(items, { keepSpaces: true }); changed = true; }
+      }
+      return changed ? { attrs } : { reason: tooLong ? 'tooLong' : (tooLongOtherwise ? 'tooLongOtherwise' : 'name') };
+    }
+
+    return { findMatches, compile, expandReplacement, isBubble, replaceInBubble, escapeRegex, OBJECT };
   })();
 
   // L'état de la recherche
   const META = 'ppFindReplace';
-  const state = { open: false, query: '', replacement: '', matchCase: false, wholeWord: false, replaceVisible: false, flash: '', flashDoc: null };
+  const state = { open: false, query: '', replacement: '', matchCase: false, wholeWord: false, regex: false, replaceVisible: false, flash: '', flashDoc: null };
   let win = null; // { from, to } : positions du document que couvre le surlignage quand il y a plus de ALL_BELOW résultats (placeWindow)
-  let bar = null;
+  let findBar = null;
   let refs = null;
 
   const editor = () => EditorCore.getEditor();
 
   // Surlignage et raccourcis (une extension TipTap)
-  const { currentMatches, indexOfSelection, refresh, scheduleWindow, placeWindow, createExtension } = (function () {
+  const { currentMatches, allStories, indexOfSelection, refresh, scheduleWindow, placeWindow, createExtension } = (function () {
     // Un surlignage par résultat, c'est un <span> par résultat à poser (et à recalculer) à chaque lettre tapée : 38 760 pour un « e » dans 120 pages,
     // plus d'une seconde et demie. Au-delà de ALL_BELOW résultats, seuls ceux de l'écran et de ses abords (`win`) sont surlignés ; le compteur, Entrée
     // et « Tout remplacer » comptent et parcourent tous les résultats, surlignés ou non.
     const ALL_BELOW = 500;
     const MIN_SPAN = 100; // marge de part et d'autre de l'écran : autant de résultats que l'écran en montre, entre MIN_SPAN et MAX_SPAN
     const MAX_SPAN = 1000;
-    let cache = null; // { doc, query, matchCase, wholeWord, matches } : les résultats d'un même document ne se recalculent pas à chaque transaction
+    let cache = null; // { doc, query, matchCase, wholeWord, regex, matches } : les résultats d'un même document ne se recalculent pas à chaque transaction
     let windowPending = false;
-    let pm = null; // { Plugin, PluginKey, Decoration, DecorationSet } de ProseMirror, fournis par js/editor.js
+    let pm = null; // { Plugin, PluginKey, Decoration, DecorationSet, PMDOMParser } de ProseMirror, fournis par js/editor.js
 
     function currentMatches(pmState) {
       if (!state.query) return [];
-      if (!cache || cache.doc !== pmState.doc || cache.query !== state.query || cache.matchCase !== state.matchCase || cache.wholeWord !== state.wholeWord) {
-        cache = { doc: pmState.doc, query: state.query, matchCase: state.matchCase, wholeWord: state.wholeWord, matches: findMatches(pmState.doc, state.query, state) };
+      if (!cache || cache.doc !== pmState.doc || cache.query !== state.query || cache.matchCase !== state.matchCase || cache.wholeWord !== state.wholeWord || cache.regex !== state.regex) {
+        cache = { doc: pmState.doc, query: state.query, matchCase: state.matchCase, wholeWord: state.wholeWord, regex: state.regex, matches: findMatches(pmState.doc, state.query, state) };
       }
       return cache.matches;
+    }
+
+    // Les résultats des textes que l'éditeur ne contient pas : l'en-tête et le pied de page quand il contient le corps, le corps et l'autre zone quand il contient une zone. Leur
+    // HTML est lu avec le schéma de l'éditeur, comme à son chargement, puis cherché comme un document ; un texte qui n'a pas changé (même HTML, même requête) n'est pas relu.
+    const hidden = new Map(); // id d'un texte -> { html, query, matchCase, wholeWord, regex, matches }
+    function hiddenMatches(story) {
+      if (!state.query) return [];
+      const kept = hidden.get(story.id);
+      if (kept && kept.html === story.html && kept.query === state.query && kept.matchCase === state.matchCase && kept.wholeWord === state.wholeWord && kept.regex === state.regex) return kept.matches;
+      let matches = [];
+      try {
+        matches = findMatches(pm.PMDOMParser.fromSchema(editor().schema).parse(HtmlSanitize.parseInert(story.html || '')), state.query, state);
+      } catch (error) { /* un fragment illisible ne trouve rien */ }
+      hidden.set(story.id, { html: story.html, query: state.query, matchCase: state.matchCase, wholeWord: state.wholeWord, regex: state.regex, matches });
+      return matches;
+    }
+
+    // Les textes du modèle dans l'ordre de la page, chacun avec ses résultats : [{ id, live, matches }]. Ceux du texte que l'éditeur contient sont ceux du document
+    // (currentMatches) ; il n'y a qu'un texte tant que le modèle n'a ni en-tête ni pied.
+    function allStories(pmState) {
+      const live = currentMatches(pmState);
+      const listed = state.query ? HeaderFooterPreview.listStories() : [];
+      if (listed.length < 2) return [{ id: 'main', live: true, matches: live }];
+      return listed.map(story => ({ id: story.id, live: story.live, matches: story.live ? live : hiddenMatches(story) }));
     }
 
     // Premier indice de 0 à `length` pour lequel `test` est vrai (`test` est faux puis vrai : les résultats suivent l'ordre du document), `length` si
@@ -171,7 +373,7 @@ const FindReplace = (function () {
       return pm.DecorationSet.create(pmState.doc, shown);
     }
 
-    // pmClasses : { Plugin, PluginKey, Decoration, DecorationSet } (js/editor.js les importe déjà).
+    // pmClasses : { Plugin, PluginKey, Decoration, DecorationSet, PMDOMParser } (js/editor.js les importe déjà).
     function createExtension(Extension, pmClasses) {
       pm = pmClasses;
       return Extension.create({
@@ -182,8 +384,8 @@ const FindReplace = (function () {
       });
     }
 
-    // Redessine le surlignage et le compteur sans toucher au document : une transaction vide, comme partout ailleurs dans l'éditeur (cf. Editor.init,
-    // I18n.onChange). `windowOnly` : la demande vient de placeWindow, qui n'a pas à se remesurer après elle-même.
+    // Redessine le surlignage et le compteur sans toucher au document : une transaction vide, comme partout ailleurs dans l'éditeur (cf. Editor.setHTML).
+    // `windowOnly` : la demande vient de placeWindow, qui n'a pas à se remesurer après elle-même.
     function refresh(windowOnly) {
       const ed = editor();
       if (ed) ed.view.dispatch(ed.state.tr.setMeta(META, windowOnly ? 'window' : true));
@@ -227,11 +429,34 @@ const FindReplace = (function () {
       queueMicrotask(() => { windowPending = false; placeWindow(); });
     }
 
-    return { currentMatches, indexOfSelection, refresh, scheduleWindow, placeWindow, createExtension };
+    return { currentMatches, allStories, indexOfSelection, refresh, scheduleWindow, placeWindow, createExtension };
   })();
 
   // Les actions sur les résultats : aller de l'un à l'autre, remplacer (le message qui le dit vient du panneau, plus bas : `setFlash`).
-  const { go, applyQuery, replaceCurrent, replaceAll } = (function () {
+  const { go, applyQuery, replaceCurrent, replaceAll, reopenForUndo, forgetReplacement } = (function () {
+    // Annuler juste après « Remplacer » : quand le remplacement a fait passer la recherche à un AUTRE texte (le pied s'ouvre sous les yeux), l'éditeur ne contient plus le texte
+    // du remplacement, et Annuler défaisait celui qu'on vient d'ouvrir (souvent rien). On retient où le remplacement a été fait (`id`), le texte où la recherche a atterri
+    // (`landedId`) et son contenu (`landed`) ; le premier Annuler qui suit, tant que ce texte est toujours ouvert et n'a pas changé (rien tapé, rien mis en forme), commence par
+    // rouvrir le texte du remplacement (reopenForUndo), et c'est lui que l'Annuler défait. Tout autre geste de la recherche (suivant, précédent, nouvelle requête, autre
+    // remplacement, fermeture du panneau) l'oublie.
+    let afterReplace = null; // { id, landedId, landed } | null
+
+    const liveStoryId = () => { const mode = HeaderFooterPreview.getHfMode(); return mode ? mode.zone + ':' + mode.variant : 'main'; };
+
+    function forgetReplacement() { afterReplace = null; }
+
+    // Appelé juste avant tout Annuler du modèle (Ctrl+Z dans le texte ou sur le panneau, bouton Annuler de la barre) : rouvre le texte du dernier remplacement quand la recherche
+    // l'a quitté juste après et que rien n'a bougé depuis. Vrai quand il a rouvert ce texte. Sert une seule fois : l'Annuler d'après défait le texte ouvert, comme toujours.
+    function reopenForUndo() {
+      const pending = afterReplace;
+      afterReplace = null;
+      const ed = editor();
+      if (!pending || !ed || liveStoryId() !== pending.landedId || !ed.state.doc.eq(pending.landed)) return false;
+      if (!HeaderFooterPreview.openStory(pending.id)) return false;
+      win = null; // les résultats sont ceux d'un autre document : la fenêtre de surlignage se repose
+      return true;
+    }
+
     // Se placer sur un résultat
     // Le résultat devient la sélection de l'éditeur (le panneau garde le focus : ProseMirror ne touche pas à la sélection du navigateur quand il ne l'a
     // pas) ; son surlignage vient des décorations, la sélection du navigateur étant alors dans le champ de recherche. La zone de défilement amène le
@@ -255,28 +480,56 @@ const FindReplace = (function () {
       scroller.scrollTop += (rect.top + rect.bottom) / 2 - (box.top + box.bottom) / 2;
     }
 
-    // Suivant (ou précédent) à partir de la sélection, en repartant de l'autre bout du document quand il n'y en a plus.
-    function go(backwards) {
+    // Passe à un autre texte du modèle (l'éditeur y entre, comme après un clic sur la marge d'en-tête) et s'y place sur son résultat `ordinal` (-1 : le dernier). Les résultats du
+    // texte qu'on quitte ne sont plus ceux de l'écran, ceux du nouveau se recalculent d'après son document.
+    function openAndSelect(id, ordinal) {
+      if (!HeaderFooterPreview.openStory(id)) return false;
+      win = null;
+      const matches = currentMatches(editor().state);
+      if (!matches.length) return false;
+      state.flash = '';
+      select(matches[ordinal < 0 ? matches.length - 1 : Math.min(ordinal, matches.length - 1)]);
+      return true;
+    }
+
+    // Le premier résultat d'un AUTRE texte, en allant vers la fin de la page (ou vers son début) et en repartant de l'autre bout : on y entre et on s'y place. Faux quand il
+    // n'y en a nulle part ailleurs.
+    function goElsewhere(backwards) {
+      const stories = allStories(editor().state);
+      const at = stories.findIndex(story => story.live);
+      for (let step = 1; step < stories.length; step++) {
+        const story = stories[(((backwards ? at - step : at + step) % stories.length) + stories.length) % stories.length];
+        if (story.matches.length && openAndSelect(story.id, backwards ? -1 : 0)) return true;
+      }
+      return false;
+    }
+
+    // Suivant (ou précédent) à partir de la sélection ; quand il n'y en a plus dans ce texte, dans le texte suivant du modèle (l'en-tête, le corps, le pied : on y entre), et
+    // en repartant de l'autre bout quand il n'y en a plus nulle part.
+    function goToMatch(backwards) {
+      afterReplace = null;
       const ed = editor();
       if (!ed || !state.query) return false;
       const matches = currentMatches(ed.state);
-      if (!matches.length) return false;
       const { from, to } = ed.state.selection;
       let target;
       if (backwards) {
         for (let i = matches.length - 1; i >= 0 && !target; i--) if (matches[i].to <= from) target = matches[i];
-        if (!target) target = matches[matches.length - 1];
       } else {
-        target = matches.find(m => m.from >= to) || matches[0];
+        target = matches.find(m => m.from >= to);
       }
+      if (target) { state.flash = ''; select(target); return true; }
+      if (goElsewhere(backwards)) return true;
+      if (!matches.length) return false;
       state.flash = '';
-      select(target);
+      select(backwards ? matches[matches.length - 1] : matches[0]);
       return true;
     }
 
     // La requête ou une option vient de changer : on se place sur le premier résultat à partir du début de la sélection (la frappe d'un mot qui
     // s'allonge reste donc sur place).
     function applyQuery() {
+      afterReplace = null;
       const ed = editor();
       if (!ed) return;
       win = null; // d'autres résultats : la fenêtre de surlignage se repose autour de la sélection, puis d'après l'écran (placeWindow)
@@ -305,6 +558,20 @@ const FindReplace = (function () {
       else tr.delete(match.from, match.to);
     }
 
+    const KEPT_TEXT = { name: 'find.bubble.name', formula: 'find.bubble.formula', tooLong: 'find.bubble.tooLong', tooLongOtherwise: 'find.bubble.tooLongOtherwise', suggest: 'find.bubble.suggest' };
+    // Remplace `match` dans `tr` : rend null quand il l'est, sinon pourquoi il reste tel quel - 'name' (le résultat n'est que dans le nom d'une bulle, qui
+    // suit une colonne), 'formula' (la formule d'un calcul), 'tooLong' (un « Avant » ou un « Après » trop long), 'tooLongOtherwise' (le texte d'un sinon trop long), 'suggest' (une bulle ne se propose pas en
+    // suppression et insertion : en mode suivi elle reste). Une bulle ne change que par le texte qu'elle porte (« Avant », « Après »), par ses attributs :
+    // sa position et sa taille ne bougent pas, les résultats suivants non plus.
+    function replaceMatch(tr, doc, match, suggest) {
+      if (!isBubble(match)) { replaceInTransaction(tr, doc, match, expandReplacement(match, state.replacement), suggest); return null; }
+      const { attrs, reason } = replaceInBubble(doc.nodeAt(match.from), state.query, state, state.replacement);
+      if (!attrs) return reason;
+      if (suggest) return 'suggest';
+      tr.setNodeMarkup(match.from, null, attrs);
+      return null;
+    }
+
     // Envoie `tr` et rend la transaction réellement appliquée (celle que le pont du suivi a transformée en suggestions, le cas échéant), ou null si
     // elle a été refusée.
     function dispatchAndCapture(tr) {
@@ -319,59 +586,83 @@ const FindReplace = (function () {
     // Remplace le résultat courant, puis se place sur le suivant. Sans résultat courant (la sélection n'est pas sur un résultat), « Remplacer » ne fait
     // que se placer sur le prochain : on voit ce qui va être remplacé avant de le remplacer.
     function replaceCurrent() {
+      afterReplace = null;
       const ed = editor();
       if (!ed || !ed.isEditable || !state.query) return false;
       const matches = currentMatches(ed.state);
       const index = indexOfSelection(matches, ed.state.selection);
-      if (index < 0) return go(false);
+      if (index < 0) return goToMatch(false);
       const match = matches[index];
+      const replacedIn = liveStoryId();
       const tr = ed.state.tr;
-      replaceInTransaction(tr, ed.state.doc, match, state.replacement, Editor.isTrackChangesOn());
+      const kept = replaceMatch(tr, ed.state.doc, match, Editor.isTrackChangesOn());
+      // Une bulle qui ne change pas : on le dit et on passe au résultat suivant, comme après un remplacement.
+      if (kept) { goToMatch(false); setFlash(I18n.t(KEPT_TEXT[kept], { max: kept === 'tooLongOtherwise' ? VariableOtherwise.TEXT_MAX : VariableFormat.AFFIX_MAX })); return false; }
       const applied = dispatchAndCapture(tr);
       if (!applied) { setFlash(I18n.t('find.replaceFailed')); return false; }
       // Ce qui suit le texte qui vient d'être mis : la fin du remplacement dans le document final (en mode suivi, après l'insertion qui suit la
       // suppression).
       const end = applied.mapping.map(match.to, 1);
       const rest = currentMatches(ed.state);
-      const next = rest.find(m => m.from >= end) || rest[0];
+      const next = rest.find(m => m.from >= end);
       state.flash = '';
       if (next) select(next);
-      else {
-        const TextSelection = EditorCore.getTextSelectionClass();
-        ed.view.dispatch(ed.state.tr.setSelection(TextSelection.near(ed.state.doc.resolve(Math.min(end, ed.state.doc.content.size)))).setMeta(META, true));
+      else if (!goElsewhere(false)) {
+        // Plus rien dans les autres textes : on repart du début de celui-ci.
+        if (rest.length) select(rest[0]);
+        else {
+          const TextSelection = EditorCore.getTextSelectionClass();
+          ed.view.dispatch(ed.state.tr.setSelection(TextSelection.near(ed.state.doc.resolve(Math.min(end, ed.state.doc.content.size)))).setMeta(META, true));
+        }
       }
+      // La recherche a quitté le texte du remplacement : le prochain Annuler le rouvre.
+      if (liveStoryId() !== replacedIn) afterReplace = { id: replacedIn, landedId: liveStoryId(), landed: editor().state.doc };
       return true;
     }
 
-    // Tous les résultats en une transaction (donc une seule annulation), du dernier au premier : les positions des résultats d'avant ne bougent pas.
+    // Ce que dit le compteur après « Tout remplacer » : « 3 remplacements, 1 bulle laissée, 2 autres ailleurs » - ce qui a changé, ce qui est resté tel quel, ce qui attend dans
+    // un autre texte du modèle (l'en-tête, le corps, le pied).
+    function replacedFlash(count, kept, elsewhere) {
+      return [count ? I18n.t('find.replaced', { count }) : '', kept ? I18n.t('find.kept', { kept }) : '', elsewhere ? I18n.t('find.elsewhere', { rest: elsewhere }) : ''].filter(Boolean).join(', ');
+    }
+
+    // Tous les résultats DU TEXTE QUE L'ÉDITEUR CONTIENT (le corps, ou l'en-tête ou le pied ouvert) en une transaction (donc une seule annulation), du dernier au premier : les
+    // positions des résultats d'avant ne bougent pas. Ceux des autres textes attendent : l'annulation, elle, n'a qu'un historique par texte.
     function replaceAll() {
+      afterReplace = null;
       const ed = editor();
       if (!ed || !ed.isEditable || !state.query) return 0;
-      const matches = currentMatches(ed.state);
+      const stories = allStories(ed.state);
+      const matches = stories.find(story => story.live).matches;
       if (!matches.length) return 0;
+      const elsewhere = stories.reduce((sum, story) => sum + (story.live ? 0 : story.matches.length), 0);
       const suggest = Editor.isTrackChangesOn();
       const doc = ed.state.doc;
       const tr = ed.state.tr;
-      for (let i = matches.length - 1; i >= 0; i--) replaceInTransaction(tr, doc, matches[i], state.replacement, suggest);
+      let kept = 0;
+      for (let i = matches.length - 1; i >= 0; i--) if (replaceMatch(tr, doc, matches[i], suggest)) kept++;
+      const count = matches.length - kept;
+      // Que des bulles qui ne changent pas : rien à envoyer, le document reste tel quel.
+      if (!count) { setFlash(replacedFlash(0, kept, elsewhere)); return 0; }
       const applied = dispatchAndCapture(tr);
       if (!applied) { setFlash(I18n.t('find.replaceFailed')); return 0; }
-      setFlash(I18n.t('find.replaced', { count: matches.length }));
-      return matches.length;
+      setFlash(replacedFlash(count, kept, elsewhere));
+      return count;
     }
 
-    return { go, applyQuery, replaceCurrent, replaceAll };
+    return { go: goToMatch, applyQuery, replaceCurrent, replaceAll, reopenForUndo, forgetReplacement };
   })();
 
   // Le panneau
-  const { setFlash, open, closePanel, toggleOpen, wireEditor } = (function () {
+  const { setFlash, open, closePanel, toggleOpen, wireEditor, syncOptions, queryError } = (function () {
     const MAX_PREFILL = 120; // une sélection plus longue n'est pas un mot à chercher
     const isMac = () => /Mac|iPhone|iPad/i.test(navigator.platform || navigator.userAgent || '');
 
     function iconButton(icon, className) {
-      const b = el('button', 'pp-find-btn' + (className ? ' ' + className : ''));
-      b.type = 'button';
-      b.innerHTML = Icons.svg(icon);
-      return b;
+      const button = el('button', 'pp-find-btn' + (className ? ' ' + className : ''));
+      button.type = 'button';
+      Dom.setMarkup(button, Icons.svg(icon));
+      return button;
     }
     function field(id) {
       const input = el('input', 'pp-find-input');
@@ -390,12 +681,14 @@ const FindReplace = (function () {
     }
 
     function ensure() {
-      if (bar) return;
+      if (findBar) return;
       const container = document.getElementById('editor-container');
-      bar = el('div', 'pp-find-bar');
-      bar.id = 'pp-find-bar';
-      bar.setAttribute('role', 'search');
-      bar.hidden = true;
+      findBar = el('div', 'pp-find-bar');
+      findBar.id = 'pp-find-bar';
+      findBar.setAttribute('role', 'search');
+      // Ses boutons gardent le focus et le panneau défait lui-même (wirePanel) : le raccourci d'Annuler de js/shortcuts.js ne prend pas la touche ici.
+      findBar.setAttribute('data-own-undo', '');
+      findBar.hidden = true;
 
       const findRow = el('div', 'pp-find-row');
       const toggle = iconButton('chevronRight', 'pp-find-toggle');
@@ -417,9 +710,12 @@ const FindReplace = (function () {
       const wholeWord = iconButton('wholeWord', 'pp-find-option');
       wholeWord.id = 'pp-find-whole-word';
       wholeWord.setAttribute('aria-pressed', 'false');
+      const regex = iconButton('regex', 'pp-find-option');
+      regex.id = 'pp-find-regex';
+      regex.setAttribute('aria-pressed', 'false');
       const close = iconButton('closeFind', 'pp-find-close');
       close.id = 'pp-find-close';
-      findRow.append(toggle, find, count, prev, next, matchCase, wholeWord, close);
+      findRow.append(toggle, find, count, prev, next, matchCase, wholeWord, regex, close);
 
       const replaceRow = el('div', 'pp-find-row');
       replaceRow.id = 'pp-find-replace-row';
@@ -434,31 +730,31 @@ const FindReplace = (function () {
       all.id = 'pp-find-replace-all';
       replaceRow.append(spacer, replacement, one, all);
 
-      bar.append(findRow, replaceRow);
-      container.parentNode.insertBefore(bar, container);
+      findBar.append(findRow, replaceRow);
+      container.parentNode.insertBefore(findBar, container);
       container.addEventListener('scroll', placeWindow, { passive: true });
-      refs = { toggle, find, count, prev, next, matchCase, wholeWord, close, replaceRow, replacement, one, all };
+      refs = { toggle, find, count, prev, next, matchCase, wholeWord, regex, close, replaceRow, replacement, one, all };
       wirePanel();
       applyTexts();
-      I18n.onChange(() => { if (bar) { applyTexts(); updateCount(); } });
     }
 
-    // Textes du panneau, relus à chaque changement de langue. Info-bulle native (title) : le panneau vit hors de #toolbar-top, où s'applique le
+    // Textes du panneau, écrits quand il se bâtit. Info-bulle native (title) : le panneau vit hors de #toolbar-top, où s'applique le
     // [data-tip] de la barre.
     function applyTexts() {
       const t = key => I18n.t(key);
-      bar.setAttribute('aria-label', t('find.aria'));
+      findBar.setAttribute('aria-label', t('find.aria'));
       const label = (button, key) => { button.setAttribute('aria-label', t(key)); button.title = t(key); };
       label(refs.toggle, 'find.toggleReplace');
       label(refs.prev, 'find.prev');
       label(refs.next, 'find.next');
       label(refs.matchCase, 'find.matchCase');
       label(refs.wholeWord, 'find.wholeWord');
+      label(refs.regex, 'find.regex');
       label(refs.close, 'find.close');
       refs.find.setAttribute('aria-label', t('find.find.label'));
       refs.find.placeholder = t('find.find.placeholder');
       refs.replacement.setAttribute('aria-label', t('find.replacement.label'));
-      refs.replacement.placeholder = t('find.replacement.placeholder');
+      refs.replacement.placeholder = t(state.regex ? 'find.replacement.placeholderRegex' : 'find.replacement.placeholder');
       refs.one.textContent = t('find.replaceOne');
       refs.all.textContent = t('find.replaceAll');
     }
@@ -475,34 +771,60 @@ const FindReplace = (function () {
       if (disabled) button.setAttribute('aria-disabled', 'true'); else button.removeAttribute('aria-disabled');
     }
 
+    // L'erreur de l'expression régulière en cours de frappe, null quand le motif est bon, vide, ou que l'option n'est pas allumée.
+    function queryError() {
+      return state.regex && state.query ? compile(state.query, state).error || null : null;
+    }
+    // Le champ dit que son motif est faux (lecteur d'écran : aria-invalid), et l'info-bulle du compteur donne la raison du navigateur, en anglais
+    // dans la plupart d'entre eux : « 3 sur 12 » ne dit pas où est la parenthèse oubliée.
+    function syncRegexError() {
+      const error = queryError();
+      if (error) { refs.find.setAttribute('aria-invalid', 'true'); refs.count.title = error.message; } else { refs.find.removeAttribute('aria-invalid'); refs.count.removeAttribute('title'); }
+    }
+    // Les trois options reflètent l'état de la recherche (il survit à la fermeture du panneau, et `setOptions` peut le changer avant que le panneau n'existe) ;
+    // le champ de remplacement dit ce qu'il comprend selon l'option « Expression régulière ».
+    function syncOptions() {
+      if (!refs) return;
+      for (const key of ['matchCase', 'wholeWord', 'regex']) refs[key].setAttribute('aria-pressed', state[key] ? 'true' : 'false');
+      refs.replacement.placeholder = I18n.t(state.regex ? 'find.replacement.placeholderRegex' : 'find.replacement.placeholder');
+    }
+
     // « 3 sur 12 » quand la sélection est sur un résultat, « 12 résultats » sinon, « Aucun résultat » ; après « Tout remplacer », le nombre de
     // remplacements jusqu'à la prochaine action.
-    function countLabel(matches, index) {
+    // `total` : les résultats de tous les textes du modèle (le corps, l'en-tête, le pied) ; `index` : le rang du résultat courant parmi eux.
+    function countLabel(total, index) {
+      if (queryError()) return { text: I18n.t('find.regexInvalid'), kind: 'error' };
       if (state.flash) return { text: state.flash, kind: 'flash' };
-      if (state.query && !matches.length) return { text: I18n.t('find.count.none'), kind: 'none' };
-      if (!matches.length) return { text: '', kind: 'idle' };
-      return { text: index >= 0 ? I18n.t('find.count.index', { index: index + 1, count: matches.length }) : I18n.t('find.count.total', { count: matches.length }), kind: 'some' };
+      if (state.query && !total) return { text: I18n.t('find.count.none'), kind: 'none' };
+      if (!total) return { text: '', kind: 'idle' };
+      return { text: index >= 0 ? I18n.t('find.count.index', { index: index + 1, count: total }) : I18n.t('find.count.total', { count: total }), kind: 'some' };
     }
     function updateCount() {
-      if (!bar || !refs) return;
+      if (!findBar || !refs) return;
       const ed = editor();
       if (state.flash && ed && ed.state.doc !== state.flashDoc) state.flash = '';
-      const matches = ed ? currentMatches(ed.state) : [];
-      const label = countLabel(matches, ed ? indexOfSelection(matches, ed.state.selection) : -1);
+      const stories = ed ? allStories(ed.state) : [];
+      const at = stories.findIndex(story => story.live);
+      const total = stories.reduce((sum, story) => sum + story.matches.length, 0);
+      const own = at >= 0 ? indexOfSelection(stories[at].matches, ed.state.selection) : -1;
+      const before = stories.slice(0, Math.max(at, 0)).reduce((sum, story) => sum + story.matches.length, 0);
+      const label = countLabel(total, own >= 0 ? before + own : -1);
       if (refs.count.textContent !== label.text) refs.count.textContent = label.text;
       refs.count.dataset.kind = label.kind;
-      const none = !matches.length;
+      syncRegexError();
+      const none = !total;
       setDisabled(refs.prev, none);
       setDisabled(refs.next, none);
+      // « Remplacer » va aussi au résultat d'un autre texte ; « Tout remplacer » agit sur le texte ouvert.
       const canReplace = !none && !!ed && ed.isEditable;
       setDisabled(refs.one, !canReplace);
-      setDisabled(refs.all, !canReplace);
+      setDisabled(refs.all, !canReplace || !stories[at].matches.length);
     }
 
     const isDisabled = button => button.getAttribute('aria-disabled') === 'true';
 
     function wirePanel() {
-      const { toggle, find, prev, next, matchCase, wholeWord, close, replacement, one, all } = refs;
+      const { toggle, find, prev, next, matchCase, wholeWord, regex, close, replacement, one, all } = refs;
       find.addEventListener('input', () => { state.query = find.value; applyQuery(); });
       replacement.addEventListener('input', () => { state.replacement = replacement.value; });
       find.addEventListener('keydown', event => {
@@ -518,7 +840,7 @@ const FindReplace = (function () {
       });
       // Échap ferme depuis n'importe quel contrôle du panneau ; Ctrl+F et Ctrl+H y servent à aller au champ voulu (jamais à la recherche du
       // navigateur).
-      bar.addEventListener('keydown', event => {
+      findBar.addEventListener('keydown', event => {
         if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); closePanel(); return; }
         if (!(event.ctrlKey || event.metaKey) || event.altKey) return;
         const key = event.key.toLowerCase();
@@ -530,19 +852,20 @@ const FindReplace = (function () {
           event.preventDefault();
           const ed = editor();
           if (!ed || !ed.isEditable) return;
-          if (key === 'y' || event.shiftKey) ed.commands.redo(); else ed.commands.undo();
+          if (key === 'y' || event.shiftKey) ed.commands.redo(); else { reopenForUndo(); ed.commands.undo(); }
         }
       });
       toggle.addEventListener('click', () => setReplaceVisible(!state.replaceVisible));
       prev.addEventListener('click', () => { if (!isDisabled(prev)) go(true); });
       next.addEventListener('click', () => { if (!isDisabled(next)) go(false); });
-      const toggleOption = (button, key) => {
+      const toggleOption = key => {
         state[key] = !state[key];
-        button.setAttribute('aria-pressed', state[key] ? 'true' : 'false');
+        syncOptions();
         applyQuery();
       };
-      matchCase.addEventListener('click', () => toggleOption(matchCase, 'matchCase'));
-      wholeWord.addEventListener('click', () => toggleOption(wholeWord, 'wholeWord'));
+      matchCase.addEventListener('click', () => toggleOption('matchCase'));
+      wholeWord.addEventListener('click', () => toggleOption('wholeWord'));
+      regex.addEventListener('click', () => toggleOption('regex'));
       close.addEventListener('click', () => closePanel());
       one.addEventListener('click', () => { if (!isDisabled(one)) replaceCurrent(); });
       all.addEventListener('click', () => { if (!isDisabled(all)) replaceAll(); });
@@ -579,11 +902,12 @@ const FindReplace = (function () {
       ensure();
       const wantReplace = !!(options && options.replace) && ed.isEditable;
       const prefill = selectedQuery(ed);
-      if (prefill !== null) state.query = prefill;
+      if (prefill !== null) state.query = state.regex ? escapeRegex(prefill) : prefill; // en expression régulière, le mot repris se cherche tel quel
       refs.find.value = state.query;
       refs.replacement.value = state.replacement;
+      syncOptions();
       state.open = true;
-      bar.hidden = false;
+      findBar.hidden = false;
       setReplaceVisible(ed.isEditable && (wantReplace || state.replaceVisible));
       state.flash = '';
       updateToolbarButton(true);
@@ -598,8 +922,9 @@ const FindReplace = (function () {
     function closePanel(options) {
       if (!state.open) return;
       state.open = false;
+      forgetReplacement();
       win = null;
-      if (bar) bar.hidden = true;
+      if (findBar) findBar.hidden = true;
       updateToolbarButton(false);
       const ed = editor();
       if (!ed) return;
@@ -619,6 +944,19 @@ const FindReplace = (function () {
       if (open({ replace: key === 'h' })) event.preventDefault();
     }
 
+    // Annuler (Ctrl+Z dans le texte, bouton Annuler de la barre) juste après un « Remplacer » qui a changé de texte : on rouvre d'abord le texte du remplacement (reopenForUndo), et
+    // l'Annuler habituel, celui de l'éditeur ou du bouton, le défait. En capture, pour passer avant l'éditeur et avant le bouton, sans rien leur retirer ni les remplacer. Le panneau
+    // fait de même pour ses propres boutons (wirePanel) ; un champ (celui du panneau, une fenêtre) défait sa frappe, il n'est pas concerné.
+    function onUndoKeydown(event) {
+      if (event.defaultPrevented || event.altKey || event.shiftKey || event.isComposing || !(isMac() ? event.metaKey : event.ctrlKey)) return;
+      if ((event.key || '').toLowerCase() !== 'z') return;
+      const ed = editor();
+      if (ed && ed.view.dom.contains(event.target)) reopenForUndo();
+    }
+    function onUndoClick(event) {
+      if (event.target.closest && event.target.closest('#v2-btn-undo')) reopenForUndo();
+    }
+
     function wireEditor(ed) {
       ed.on('transaction', ({ transaction }) => {
         if (!state.open) return;
@@ -626,6 +964,11 @@ const FindReplace = (function () {
         if (!transaction || transaction.getMeta(META) !== 'window') scheduleWindow();
       });
       document.addEventListener('keydown', onDocumentKeydown);
+      document.addEventListener('keydown', onUndoKeydown, true);
+      document.addEventListener('click', onUndoClick, true);
+      // Le compteur compte aussi l'en-tête et le pied : il suit « Première page différente » et le chargement d'un modèle, qui ne passent par aucune transaction. Un autre modèle, ou
+      // d'autres textes, ne sont plus ceux du dernier remplacement : Annuler ne le rouvre plus.
+      HeaderFooterPreview.onStoriesChange(() => { forgetReplacement(); if (state.open) updateCount(); });
     }
 
     // La loupe de la barre : ouvre le panneau, ou le ferme quand il est déjà ouvert.
@@ -633,18 +976,19 @@ const FindReplace = (function () {
       if (state.open) closePanel(); else open({ replace: false });
     }
 
-    return { setFlash, open, closePanel, toggleOpen, wireEditor };
+    return { setFlash, open, closePanel, toggleOpen, wireEditor, syncOptions, queryError };
   })();
 
   return {
-    findMatches, createExtension, wireEditor, open, close: closePanel, toggle: toggleOpen,
-    isOpen: () => state.open,
+    findMatches, isBubble, createExtension, wireEditor, open, close: closePanel, toggle: toggleOpen,
+    isOpen: () => state.open, queryError,
     next: () => go(false), prev: () => go(true), replaceCurrent, replaceAll,
     setQuery(query) { state.query = String(query == null ? '' : query); if (refs) refs.find.value = state.query; applyQuery(); },
     setOptions(options) {
       if (options && options.matchCase !== undefined) state.matchCase = !!options.matchCase;
       if (options && options.wholeWord !== undefined) state.wholeWord = !!options.wholeWord;
-      if (refs) { refs.matchCase.setAttribute('aria-pressed', state.matchCase ? 'true' : 'false'); refs.wholeWord.setAttribute('aria-pressed', state.wholeWord ? 'true' : 'false'); }
+      if (options && options.regex !== undefined) state.regex = !!options.regex;
+      syncOptions();
       applyQuery();
     },
     setReplacement(text) { state.replacement = String(text == null ? '' : text); if (refs) refs.replacement.value = state.replacement; },

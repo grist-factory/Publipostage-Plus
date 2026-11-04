@@ -8,24 +8,31 @@ const MainToolbar = (function () {
   // Type du modèle courant, posé par js/main.js et relu à chaque syncToolbarState (comme le mode en-tête/pied de HeaderFooterPreview.getHfMode()).
   let inEmailMode = false;
   function setEmailMode(active) { inEmailMode = !!active; }
+  const isEmailMode = () => inEmailMode;
   // Un macro-modèle n'a aucun corps de document (l'éditeur partagé reste vide) : il grise plus de boutons qu'un e-mail.
   let inMacroMode = false;
   function setMacroMode(active) { inMacroMode = !!active; }
   // Une grille est un tableau unique, sans feuille. GRID_LOCKED_IDS liste ce qui n'y a aucun sens : grisé, jamais retiré. « Lien » reste actif (un
   // lien dans une case a un sens), le QR code aussi : il se pose sur sa case et l'Excel le dessine. Un bouton qui ouvre un autre type de bloc dans le
   // menu « Lien et blocs de contenu » s'ajoute à cette liste, sauf une image. Le saut de page n'en fait pas partie : il se pose avant la ligne
-  // sélectionnée (GridEditor.togglePageBreak) et ne se grise que là où il n'a pas de sens (syncLocks).
+  // sélectionnée (GridEditor.togglePageBreak) et ne se grise que là où il n'a pas de sens (syncLocks). Il fait de même dans un tableau de document.
   let inGridMode = false;
   function setGridMode(active) { inGridMode = !!active; }
   const GRID_LOCKED_IDS = [
     'v2-btn-table', 'v2-btn-two-columns', 'v2-btn-toc',
-    'v2-btn-citation', 'v2-btn-code-block', 'v2-btn-callout', 'v2-btn-signature',
-    'v2-btn-track-changes', 'v2-btn-accept-all', 'v2-btn-reject-all',
+    'v2-btn-citation', 'v2-btn-code-block', 'v2-btn-callout', 'v2-btn-signature', 'v2-btn-linked-table', 'v2-btn-slide-text',
+    'v2-btn-track-changes', 'v2-btn-accept-all', 'v2-btn-reject-all', 'v2-collab-group',
   ];
   const gridLockedIds = new Set();
+  // Les cases d'un tableau lié à un modèle Grille suivent les règles d'une grille (js/linked-table.js) : le curseur dans l'un d'eux, ce qui poserait un tableau, des
+  // colonnes, un sommaire, une citation, un bloc de code ou un encadré dans la case se grise, comme dans une grille. Pas le bloc de signature : il se pose SOUS le
+  // tableau (Callout.insertSignature, au premier niveau du document), hors de la case, comme sous n'importe quel tableau.
+  const LINKED_LOCKED_IDS = ['v2-btn-table', 'v2-btn-two-columns', 'v2-btn-toc', 'v2-btn-citation', 'v2-btn-code-block', 'v2-btn-callout', 'v2-btn-slide-text'];
+  const linkedLockedIds = new Set();
 
   // Liste simple des colonnes Attachments (message « aucune colonne » et repli de la liste avec recherche) : un choix insère une image liée à la
-  // #Variable, résolue en vraie image en Lecture et à l'export.
+  // #Variable, résolue en vraie image en Lecture et à l'export - la même que pose la liste « # » pour une colonne Pièces jointes
+  // (Variables.insertAttachmentImage), avec la même clé de correspondance demandée pour une table pas encore liée.
   let imageVarPickerBox = null;
   function ensureImageVarPickerBox() {
     if (imageVarPickerBox) return imageVarPickerBox;
@@ -40,7 +47,8 @@ const MainToolbar = (function () {
     });
     return imageVarPickerBox;
   }
-  const insertVariableImage = v => editor.chain().focus().insertImage({ varTable: v.table, varColumn: v.column, varKey: v.key, width: '320px', height: '240px' }).run();
+  // La clé refusée ne pose rien : le focus revient alors à l'éditeur, où la personne était.
+  const insertVariableImage = async v => { if (!(await Variables.insertAttachmentImage(editor, v))) editor.commands.focus(); };
   // Liste avec recherche (js/search-select.js), comme chaque choix de colonne de l'interface : elle s'ouvre à côté de la ligne « Image depuis une
   // variable ». Un <select> caché, dans un conteneur à part, porte les colonnes et reçoit `change` au choix : l'insertion se fait là.
   let imageVarSearch = null;
@@ -70,6 +78,7 @@ const MainToolbar = (function () {
         const option = document.createElement('option');
         option.value = v.key;
         option.textContent = v.key;
+        option.dataset.search = Variables.columnSearchText(v.table, v.column);
         select.appendChild(option);
       });
       host.appendChild(select);
@@ -79,8 +88,9 @@ const MainToolbar = (function () {
         popup: true,
         anchor: () => anchorRectOf(anchorEl),
         // Défait après l'évènement en cours : un blur ou un clic qui ferme le panneau ne doit pas retirer l'élément qui le porte. Le focus revient à
-        // l'éditeur après Échap ou un choix, pas après un clic ailleurs.
-        onClose: refocus => { if (refocus) editor.commands.focus(); setTimeout(() => closeImageVariableSearch(instance), 0); },
+        // l'éditeur après Échap, pas après un clic ailleurs ; après un choix, c'est l'insertion qui le rend (insertVariableImage) : la clé de
+        // correspondance peut ouvrir une fenêtre qui prend le focus, et celui de l'éditeur, différé d'une image, le lui reprendrait (Échap n'y fermerait plus rien).
+        onClose: refocus => { if (refocus && select.selectedIndex < 0) editor.commands.focus(); setTimeout(() => closeImageVariableSearch(instance), 0); },
       });
       instance = { host, search };
       imageVarSearch = instance;
@@ -99,8 +109,7 @@ const MainToolbar = (function () {
   async function openImageVariablePicker(anchorEl) {
     await GristAPI.refreshSchema().catch(() => {});
     // Colonnes de la table de la page en tête (celles de la table parcourue par la zone répétée où est le curseur avant elles), comme la liste « # ».
-    const candidates = Variables.prioritizeTables(
-      GristAPI.getAllVariables().filter(v => GristAPI.getColumnType(v.table, v.column) === 'Attachments'), Variables.currentTables(editor));
+    const candidates = Variables.prioritizeTables(GristAPI.getAllVariables().filter(Variables.isAttachmentColumn), Variables.currentTables(editor));
     // Liste avec recherche d'abord ; la liste simple sert au message « aucune colonne » et quand le composant est indisponible.
     if (candidates.length) {
       if (imageVarPickerBox) imageVarPickerBox.style.display = 'none';
@@ -170,7 +179,7 @@ const MainToolbar = (function () {
     return choice === 'embed' ? urlToDataUriOrWarn(url) : null;
   }
   function applyToolbarIcons() {
-    const set = (id, icon) => { const el = byId(id); if (el) el.innerHTML = Icons.svg(icon); };
+    const set = (id, icon) => { const el = byId(id); if (el) Dom.setMarkup(el, Icons.svg(icon)); };
     set('v2-btn-bold', 'bold'); set('v2-btn-italic', 'italic');
     set('v2-btn-underline', 'underline'); set('v2-btn-strike', 'strike');
     set('v2-btn-align-left', 'alignLeft'); set('v2-btn-align-center', 'alignCenter');
@@ -188,16 +197,24 @@ const MainToolbar = (function () {
     set('v2-btn-two-columns', 'twoColumns'); set('v2-btn-image', 'image');
     set('v2-btn-page-break', 'pageBreak'); set('v2-btn-toc', 'toc');
     set('v2-btn-comment', 'comment');
-    // Menu « Lien et blocs de contenu » (js/link-dialog.js, js/callout.js, js/qr-code.js) : le bouton porte l'icône du lien, chaque ligne la sienne.
-    set('v2-btn-link', 'link');
-    const setRowIcon = (id, icon) => { const slot = document.querySelector('#' + id + ' .v2-menu-row-icon'); if (slot) slot.innerHTML = Icons.svg(icon); };
-    setRowIcon('v2-row-link', 'link'); setRowIcon('v2-btn-citation', 'blockquote'); setRowIcon('v2-btn-code-block', 'codeBlock');
-    setRowIcon('v2-btn-callout', 'callout'); setRowIcon('v2-btn-signature', 'signature'); setRowIcon('v2-btn-qr', 'qr');
+    // Menu « Lien et blocs de contenu » (js/link-dialog.js, js/callout.js, js/qr-code.js, js/chart-entry.js) : le bouton porte l'icône des blocs (celle du lien seul ne
+    // disait que « lien »), chaque ligne la sienne - « Lien… » garde le maillon.
+    set('v2-btn-link', 'blocks');
+    const setRowIcon = (id, icon) => { const slot = document.querySelector('#' + id + ' .v2-menu-row-icon'); if (slot) Dom.setMarkup(slot, Icons.svg(icon)); };
+    setRowIcon('v2-row-link', 'link'); setRowIcon('v2-row-bookmark', 'bookmark'); setRowIcon('v2-btn-citation', 'blockquote'); setRowIcon('v2-btn-code-block', 'codeBlock');
+    setRowIcon('v2-btn-callout', 'callout'); setRowIcon('v2-btn-signature', 'signature'); setRowIcon('v2-btn-qr', 'qr'); setRowIcon('v2-btn-chart', 'chart'); setRowIcon('v2-btn-chart-make', 'chartMake');
+    setRowIcon('v2-btn-linked-table', 'linkedTable'); setRowIcon('v2-btn-slide-text', 'slideImport');
+    // « Aa » (js/character-format.js) : le menu des réglages de caractère, après Barré ; Exposant et Indice (js/script-marks.js) en tête de ce menu.
+    set('v2-btn-char-main', 'character');
+    set('v2-btn-superscript', 'superscript'); set('v2-btn-subscript', 'subscript');
     set('v2-btn-insert-variable', 'variable');
     set('v2-btn-undo', 'undo'); set('v2-btn-redo', 'redo');
     set('v2-btn-find', 'search');
-    set('v2-btn-track-changes', 'trackChanges');
-    set('v2-btn-accept-all', 'acceptAll'); set('v2-btn-reject-all', 'rejectAll');
+    // Menu « Édition collaborative » : le bouton porte l'icône des deux personnes, chaque ligne celle de l'ancien bouton qu'elle remplace.
+    set('v2-btn-collab', 'collab');
+    setRowIcon('v2-btn-track-changes', 'trackChanges');
+    setRowIcon('v2-btn-accept-all', 'acceptAll'); setRowIcon('v2-btn-reject-all', 'rejectAll');
+    setRowIcon('v2-btn-live', 'liveWrite');
     set('v2-highlight-icon', 'highlight');
     set('v2-btn-format-painter', 'formatPainter');
     set('v2-color-text-caret', 'caretDown'); set('v2-color-highlight-caret', 'caretDown');
@@ -205,8 +222,17 @@ const MainToolbar = (function () {
   }
 
   const setActive = (id, on) => { const el = byId(id); if (el) el.classList.toggle('is-active', !!on); };
-  const setDisabled = (id, off) => { const el = byId(id); if (el) el.disabled = !!off; };
+  // Un bouton `disabled` du navigateur ne reçoit aucun clic : `reason` (une clé de js/i18n.js) est son info-bulle quand il est grisé (cause « state » de js/lock-reasons.js), rendue à son dégrisé.
+  const setDisabled = (id, off, reason) => {
+    const el = byId(id);
+    if (!el) return;
+    el.disabled = !!off;
+    if (reason) LockReasons.set(el, 'state', off ? I18n.t(reason) : '');
+  };
   const MARK_BUTTONS = { 'v2-btn-bold': 'bold', 'v2-btn-italic': 'italic', 'v2-btn-underline': 'underline', 'v2-btn-strike': 'strike' };
+  // « Exposant » et « Indice » (js/script-marks.js) : les deux icônes en tête du menu « Aa », enfoncées comme Gras quand le texte du curseur porte la
+  // marque, et dites aussi aux lecteurs d'écran (`aria-pressed`) : le menu est fermé tant qu'on ne le survole pas.
+  const SCRIPT_BUTTONS = { 'v2-btn-superscript': 'superscript', 'v2-btn-subscript': 'subscript' };
   const ALIGNMENTS = ['left', 'center', 'right', 'justify'];
   // Pour chaque liste : l'attribut qui porte son style, le style par défaut (sans attribut), la commande qui la pose et le bouton de chaque style.
   // Dans la liste du curseur, le bouton de son style est enfoncé.
@@ -231,19 +257,35 @@ const MainToolbar = (function () {
     syncTextButtons();
     syncBlockButtons();
     syncPageBreakButton();
-    syncGridLocks(syncLocks());
+    const lockedNow = syncLocks();
+    syncGridLocks(lockedNow);
+    syncLinkedLocks(lockedNow);
     syncHeadingChip();
+    syncHeadingNumbering();
     syncTextStyleChips();
+    // « Objets » : grisé, avec sa raison dans son menu, hors d'une présentation (js/objects-menu.js).
+    ObjectsMenu.sync();
   }
 
   function syncTextButtons() {
-    Object.entries(MARK_BUTTONS).forEach(([id, mark]) => setActive(id, editor.isActive(mark)));
+    // Des cases sans texte sélectionnées : la barre montre le style de frappe qu'elles gardent (js/typing-style.js), faute de texte à lire.
+    const typing = TypingStyle.commonStyle(editor.state.selection) || {};
+    Object.entries(MARK_BUTTONS).forEach(([id, mark]) => setActive(id, editor.isActive(mark) || !!typing[mark]));
+    Object.entries(SCRIPT_BUTTONS).forEach(([id, mark]) => {
+      const on = editor.isActive(mark) || !!typing[mark];
+      setActive(id, on);
+      const button = byId(id);
+      if (button) button.setAttribute('aria-pressed', on ? 'true' : 'false');
+    });
+    // « Aa » est enfoncé dès que le texte du curseur porte un des réglages de son menu : exposant, indice, petites capitales, ombre, contour ou espacement.
+    const character = editor.getAttributes('textStyle');
+    setActive('v2-btn-char-main', editor.isActive('superscript') || editor.isActive('subscript') || !!(character.fontVariant || character.textShadow || character.textStroke || character.letterSpacing));
     const aligned = ALIGNMENTS.filter(a => editor.isActive({ textAlign: a }));
     ALIGNMENTS.forEach(a => setActive('v2-btn-align-' + a, aligned.includes(a)));
     // Le bouton principal du groupe « Alignement » montre l'alignement du curseur ; son clic le réapplique (currentAlign).
     currentAlign = aligned[0] || 'left';
     const alignMain = byId('v2-btn-align-main');
-    if (alignMain) alignMain.innerHTML = Icons.svg('align' + currentAlign[0].toUpperCase() + currentAlign.slice(1));
+    if (alignMain) Dom.setMarkup(alignMain, Icons.svg('align' + currentAlign[0].toUpperCase() + currentAlign.slice(1)));
     // Le bouton « Liste » est enfoncé dès qu'un des trois types de liste l'est.
     setActive('v2-btn-bullet', Object.keys(LIST_STYLES).some(list => editor.isActive(list)));
     Object.entries(LIST_STYLES).forEach(([list, { attr, fallback, buttons }]) => {
@@ -256,8 +298,8 @@ const MainToolbar = (function () {
     // Sur une sélection de cases, `can()` est toujours faux (son début est avant la liste, pas dedans) : on grise d'après les listes que les cases
     // contiennent.
     const cellsSelected = EditorCore.isCellSelection(editor.state.selection);
-    setDisabled('v2-btn-indent', cellsSelected ? !EditorCore.canShiftListsInSelectedCells('in') : !editor.can().sinkListItem('listItem'));
-    setDisabled('v2-btn-outdent', cellsSelected ? !EditorCore.canShiftListsInSelectedCells('out') : !editor.can().liftListItem('listItem'));
+    setDisabled('v2-btn-indent', cellsSelected ? !EditorCore.canShiftListsInSelectedCells('in') : !editor.can().sinkListItem('listItem'), 'lock.indent');
+    setDisabled('v2-btn-outdent', cellsSelected ? !EditorCore.canShiftListsInSelectedCells('out') : !editor.can().liftListItem('listItem'), 'lock.outdent');
     setActive('v2-btn-citation', EditorCore.isQuoteActive());
     setActive('v2-btn-code-block', editor.isActive('codeBlock'));
     const inLink = editor.isActive('link');
@@ -271,67 +313,131 @@ const MainToolbar = (function () {
     const qrSelected = QrCode.isSelected(editor);
     setActive('v2-btn-qr', qrSelected);
     relabelQr(qrSelected);
-    // Suivi des modifications : le bouton bascule reste actionnable ; accepter et refuser tout se grisent sans modification en attente, recalculés à
-    // chaque transaction (accepter ou refuser une suggestion, bascule du mode).
-    setActive('v2-btn-track-changes', Editor.isTrackChangesOn());
+    // Un graphique de la page sélectionné : la ligne « Graphique de la page… » devient « Modifier le graphique… » (la même fenêtre change de graphique ou de lignes).
+    const chartSelected = ChartEntry.isSelected(editor);
+    setActive('v2-btn-chart', chartSelected);
+    relabelChart(chartSelected);
+    // Un graphique créé sélectionné : de même, la ligne « Créer un graphique… » devient « Modifier le graphique… » (la même fenêtre change sa forme, sa table, ses colonnes).
+    const madeSelected = ChartEntry.isMadeSelected(editor);
+    setActive('v2-btn-chart-make', madeSelected);
+    relabelChartMake(madeSelected);
+    syncChartRow();
+    // Suivi des modifications : la ligne bascule reste actionnable ; accepter et refuser tout se grisent sans modification en attente, recalculés à
+    // chaque transaction (accepter ou refuser une suggestion, bascule du mode). Le bouton « Édition collaborative » qui les range s'allume avec le suivi :
+    // menu fermé, on voit qu'il est en marche.
+    const tracking = Editor.isTrackChangesOn();
+    setActive('v2-btn-track-changes', tracking);
+    setActive('v2-btn-collab', tracking || LiveEntry.isLive());
     const hasPending = Editor.hasPendingTrackedChanges();
-    setDisabled('v2-btn-accept-all', !hasPending);
-    setDisabled('v2-btn-reject-all', !hasPending);
+    setDisabled('v2-btn-accept-all', !hasPending, 'lock.noPending');
+    setDisabled('v2-btn-reject-all', !hasPending, 'lock.noPending');
+    syncLiveRow();
+    // Les styles de titres du menu Titre, ceux du modèle et ceux du document : « Mettre à jour « Titre N » d'après la sélection » et « Rétablir le style d'origine » de chaque bloc (le niveau du titre où est le curseur dans leur
+    // libellé, grisées avec leur raison hors d'un titre du texte), et l'aperçu des niveaux qui ont un style.
+    HeadingStyles.syncRows(editor, {
+      update: byId('v2-btn-heading-style-update'),
+      reset: byId('v2-btn-heading-style-reset'),
+      documentUpdate: byId('v2-btn-heading-style-doc-update'),
+      documentReset: byId('v2-btn-heading-style-doc-reset'),
+      modelScope: byId('v2-heading-scope-model'),
+      documentScope: byId('v2-heading-scope-document'),
+      modelLevels: byId('v2-heading-levels-model'),
+      documentLevels: byId('v2-heading-levels-document'),
+    });
+    // Les mises en forme gardées (menu du pinceau) : le menu se redessine quand ses places, la langue ou le droit de peindre la sélection changent.
+    FormatSlotsMenu.sync(editor);
     // « Garder avec le suivant » (menu Alignement) : cochée quand les paragraphes visés le portent, grisée avec sa raison hors du texte courant.
     KeepWithNext.syncRow(byId('v2-btn-keep-next'), editor);
+    // « Texte de droite à gauche » (menu Alignement) : cochée quand les paragraphes visés le portent, grisée avec sa raison hors du texte.
+    TextDirection.syncRow(byId('v2-btn-rtl'), editor);
+    // « Paragraphe… » (menu Alignement) : grisée avec sa raison hors du texte courant (titre, légende, en-tête ou pied de page).
+    ParagraphFormat.syncRow(byId('v2-btn-paragraph'), editor);
+    // « Puce… » (menu Liste) : grisée avec sa raison hors d'une liste à puces.
+    BulletFormat.syncRow(byId('v2-btn-bullet-char'), editor);
+    // « Signet… » (menu du lien) : grisée avec sa raison hors d'un paragraphe ou d'un titre du texte (et dans un modèle d'e-mail), relue « Modifier le signet… » quand le bloc en porte un.
+    Anchors.syncRow(byId('v2-row-bookmark'), editor, inEmailMode ? 'bookmark.email' : null);
+    // « Tableau d'un modèle Grille… » (menu du bouton Tableau) : grisée avec sa raison quand le suivi est allumé, dans un en-tête ou un pied de page, ou que le curseur est
+    // dans un tableau.
+    LinkedTable.syncRow(byId('v2-btn-linked-table'), editor);
   }
 
-  // Boutons grisés (classe v2-hf-locked, jamais retirés) selon le mode et la sélection, une seule condition par bouton. Renvoie les ids grisés.
+  // Boutons grisés (classe v2-hf-locked, jamais retirés) selon le mode et la sélection, une seule condition par bouton. Chaque groupe dit aussi POURQUOI (le troisième terme, une phrase ou rien) : la phrase est l'info-bulle du
+  // bouton et ce que son clic écrit dans le coin d'état (js/lock-reasons.js, cause « mode »). Renvoie les ids grisés.
   function syncLocks() {
     const mailOrMacro = inEmailMode || inMacroMode;
     const inHfMode = !!HeaderFooterPreview.getHfMode();
+    // Un modèle email, un macro-modèle, puis l'en-tête ou le pied de page : ce qui rend le grisé, dans l'ordre où le texte le dit.
+    const plain = () => I18n.t(inMacroMode ? 'lock.macro' : 'lock.email');
+    const zone = () => I18n.t('lock.hf');
     const groups = [
       // E-mail ou macro-modèle : on grise la mise en forme qui n'a aucun sens dans un mailto: (texte brut, js/mailto-export.js) ou sans corps de
-      // document. Les groupes à survol (alignement, image) le sont en entier : pointer-events s'hérite (.v2-hf-locked, css/toolbar-v2.css), ce qui
-      // bloque aussi leur volet déroulant.
-      [mailOrMacro, ['v2-btn-bold', 'v2-btn-italic', 'v2-btn-underline', 'v2-btn-strike', 'v2-align-group', 'v2-size-stepper', 'v2-font-chip', 'v2-text-color-split',
-        'v2-highlight-split', 'v2-btn-format-painter', 'v2-btn-table', 'v2-btn-two-columns', 'v2-image-group', 'v2-btn-toc']],
-      // Dans une grille, le bouton pose ou retire le saut avant la ligne sélectionnée : grisé sur la première ligne et au milieu d'une case fusionnée
-      // sur plusieurs lignes.
-      [mailOrMacro || (inGridMode && !GridEditor.canTogglePageBreak(editor)), ['v2-btn-page-break']],
-      // Un macro-modèle grise aussi ce que l'e-mail laisse actif, et le menu « Lien et blocs de contenu » en entier.
-      [inMacroMode, ['v2-heading-group', 'v2-btn-comment', 'v2-btn-insert-variable', 'v2-btn-undo', 'v2-btn-redo', 'v2-btn-find', 'v2-btn-track-changes',
-        'v2-blocks-group', 'v2-btn-accept-all', 'v2-btn-reject-all']],
-      // En-tête ou pied de page : un niveau de titre a un sens, pas la numérotation (titres du flux principal seul).
-      [inHfMode, ['v2-numbering-seg']],
+      // document. Les groupes à survol (titres, alignement, image) le sont en entier : leurs enfants ne reçoivent plus la souris (.v2-hf-locked, css/toolbar-v2.css),
+      // ce qui bloque aussi leur volet déroulant. Un niveau de titre n'est qu'une taille et un poids, que le texte brut ne porte pas.
+      [mailOrMacro, ['v2-btn-bold', 'v2-btn-italic', 'v2-underline-group', 'v2-btn-strike', 'v2-heading-group', 'v2-align-group', 'v2-size-stepper', 'v2-font-chip',
+        'v2-text-color-split', 'v2-highlight-split', 'v2-painter-group', 'v2-btn-table', 'v2-btn-two-columns', 'v2-image-group'], plain],
+      // Le menu « Aa » : dans un e-mail, seuls l'exposant et l'indice restent actifs (le lien les écrit en caractères Unicode) ; les petites capitales, l'ombre, le contour et l'espacement n'ont pas de sens dans du texte brut.
+      [mailOrMacro, ['v2-btn-char-smallcaps', 'v2-btn-char-shadow', 'v2-btn-char-stroke', 'v2-char-spacing'], plain],
+      // Le sommaire a la condition de ce groupe, plus l'en-tête et le pied de page : une zone n'a que 60 px de hauteur, aucune liste de titres n'y a sa
+      // place (une condition par bouton : un second groupe lèverait le grisé du premier).
+      [mailOrMacro || inHfMode, ['v2-btn-toc'], () => (mailOrMacro ? plain() : zone())],
+      // Dans une grille ou dans un tableau de document, le bouton pose ou retire le saut avant la ligne sélectionnée : grisé sur la première ligne, au
+      // milieu d'une case fusionnée sur plusieurs lignes, dans un tableau qui n'est pas du premier niveau du document et sous le suivi des modifications.
+      // Dans un en-tête ou un pied de page, il est grisé aussi : aucune page ne s'ouvre dans une bande de 60 px, pas même avant une ligne de tableau.
+      // La raison d'une ligne de tableau est dite par son info-bulle (syncPageBreakButton, `pp-row-break`) : ici seuls l'email, le macro-modèle et la zone parlent.
+      [mailOrMacro || inHfMode || (GridEditor.pageBreakInTable(editor) && !GridEditor.canTogglePageBreak(editor)), ['v2-btn-page-break'], () => (mailOrMacro ? plain() : inHfMode ? zone() : '')],
+      // Un macro-modèle grise aussi ce que l'e-mail laisse actif - le menu « Aa » en entier, donc l'exposant et l'indice que le lien écrit en caractères Unicode
+      // (js/script-marks.js:toUnicode) -, et le menu « Lien et blocs de contenu » en entier. Annuler et Rétablir restent actifs : l'historique d'un macro-modèle
+      // garde sa page et sa composition (js/history-markers.js, domaines « page » et « macro »).
+      [inMacroMode, ['v2-char-group', 'v2-btn-comment', 'v2-btn-insert-variable', 'v2-btn-find', 'v2-btn-track-changes',
+        'v2-blocks-group', 'v2-btn-accept-all', 'v2-btn-reject-all', 'v2-collab-group'], plain],
+      // En-tête ou pied de page : un niveau de titre a un sens, pas la numérotation (titres du flux principal seul). Le sommaire et le saut de page y sont
+      // grisés aussi, plus haut (ils ont déjà une condition pour l'e-mail et la grille).
+      [inHfMode, ['v2-numbering-seg'], zone],
       // Deux lignes du menu « Lien et blocs de contenu » se grisent selon la sélection : pas de lien dans un bloc de code ni sur une image seule, pas
       // de bloc de code qui effacerait une variable ou une image.
-      [!LinkDialog.canLinkHere(editor), ['v2-btn-link', 'v2-row-link']],
-      [!editor.isActive('codeBlock') && codeBlockWouldDropContent(), ['v2-btn-code-block']],
-      // Encadré et signature (une zone 2 colonnes) : sans objet dans un e-mail (texte brut) ni dans un en-tête ou un pied de page. QR code : une
-      // image, donc pas dans un e-mail, ni dans un en-tête ou un pied de page tant que la Lecture n'y résout pas les colonnes
-      // (ReaderMode.resolveHeaderFooterZone). Dans une grille la ligne reste active : l'image se pose sur sa case, résolue par ReaderMode.preview
-      // comme à la Lecture.
-      [inEmailMode || inHfMode, ['v2-btn-callout', 'v2-btn-signature', 'v2-btn-qr']],
+      [!LinkDialog.canLinkHere(editor), ['v2-btn-link', 'v2-row-link'], () => I18n.t('lock.link')],
+      [!editor.isActive('codeBlock') && codeBlockWouldDropContent(), ['v2-btn-code-block'], () => I18n.t('lock.codeBlock')],
+      // Encadré et signature (une zone 2 colonnes) : sans objet dans un e-mail (texte brut) ni dans un en-tête ou un pied de page. Graphique de la
+      // page : une image que la Lecture ne résout pas dans un en-tête ou un pied de page. QR code : une image, donc pas dans un e-mail ; dans un en-tête
+      // ou un pied de page, la Lecture et les exports en résolvent les colonnes (ReaderMode.resolveHeaderFooterZone, ReaderMode.preview). Dans une grille
+      // la ligne reste active : l'image se pose sur sa case, résolue par ReaderMode.preview comme à la Lecture.
+      [inEmailMode || inHfMode, ['v2-btn-callout', 'v2-btn-signature', 'v2-btn-chart', 'v2-btn-chart-make'], () => (inEmailMode ? plain() : zone())],
+      [inEmailMode, ['v2-btn-qr'], plain],
+      // Une diapositive en texte (js/slide-text.js) : des blocs de texte du document, sans objet dans un e-mail (texte brut), dans un en-tête ou un pied de page, ni dans une présentation (son volet
+      // « Importer » copie une diapositive entière).
+      [inEmailMode || inHfMode || SlidesEntry.presentationShown(), ['v2-btn-slide-text'], () => (inEmailMode ? plain() : inHfMode ? zone() : I18n.t('lock.slides'))],
     ];
     const lockedNow = new Set();
-    groups.forEach(([locked, ids]) => ids.forEach(id => {
+    groups.forEach(([locked, ids, reason]) => ids.forEach(id => {
       const el = byId(id);
       if (!el) return;
       el.classList.toggle('v2-hf-locked', !!locked);
+      LockReasons.set(el, 'mode', locked ? reason() : '');
       if (locked) lockedNow.add(id);
     }));
     return lockedNow;
   }
 
-  // Dans une grille, le bouton « Saut de page » est enfoncé sur une ligne qui porte un saut et son libellé le dit (autre texte, même icône). Les clés
-  // i18n suivent le mode : I18n.applyTranslations les relit au changement de langue.
+  // Dans une grille et dans un tableau de document (le curseur dans une case), le bouton « Saut de page » a le sens d'une ligne : il est enfoncé sur une
+  // ligne qui porte un saut et son libellé le dit (autre texte, même icône). Grisé dans un tableau de document, il dit pourquoi en info-bulle
+  // (`pp-row-break` lui rend le pointeur, que le grisé lui prend : css/grid.css ; le clic, lui, ne fait rien : GridEditor.togglePageBreak) ; celui d'une
+  // grille garde l'info-bulle d'avant. Les clés i18n suivent le mode (celui d'une présentation, hors d'un tableau, est « Nouvelle diapositive ici »).
   function syncPageBreakButton() {
     const button = byId('v2-btn-page-break');
     if (!button) return;
-    const keys = inGridMode ? ['insert.pageBreak.gridTip', 'insert.pageBreak.gridAria'] : ['insert.pageBreak.tip', 'insert.pageBreak.aria'];
-    if (button.getAttribute('data-i18n-tip') !== keys[0]) {
-      button.setAttribute('data-i18n-tip', keys[0]); button.setAttribute('data-i18n-aria', keys[1]);
-      button.setAttribute('data-tip', I18n.t(keys[0])); button.setAttribute('aria-label', I18n.t(keys[1]));
-    }
-    const onBreak = inGridMode && GridEditor.hasPageBreak(editor);
+    const rowMode = GridEditor.pageBreakInTable(editor);
+    // Dans une présentation, le saut de page ouvre une diapositive : le bouton le dit (« Nouvelle diapositive ici »), pas un saut de page « forcé à l'export PDF ».
+    const slide = !rowMode && SlidesEntry.presentationShown();
+    const keys = rowMode ? ['insert.pageBreak.gridTip', inGridMode ? 'insert.pageBreak.gridAria' : 'insert.pageBreak.rowAria'] : slide ? ['insert.pageBreak.slideTip', 'insert.pageBreak.slideAria'] : ['insert.pageBreak.tip', 'insert.pageBreak.aria'];
+    const aria = I18n.t(keys[1]);
+    if (button.getAttribute('aria-label') !== aria) button.setAttribute('aria-label', aria);
+    const reason = rowMode && !inGridMode && !(inEmailMode || inMacroMode) ? GridEditor.pageBreakBlock(editor) : null;
+    const tip = I18n.t(reason || keys[0]);
+    if (button.getAttribute('data-tip') !== tip) button.setAttribute('data-tip', tip);
+    button.classList.toggle('pp-row-break', !!reason);
+    const onBreak = rowMode && GridEditor.hasPageBreak(editor);
     setActive('v2-btn-page-break', onBreak);
-    if (inGridMode) button.setAttribute('aria-pressed', onBreak ? 'true' : 'false'); else button.removeAttribute('aria-pressed');
+    if (rowMode) button.setAttribute('aria-pressed', onBreak ? 'true' : 'false'); else button.removeAttribute('aria-pressed');
   }
 
   // Mode grille, appliqué après syncLocks : le dernier appel gagne. En quittant la grille, un bouton que syncLocks gère vient d'être recalculé par
@@ -343,6 +449,21 @@ const MainToolbar = (function () {
       if (!el) return;
       if (inGridMode) { el.classList.add('v2-hf-locked'); gridLockedIds.add(id); }
       else if (gridLockedIds.delete(id) && !lockedNow.has(id)) el.classList.remove('v2-hf-locked');
+      // Sa raison (js/lock-reasons.js) : celle de la grille, retirée en la quittant, qu'un autre grisé garde ou non le bouton grisé.
+      LockReasons.set(el, 'grid', inGridMode ? I18n.t('lock.grid') : '');
+    });
+  }
+
+  // Le curseur dans un tableau lié (js/linked-table.js), appliqué après syncLocks comme le mode grille : ce que syncLocks gère vient d'être recalculé par elle, seul
+  // un bouton qu'elle ne gère pas (la citation) est dégrisé ici, et jamais un que la grille ou un mode garde grisé.
+  function syncLinkedLocks(lockedNow) {
+    const inLinked = LinkedTable.cursorIn(editor.state);
+    LINKED_LOCKED_IDS.forEach(id => {
+      const el = byId(id);
+      if (!el) return;
+      if (inLinked) { el.classList.add('v2-hf-locked'); linkedLockedIds.add(id); }
+      else if (linkedLockedIds.delete(id) && !lockedNow.has(id) && !gridLockedIds.has(id)) el.classList.remove('v2-hf-locked');
+      LockReasons.set(el, 'linked', inLinked ? I18n.t('lock.linked') : '');
     });
   }
 
@@ -358,12 +479,30 @@ const MainToolbar = (function () {
     if (headingFlyout) headingFlyout.querySelectorAll('.v2-hover-row[data-level]').forEach(row => row.classList.toggle('is-active', row.dataset.level === value));
   }
 
+  // La numérotation des titres est un réglage du document (le nœud `headingNumberingConfig`), pas de la sélection : Annuler, Rétablir, un collage ou le retour d'un texte la changent sans passer
+  // par le menu « Titre ». La racine de l'éditeur (data-heading-style, que le CSS des titres et le sommaire lisent), le <select> caché du menu et le bouton allumé de son panneau suivent donc le
+  // nœud à chaque transaction. Pendant l'écriture d'un en-tête ou d'un pied, l'éditeur ne contient que le texte de la zone (sans ce nœud) : rien ne bouge, le corps le retrouve à la sortie.
+  let shownNumbering = null;
+  function syncHeadingNumbering() {
+    if (HeaderFooterPreview.getHfMode()) return;
+    const style = Editor.getHeadingNumberingStyle();
+    if (style === shownNumbering && editor.view.dom.dataset.headingStyle === style) return;
+    shownNumbering = style;
+    editor.view.dom.dataset.headingStyle = style;
+    const select = byId('v2-heading-numbering-select');
+    if (select && select.value !== style) select.value = style;
+    document.querySelectorAll('#v2-numbering-seg [data-num]').forEach(btn => btn.classList.toggle('active', btn.dataset.num === style));
+  }
+
   function syncTextStyleChips() {
-    const textStyleAttrs = editor.getAttributes('textStyle');
-    EditorCore.setColorIcon('v2-text-color-icon', textStyleAttrs.color || null);
+    // Dans un titre dont le niveau a un style (js/heading-styles.js), la police, la taille et les couleurs de ce style, sous celles que la sélection porte elle-même.
+    const textStyleAttrs = HeadingStyles.withStyleAt(editor.state, Object.assign({}, TypingStyle.commonStyle(editor.state.selection), editor.getAttributes('textStyle')));
+    // Dans une présentation themée (js/slide-theme.js), la police et la couleur du thème sont celles du texte que rien ne change : la barre les montre au lieu de Roboto et du noir.
+    const themed = SlideTheme.defaultsAt(editor.state);
+    EditorCore.setColorIcon('v2-text-color-icon', textStyleAttrs.color || (themed && themed.color) || null);
     EditorCore.setColorIcon('v2-highlight-icon', textStyleAttrs.backgroundColor || null);
     // Sans marque explicite, la police et la taille réellement rendues (Roboto, 10.5pt : .tiptap dans css/editor-v2.css), plutôt qu'un champ vide.
-    setChipText('v2-font-chip-val', textStyleAttrs.fontFamily || 'Roboto');
+    setChipText('v2-font-chip-val', textStyleAttrs.fontFamily || (themed && themed.fontFamily) || 'Roboto');
     setChipText('v2-size-chip-val', textStyleAttrs.fontSize || '10.5pt');
   }
   function setChipText(id, value) {
@@ -372,14 +511,14 @@ const MainToolbar = (function () {
   }
   // Un bloc de code est du texte brut, sans marque ni bulle. Y convertir un paragraphe qui porte une variable, une pastille ou une image l'effacerait
   // en silence (ProseMirror retire ce que le nouveau type n'accepte pas) : la ligne se grise alors (syncLocks). Gras, couleur ou lien sont simplement
-  // perdus, comme dans tout bloc de code.
+  // perdus, comme dans tout bloc de code. Une tabulation n'est pas perdue : elle devient une tabulation brute, que le bloc de code garde (js/tab-indent.js).
   function codeBlockWouldDropContent() {
     const { doc, selection } = editor.state;
     let drops = false;
     doc.nodesBetween(selection.from, selection.to, node => {
       if (drops) return false;
       if (!node.isTextblock) return true;
-      node.forEach(child => { if (child.isInline && !child.isText && child.type.name !== 'hardBreak') drops = true; });
+      node.forEach(child => { if (child.isInline && !child.isText && child.type.name !== 'hardBreak' && child.type.name !== TabIndent.NODE) drops = true; });
       return false;
     });
     return drops;
@@ -399,7 +538,9 @@ const MainToolbar = (function () {
     const parent = doc.resolve(blocks[0].pos).parent;
     const sideBySide = blocks.every((b, i) => doc.resolve(b.pos).parent === parent && (i === 0 || blocks[i - 1].pos + blocks[i - 1].node.nodeSize === b.pos));
     if (!sideBySide) return false;
-    const text = blocks.map(b => b.node.textBetween(0, b.node.content.size, '\n', '\n')).join('\n');
+    // Un saut de ligne forcé devient un saut de ligne, une tabulation reste une tabulation.
+    const leafText = leaf => (leaf.type.name === TabIndent.NODE ? TabIndent.TAB : '\n');
+    const text = blocks.map(b => b.node.textBetween(0, b.node.content.size, '\n', leafText)).join('\n');
     const start = blocks[0].pos;
     const end = blocks[blocks.length - 1].pos + blocks[blocks.length - 1].node.nodeSize;
     const TextSelection = EditorCore.getTextSelectionClass();
@@ -416,26 +557,92 @@ const MainToolbar = (function () {
     if (!editor.isActive('codeBlock') && mergeSelectionIntoCodeBlock()) return;
     editor.chain().focus().toggleCodeBlock().run();
   }
-  // Ligne « Encadré… » : « Modifier l'encadré… » quand le curseur est dans un encadré. Réécrite à chaque changement d'état et de langue (data-i18n ne
+  // Ligne « Encadré… » : « Modifier l'encadré… » quand le curseur est dans un encadré. Réécrite à chaque changement d'état (data-i18n ne
   // porte que la version « insérer »).
   function relabelCallout(inside) {
     const label = byId('v2-btn-callout-label');
     if (label) label.textContent = I18n.t(inside ? 'insert.callout.rowEdit' : 'insert.callout.row');
   }
-  // Ligne « QR code… » : « Modifier le QR code… » quand un QR code est sélectionné. Réécrite à chaque changement d'état et de langue.
+  // Ligne « QR code… » : « Modifier le QR code… » quand un QR code est sélectionné. Réécrite à chaque changement d'état.
   function relabelQr(selected) {
     const label = byId('v2-btn-qr-label');
     if (label) label.textContent = I18n.t(selected ? 'insert.qr.rowEdit' : 'insert.qr.row');
-    // Le nom accessible porte le même verbe que le libellé (« Modifier » ou « Insérer ») ; data-i18n-aria le garde juste au changement de langue.
+    // Le nom accessible porte le même verbe que le libellé (« Modifier » ou « Insérer »).
     const row = byId('v2-btn-qr');
     if (row) {
-      const key = selected ? 'insert.qr.ariaEdit' : 'insert.qr.aria';
-      row.setAttribute('data-i18n-aria', key);
-      row.setAttribute('aria-label', I18n.t(key));
+      row.setAttribute('aria-label', I18n.t(selected ? 'insert.qr.ariaEdit' : 'insert.qr.aria'));
     }
   }
+  // Une ligne du menu grisée avec sa raison (`reason` non vide) mais cliquable : son clic explique. aria-disabled et `v2-hover-row-disabled` la grisent, `data-explains` le dit aux raccourcis
+  // (js/shortcuts.js:usable) qui font le même geste que la souris. Sans raison, elle reprend son aspect.
+  function setExplained(row, reason) {
+    row.setAttribute('aria-disabled', reason ? 'true' : 'false');
+    row.classList.toggle('v2-hover-row-disabled', !!reason);
+    row.toggleAttribute('data-explains', !!reason);
+    // La raison est l'info-bulle de la ligne ; son clic, lui, explique (cause « explain » de js/lock-reasons.js : elle dit, elle n'arrête rien).
+    LockReasons.set(row, 'explain', reason || '');
+  }
+  // Ligne « Écriture en direct » du menu « Édition collaborative » (js/live-entry.js) : grisée avec sa raison quand elle n'a pas de sens ici (l'extension de GFS absente, un modèle pas encore enregistré
+  // ou qui n'est pas un document, le document en lecture seule), cliquable pour l'expliquer ; allumée, elle s'enfonce et se lit « Arrêter l'écriture en direct ». Pendant le direct, le suivi des modifications
+  // est fermé (ses marques ne se partagent pas) : ses trois lignes se grisent de la même façon, et leur clic le dit.
+  const LIVE_CLOSED_ROWS = ['v2-btn-track-changes', 'v2-btn-accept-all', 'v2-btn-reject-all'];
+  function syncLiveRow() {
+    const live = LiveEntry.isLive();
+    document.body.classList.toggle('pp-live-on', live);
+    const row = byId('v2-btn-live');
+    if (row) {
+      setExplained(row, LiveEntry.reason());
+      row.classList.toggle('is-active', live);
+      row.setAttribute('aria-pressed', live ? 'true' : 'false');
+      row.setAttribute('aria-label', I18n.t(live ? 'live.row.stopAria' : 'live.row.aria'));
+      const label = byId('v2-btn-live-label');
+      if (label) label.textContent = I18n.t(live ? 'live.row.stop' : 'live.row.label');
+    }
+    LIVE_CLOSED_ROWS.forEach((id) => { const closed = byId(id); if (closed) setExplained(closed, LiveEntry.lockedReason('trackChanges')); });
+    setActive('v2-btn-collab', Editor.isTrackChangesOn() || live);
+  }
+  // Lignes « Nouvelle présentation » et « Importer un PowerPoint… » du menu « + » (js/slides-entry.js) : grisées avec leur raison sans l'extension « diapositives » de GFS, jamais retirées ; leur clic explique (js/main.js les câble).
+  function syncPresentationRow() {
+    ['v2-btn-new-presentation', 'v2-btn-import-pptx'].forEach((id) => {
+      const row = byId(id);
+      if (row) setExplained(row, SlidesEntry.reason());
+    });
+    // Et la ligne « Diapositive d'une présentation… » du menu « Lien et blocs de contenu » (js/slide-text.js), grisée de même.
+    const textRow = byId('v2-btn-slide-text');
+    if (textRow) setExplained(textRow, SlidesEntry.reason());
+  }
+  // Ligne « Graphique de la page… » : « Modifier le graphique… » quand un graphique est sélectionné, comme « QR code… » ci-dessus.
+  function relabelChart(selected) {
+    const label = byId('v2-btn-chart-label');
+    if (label) label.textContent = I18n.t(selected ? 'insert.chart.rowEdit' : 'insert.chart.row');
+    const row = byId('v2-btn-chart');
+    if (row) {
+      row.setAttribute('aria-label', I18n.t(selected ? 'insert.chart.ariaEdit' : 'insert.chart.aria'));
+    }
+  }
+  // Ligne « Créer un graphique… » : « Modifier le graphique… » quand un graphique créé est sélectionné.
+  function relabelChartMake(selected) {
+    const label = byId('v2-btn-chart-make-label');
+    if (label) label.textContent = I18n.t(selected ? 'insert.chart.rowEdit' : 'insert.chart.make.row');
+    const row = byId('v2-btn-chart-make');
+    if (row) row.setAttribute('aria-label', I18n.t(selected ? 'insert.chart.ariaEdit' : 'insert.chart.make.aria'));
+  }
+  // Lignes « Graphique de la page… » et « Créer un graphique… » sans l'extension « graphique » (le widget seul, ou l'extension non activée dans Grist Factory Suite) : grisées comme les autres lignes qui
+  // disent pourquoi (aria-disabled et `v2-hover-row-disabled`), jamais retirées, avec leur raison en info-bulle. Elles restent cliquables : le clic explique (js/chart-entry.js, open et openMake).
+  function syncChartRow() {
+    const off = !ChartEntry.isAvailable();
+    ['v2-btn-chart', 'v2-btn-chart-make'].forEach((id) => {
+      const row = byId(id);
+      if (!row) return;
+      row.setAttribute('aria-disabled', off ? 'true' : 'false');
+      row.classList.toggle('v2-hover-row-disabled', off);
+      // Grisée mais cliquable : son clic explique (fenêtre simple, ChartEntry.open). `data-explains` le dit aux raccourcis (js/shortcuts.js:usable), qui font le même geste que la souris.
+      row.toggleAttribute('data-explains', off);
+      LockReasons.set(row, 'explain', off ? ChartEntry.reason() : '');
+    });
+  }
   // La touche de la loupe (Ctrl+F, ⌘F, ou celle choisie dans Réglages > Raccourcis, js/shortcuts.js) est posée sur l'infobulle et l'aria-label,
-  // réécrits à chaque changement de langue ou de touche ; sans touche, pas de parenthèses.
+  // réécrits à chaque changement de touche ; sans touche, pas de parenthèses.
   function decorateFindShortcut() {
     const button = byId('v2-btn-find');
     if (!button) return;
@@ -445,7 +652,7 @@ const MainToolbar = (function () {
     button.setAttribute('aria-label', I18n.t('find.button.aria') + suffix);
   }
   // Le raccourci du lien dépend de la plateforme (Ctrl+K ou ⌘K) : posé sur l'aria-label du bouton et dans la ligne « Lien… » du menu, réécrit à
-  // chaque changement de langue (applyTranslations remet sinon l'aria-label sans lui), comme decorateSaveButtonShortcut dans js/main.js.
+  // chaque changement de touche, comme decorateSaveButtonShortcut dans js/main.js.
   function decorateLinkShortcut() {
     const label = LinkDialog.shortcutLabel();
     const button = byId('v2-btn-link');
@@ -453,14 +660,40 @@ const MainToolbar = (function () {
     const kbd = byId('v2-row-link-kbd');
     if (kbd) kbd.textContent = label;
   }
+  // Les lignes d'un panneau de la barre : la souris ne prend pas le focus du texte (mousedown retenu). Sans effet quand le groupe est grisé (.v2-hf-locked, .pp-access-locked).
+  // Une ligne à cocher se commande aussi au clavier (Entrée, Espace) ; une ligne d'action (« Paragraphe… », « Puce… ») est de plus sans effet quand elle-même est grisée.
+  const isLockedRow = row => !!row.closest('.v2-hf-locked, .pp-access-locked');
+  function wireCheckRow(row, run) {
+    const toggle = () => { if (!isLockedRow(row)) run(); };
+    row.addEventListener('mousedown', event => event.preventDefault());
+    row.addEventListener('click', toggle);
+    row.addEventListener('keydown', event => {
+      if (event.key !== 'Enter' && event.key !== ' ') return;
+      event.preventDefault();
+      toggle();
+    });
+  }
+  function wireActionRow(row, run) {
+    row.addEventListener('mousedown', event => event.preventDefault());
+    row.addEventListener('click', () => {
+      if (row.getAttribute('aria-disabled') === 'true' || isLockedRow(row)) return;
+      run();
+    });
+  }
   // Chaque bouton appelle directement une commande TipTap sur la sélection réelle, sans avoir à savoir si elle est dans une case ou une colonne.
   function wireToolbar() {
     applyToolbarIcons();
+    // Le thème de la présentation change (sa fenêtre, Ctrl+Z) : la police et la couleur que la barre montre par défaut changent avec lui, sans que le curseur ait bougé.
+    document.addEventListener('pp:themeChanged', () => { if (editor) syncToolbarState(); });
     const bind = (id, fn) => { const el = byId(id); if (el) el.addEventListener('click', fn); };
     bind('v2-btn-bold', () => editor.chain().focus().toggleBold().run());
     bind('v2-btn-italic', () => editor.chain().focus().toggleItalic().run());
     bind('v2-btn-underline', () => editor.chain().focus().toggleUnderline().run());
     bind('v2-btn-strike', () => editor.chain().focus().toggleStrike().run());
+    // Exposant et indice : une marque de caractère comme les quatre ci-dessus, posée par les deux icônes du menu « Aa » (et par Ctrl+. et Ctrl+, au
+    // clavier, js/script-marks.js). Poser l'une retire l'autre.
+    bind('v2-btn-superscript', () => editor.chain().focus().toggleSuperscript().run());
+    bind('v2-btn-subscript', () => editor.chain().focus().toggleSubscript().run());
     ALIGNMENTS.forEach(align => bind('v2-btn-align-' + align, () => editor.chain().focus().setTextAlign(align).run()));
     // Le bouton principal réapplique l'alignement qu'il montre (currentAlign, tenu à jour par syncToolbarState) ; les quatre boutons ci-dessus sont
     // dans le panneau révélé au survol (.v2-hover-flyout, index.html).
@@ -468,17 +701,18 @@ const MainToolbar = (function () {
     // « Garder avec le suivant » (js/keep-with-next.js) : ligne à cocher du même panneau, au clic comme au clavier (Entrée, Espace). Sans effet quand
     // le groupe est grisé (e-mail, macro-modèle, lecture seule, Lecture) : son `tabindex` laisse y arriver au clavier.
     const keepNextRow = byId('v2-btn-keep-next');
-    if (keepNextRow) {
-      const toggleKeepNext = () => { if (!keepNextRow.closest('.v2-hf-locked, .pp-access-locked')) KeepWithNext.run(editor); };
-      keepNextRow.addEventListener('mousedown', event => event.preventDefault());
-      keepNextRow.addEventListener('click', toggleKeepNext);
-      keepNextRow.addEventListener('keydown', event => {
-        if (event.key !== 'Enter' && event.key !== ' ') return;
-        event.preventDefault();
-        toggleKeepNext();
-      });
-      I18n.onChange(() => KeepWithNext.syncRow(keepNextRow, editor));
-    }
+    if (keepNextRow) wireCheckRow(keepNextRow, () => KeepWithNext.run(editor));
+    // « Texte de droite à gauche » (js/text-direction.js) : ligne à cocher du même panneau, au clic comme au clavier (Entrée, Espace).
+    const rtlRow = byId('v2-btn-rtl');
+    if (rtlRow) wireCheckRow(rtlRow, () => TextDirection.run(editor));
+    // « Paragraphe… » (js/paragraph-format.js) : ouvre la fenêtre de l'interligne et des espaces avant et après ; sans effet quand le groupe ou la ligne est grisé.
+    const paragraphRow = byId('v2-btn-paragraph');
+    if (paragraphRow) wireActionRow(paragraphRow, () => ParagraphFormat.open(editor));
+    // Les menus « Souligné » (la sorte du trait) et « Aa » (petites capitales, ombre, contour, espacement ; exposant et indice ci-dessus) : chaque réglage s'applique tout de suite, sans fenêtre (js/character-format.js).
+    CharacterFormat.wireMenus(() => editor);
+    // « Puce… » (js/bullet-format.js) : ouvre la fenêtre du signe de la puce ; sans effet quand la ligne est grisée (hors d'une liste à puces).
+    const bulletCharRow = byId('v2-btn-bullet-char');
+    if (bulletCharRow) wireActionRow(bulletCharRow, () => BulletFormat.open(editor));
     // Une liste se pose dans toutes les cases d'une sélection de cases, ou s'en retire (EditorCore.toggleList, aussi derrière Ctrl+Maj+8 et
     // Ctrl+Maj+7, js/shortcuts.js).
     bind('v2-btn-bullet', () => EditorCore.toggleList('bulletList', 'toggleBulletList'));
@@ -495,13 +729,14 @@ const MainToolbar = (function () {
         .updateAttributes(name, attrs));
     // Un bouton par style, révélés au survol du bouton « Liste à puces » (table LIST_STYLES).
     Object.entries(LIST_STYLES).forEach(([list, { attr, command, buttons }]) =>
-      Object.entries(buttons).forEach(([id, style]) => bind(id, () => applyListStyle(list, command, { [attr]: style }))));
+      Object.entries(buttons).forEach(([id, style]) => bind(id, () => applyListStyle(list, command, Object.assign({ [attr]: style }, list === 'bulletList' ? { bulletChar: null } : {})))));
     // Hors d'une liste, la commande ne fait rien sans erreur : le bouton se grise (syncBlockButtons) au lieu de disparaître. Sur une sélection de
     // cases, chaque liste des cases se décale (EditorCore.shiftListsInSelectedCells : les commandes ne regardent que la case de tête et se grisent) ;
     // le premier élément d'une liste ne se décale pas, comme dans une case seule.
     bind('v2-btn-outdent', () => { if (!EditorCore.shiftListsInSelectedCells('out')) editor.chain().focus().liftListItem('listItem').run(); });
     bind('v2-btn-indent', () => { if (!EditorCore.shiftListsInSelectedCells('in')) editor.chain().focus().sinkListItem('listItem').run(); });
-    bind('v2-btn-table', () => editor.chain().focus().insertTable({ rows: 2, cols: 2, withHeaderRow: false }).run());
+    // Dans un en-tête ou un pied de page, une seule ligne : la zone a 60 px de contenu, une ligne de tableau en prend 29 et deux dépasseraient (le trait rouge de la zone).
+    bind('v2-btn-table', () => editor.chain().focus().insertTable({ rows: HeaderFooterPreview.getHfMode() ? 1 : 2, cols: 2, withHeaderRow: false }).run());
     bind('v2-btn-two-columns', () => editor.chain().focus().insertTwoColumns().run());
     bind('v2-btn-image', async () => {
       // Espaces autour d'une adresse collée retirés : ni dans la question, ni dans l'adresse gardée ; une saisie d'espaces seuls vaut une saisie
@@ -514,15 +749,21 @@ const MainToolbar = (function () {
     bind('v2-btn-image-from-variable', () => openImageVariablePicker(byId('v2-btn-image-from-variable')));
     // Une grille n'a pas de page : le bouton y pose le saut de la ligne (le PDF y commence une page, l'Excel une feuille) ; un second clic le retire.
     bind('v2-btn-page-break', () => {
-      if (GridEditor.isActive()) { GridEditor.togglePageBreak(editor); editor.chain().focus().run(); return; }
+      // Grisé dans un en-tête ou un pied de page (syncLocks) : la souris ne l'atteint pas, un clic par programme ou au clavier (Tab, Entrée) ne pose rien non plus.
+      if (HeaderFooterPreview.getHfMode()) return;
+      if (GridEditor.pageBreakInTable(editor)) { GridEditor.togglePageBreak(editor); editor.chain().focus().run(); return; }
       editor.chain().focus().insertPageBreak().run();
+      // La ligne de dessous ouvre la page suivante, que les marges de coupure descendent d'une page 200 ms après le geste : le défilement jusqu'au curseur (au tour d'après) visait sa
+      // place d'avant et la ligne finissait hors du panneau. La pagination est posée tout de suite, le défilement arrive donc là où la ligne restera.
+      Editor.refreshPaginationPreview();
     });
-    bind('v2-btn-toc', () => editor.chain().focus().insertToc().run());
+    bind('v2-btn-toc', () => { if (!HeaderFooterPreview.getHfMode()) editor.chain().focus().insertToc().run(); });
     bind('v2-btn-comment', () => Comments.insertCommentAtSelection());
     // Une icône pour trois fonctions (js/link-dialog.js) : le bouton et sa première ligne ouvrent la fenêtre du lien, les deux autres lignes mettent
     // en forme.
     bind('v2-btn-link', () => LinkDialog.open());
     bind('v2-row-link', () => LinkDialog.open());
+    bind('v2-row-bookmark', () => BookmarkDialog.open());
     // Nœud blockquote de StarterKit, déjà géré en PDF, DOCX et Lecture. Sur une sélection de cases, toutes les cases entrent dans une citation ou en
     // sortent : l'état voulu est l'inverse de celui que le bouton montre (la case de tête), comme pour les listes.
     bind('v2-btn-citation', () => { if (!EditorCore.quoteSelectedCells(!EditorCore.isQuoteActive())) editor.chain().focus().toggleBlockquote().run(); });
@@ -533,27 +774,53 @@ const MainToolbar = (function () {
     bind('v2-btn-signature', () => Callout.insertSignature(editor));
     // QR code : une fenêtre (adresse ou texte, colonnes comprises) pour l'insérer ou, quand il est sélectionné, le modifier.
     bind('v2-btn-qr', () => QrCode.open());
+    // Graphique de la page : une fenêtre (quel graphique de Grist, quelles lignes) pour l'insérer ou, quand il est sélectionné, le changer ; sans l'extension, la ligne est grisée et le clic explique.
+    bind('v2-btn-chart', () => ChartEntry.open());
+    // Créer un graphique : la fenêtre (forme, table, colonnes, lignes) pour en poser un dans le modèle ou, quand il est sélectionné, le changer ; grisée sans l'extension comme la ligne qui précède.
+    bind('v2-btn-chart-make', () => ChartEntry.openMake());
+    // Une diapositive d'une présentation, en texte : un volet à droite du document (extension « diapositives ») ; sans l'extension, la ligne est grisée et le clic explique. Au clavier, le clavier va dans le
+    // volet ; à la souris, il reste dans le texte. Le volet ouvert, le menu de la ligne se referme (comme « Objets », js/objects-menu.js) : resté ouvert sous la souris, il recouvrait le début du champ du
+    // volet et le clic suivant tombait sur une de ses lignes (« Signet… »). Une ligne qui n'ouvre rien (grisée, hors d'un document) laisse son menu comme il est.
+    bind('v2-btn-slide-text', async (event) => {
+      const byKeyboard = event.detail === 0;
+      if (!(await SlidesEntry.openTextImport(byKeyboard))) return;
+      EditorCore.closeHoverMenu(byId('v2-btn-slide-text').closest('.v2-hover-group'));
+      if (!byKeyboard) editor.commands.focus();
+    });
+    ChartEntry.onChange(syncChartRow);
+    syncChartRow();
+    // Tableau d'un modèle Grille : une liste avec recherche des modèles Grille ; le choix pose la copie de leur tableau, liée au modèle (js/linked-table.js).
+    bind('v2-btn-linked-table', () => LinkedTable.openPicker(editor, byId('v2-btn-linked-table')));
     decorateLinkShortcut();
-    I18n.onChange(decorateLinkShortcut);
     Shortcuts.onChange(decorateLinkShortcut);
     decorateFindShortcut();
-    I18n.onChange(decorateFindShortcut);
     Shortcuts.onChange(decorateFindShortcut);
     bind('v2-btn-find', () => FindReplace.toggle());
-    I18n.onChange(() => relabelCallout(Callout.isInside(editor)));
-    I18n.onChange(() => relabelQr(QrCode.isSelected(editor)));
     // On insère seulement le caractère déclencheur : @tiptap/suggestion (Variables.createExtension) surveille le document, pas les frappes, donc le
     // caractère inséré par le code rouvre la même autocomplétion que s'il était tapé. Un texte sélectionné n'est pas remplacé par le « # » : la liste
     // s'ouvre devant lui, sur l'onglet Chips, pour l'entourer d'un bloc « Texte conditionnel » (js/conditional-text.js:startFromSelection).
     bind('v2-btn-insert-variable', () => { if (!ConditionalText.startFromSelection(editor)) editor.chain().focus().insertContent(Variables.triggerChar()).run(); });
-    // Le pinceau de mise en forme câble lui-même son clic et son double-clic (js/format-painter.js).
+    // Le pinceau de mise en forme câble lui-même son clic et son double-clic (js/format-painter.js) ; son menu au survol garde les mises en forme (js/format-slots-menu.js).
     FormatPainter.wire(editor);
-    bind('v2-btn-undo', () => editor.chain().focus().undo().run());
-    bind('v2-btn-redo', () => editor.chain().focus().redo().run());
-    bind('v2-btn-track-changes', () => editor.chain().focus().toggleSuggestMode().run());
+    FormatSlotsMenu.wire(editor);
+    // Pendant l'écriture en direct, Annuler et Rétablir passent par l'historique de Yjs, qui ne défait que les frappes de la personne (js/live-entry.js) ; le suivi des modifications est fermé.
+    bind('v2-btn-undo', () => { HistoryMarkers.flush(); if (LiveEntry.undo()) editor.commands.focus(); else editor.chain().focus().undo().run(); });
+    bind('v2-btn-redo', () => { HistoryMarkers.flush(); if (LiveEntry.redo()) editor.commands.focus(); else editor.chain().focus().redo().run(); });
+    const unlessLive = action => () => { if (LiveEntry.isLive()) LiveEntry.explainLocked('trackChanges'); else action(); };
+    bind('v2-btn-track-changes', unlessLive(() => editor.chain().focus().toggleSuggestMode().run()));
     // Variante découpée : celle de la bibliothèque est en O(N²) pour « tout accepter ou refuser » (js/track-changes.js).
-    bind('v2-btn-accept-all', () => editor.chain().focus().acceptAllSuggestionsChunked().run());
-    bind('v2-btn-reject-all', () => editor.chain().focus().rejectAllSuggestionsChunked().run());
+    bind('v2-btn-accept-all', unlessLive(() => editor.chain().focus().acceptAllSuggestionsChunked().run()));
+    bind('v2-btn-reject-all', unlessLive(() => editor.chain().focus().rejectAllSuggestionsChunked().run()));
+    // Écriture en direct (extension « édition » de GFS) : allume ou éteint ; grisée sans l'extension ou hors d'un document enregistré, le clic explique. Le geste fini, le curseur retourne au texte
+    // comme après les autres lignes du menu : sinon le focus resterait sur la ligne, le menu ouvert souris partie, et le clic suivant dans le texte ne le prendrait pas.
+    bind('v2-btn-live', async () => { await LiveEntry.toggle(); editor.commands.focus(); });
+    LiveEntry.onChange(syncLiveRow);
+    syncLiveRow();
+    SlidesEntry.onChange(syncPresentationRow);
+    syncPresentationRow();
+    // Le menu « Objets » (js/objects-menu.js), juste derrière « Image » : GFS qui allume ou éteint l'extension le regrise comme les lignes ci-dessus.
+    ObjectsMenu.build();
+    SlidesEntry.onChange(ObjectsMenu.sync);
 
     wireHeadingMenu();
     wireSelectionDependentSelects();
@@ -574,6 +841,26 @@ const MainToolbar = (function () {
         });
       });
     }
+    // « Mettre à jour « Titre N » d'après la sélection » et « Rétablir le style d'origine » (js/heading-styles.js), pour le modèle puis pour le document (styles partagés) : au clic comme au clavier (Entrée, Espace) ;
+    // sans effet quand la ligne est grisée (hors d'un titre, ou sans style à rétablir) ou que le groupe l'est (e-mail, macro-modèle, lecture seule, Lecture).
+    [
+      ['v2-btn-heading-style-update', 'update'], ['v2-btn-heading-style-reset', 'reset'],
+      ['v2-btn-heading-style-doc-update', 'update', 'document'], ['v2-btn-heading-style-doc-reset', 'reset', 'document'],
+    ].forEach(([id, action, scope]) => {
+      const row = byId(id);
+      if (!row) return;
+      const run = () => {
+        if (row.getAttribute('aria-disabled') === 'true' || row.closest('.v2-hf-locked, .pp-access-locked')) return;
+        HeadingStyles[action](editor, scope);
+      };
+      row.addEventListener('mousedown', event => event.preventDefault());
+      row.addEventListener('click', run);
+      row.addEventListener('keydown', event => {
+        if (event.key !== 'Enter' && event.key !== ' ') return;
+        event.preventDefault();
+        run();
+      });
+    });
     // Réglage de document, pas de sélection : le data-attribute est posé avant la commande pour que le rafraîchissement synchrone du sommaire,
     // qu'elle déclenche, lise déjà la bonne valeur.
     const select = byId('v2-heading-numbering-select');
@@ -625,9 +912,8 @@ const MainToolbar = (function () {
   function wireCompactFontSizeControls() {
     const { captureSelection, withSavedSelection } = EditorCore.createSelectionPreserver();
 
-    // data-i18n : le panneau flotte dans <body>, I18n.setLang() retraduit donc ce bouton sans rebâtir le panneau.
     const fontHtml = FONT_FAMILY_PRESETS.map(o => o.labelKey
-      ? `<button data-action="${o.value}" data-i18n="${o.labelKey}">${I18n.t(o.labelKey)}</button>`
+      ? `<button data-action="${o.value}">${I18n.t(o.labelKey)}</button>`
       : `<button data-action="${o.value}">${o.label}</button>`).join('');
     const fontPanel = EditorCore.createFloatingPanel('v2-format-panel', fontHtml, (value) => {
       withSavedSelection(chain => chain.setFontFamily(value));
@@ -656,6 +942,6 @@ const MainToolbar = (function () {
   }
 
   return {
-    setEditor, setEmailMode, setMacroMode, setGridMode, syncToolbarState, wireToolbar,
+    setEditor, setEmailMode, isEmailMode, setMacroMode, setGridMode, syncToolbarState, wireToolbar,
   };
 })();

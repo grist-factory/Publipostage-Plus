@@ -12,7 +12,7 @@
 //    survol et Tab ouvrent les autres commandes à sa gauche (moins, plus, Ajuster : css/page-zoom.css), un écran tactile seul les garde ouvertes.
 //  - Indisponible - grisé, jamais retiré - quand rien ne s'affiche en page : aperçu de la page décoché, grille, résumé d'un macro-modèle. Les touches
 //    et la molette laissent alors le navigateur faire ce qu'il faisait.
-//  - Le niveau est gardé par modèle, dans ce navigateur (localStorage, comme la langue) ; un modèle jamais zoomé repart de l'affichage d'origine.
+//  - Le niveau est gardé par modèle, dans ce navigateur (js/person-store.js : le navigateur, ou GFS quand elle héberge le widget) ; un modèle jamais zoomé repart de l'affichage d'origine.
 // Script classique (pas type="module"), même convention de portée globale que CleanReading ; js/main.js le câble (wire) et lui annonce chaque modèle
 // chargé (useTemplate).
 const PageZoom = (function () {
@@ -28,6 +28,12 @@ const PageZoom = (function () {
   // Molette et pincement : un cran de 100 px de molette vaut +16 %, un pincement (quelques pixels par évènement) se suit en continu.
   const WHEEL_SPEED = 0.0015;
   const WHEEL_MAX_PX = 120;
+  // La barre de GFS (js/gfs-bar.js) et la pastille : les deux variables qui la décalent (css/page-zoom.css), la classe qui la montre ouverte le temps d'une mesure, et l'attribut de ce qui
+  // s'accroche à sa gauche (le ▶ de « Présenter », extensions/diapositives/slide-show.js : la valeur est l'écart, en px, qu'il garde avec elle).
+  const SHIFT_X = '--pp-gfs-shift-x';
+  const SHIFT_Y = '--pp-gfs-shift-y';
+  const MEASURING = 'pp-page-zoom-measuring';
+  const COMPANION = '[data-pp-zoom-companion]';
   // Pause après le dernier changement avant de garder le niveau et de refaire la pagination, qui se mesure sur le rendu réel.
   const SETTLE_MS = 150;
   const KEPT_TEMPLATES = 60;
@@ -52,16 +58,15 @@ const PageZoom = (function () {
 
   function readStore() {
     try {
-      const list = JSON.parse(localStorage.getItem(STORAGE) || '[]');
+      const list = JSON.parse(PersonStore.get(STORAGE) || '[]');
       if (!Array.isArray(list)) return [];
       return list.filter(e => e && e.i != null && typeof e.n === 'string' && (e.m === 'fit' || (e.m === 'manual' && e.z >= MIN && e.z <= MAX)));
     } catch (e) { return []; }
   }
   function writeStore(list) {
-    try {
-      if (list.length) localStorage.setItem(STORAGE, JSON.stringify(list.slice(-KEPT_TEMPLATES)));
-      else localStorage.removeItem(STORAGE);
-    } catch (e) { /* stockage indisponible : le niveau ne survivra pas au rechargement, sans plus de conséquence */ }
+    // Non retenu (stockage indisponible) : le niveau ne survivra pas au rechargement, sans plus de conséquence.
+    if (list.length) PersonStore.set(STORAGE, JSON.stringify(list.slice(-KEPT_TEMPLATES)));
+    else PersonStore.remove(STORAGE);
   }
   // Le même identifiant et le même nom : le stockage du navigateur est partagé par tous les documents Grist qui ouvrent ce widget, dont les numéros de
   // ligne se recoupent.
@@ -100,6 +105,67 @@ const PageZoom = (function () {
     return scrollbarPx;
   }
 
+  // Les lignes de tableau sous le zoom de la feuille. Le navigateur dessine le trait d'un tableau sur un nombre entier de pixels d'écran, jamais moins d'un : à 0,847 le trait de 1 px
+  // fait 1,18 px de mise en page, à 1,25 il en fait 0,8. Chaque ligne de l'éditeur et de la Lecture est donc un peu plus haute (ou plus basse) que la même ligne de l'hôte de mesure
+  // (js/export-common.js:attachMeasureHost, sans zoom), dont le PDF prend ses hauteurs, et l'écart se cumule sur un long tableau : l'écran le coupe une ligne avant (ou après) le PDF.
+  // `rowGrow(zoom)` rend cet écart par ligne, en pixels de mise en page, mesuré sur un tableau-sonde posé comme l'hôte, avec et sans zoom : c'est le moteur et l'écran de la personne
+  // qui le disent (trait, arrondis de la mise en page, densité de pixels), non une formule. `syncRowGrow` le pose sur le conteneur (`--pp-row-grow`) ; css/editor-v2.css le retranche
+  // du bas des cases. Le premier jet est corrigé une fois sur la sonde elle-même, que la mise en page arrondit au soixante-quatrième de pixel.
+  const ROW_GROW = '--pp-row-grow';
+  const ROW_PROBE_ROWS = 13;
+  const hostPitches = new Map();
+  const rowGrows = new Map();
+  const densityKey = () => String(window.devicePixelRatio || 1);
+  // Le pas d'une ligne d'un tableau-sonde, en pixels de mise en page, sous `zoom` et avec `grow` retranché du bas des cases.
+  function probePitch(zoom, grow) {
+    const probe = Dom.el('div');
+    probe.className = 'tiptap';
+    probe.style.cssText = 'position:absolute; left:-99999px; top:0; visibility:hidden; width:300px; min-height:0; padding:0; margin:0; box-sizing:border-box; zoom:' + zoom + ';';
+    if (grow) probe.style.setProperty(ROW_GROW, grow + 'px');
+    Dom.setMarkup(probe, '<table><tbody>' + '<tr><td><p>Ligne</p></td></tr>'.repeat(ROW_PROBE_ROWS) + '</tbody></table>');
+    document.body.appendChild(probe);
+    try {
+      const rows = probe.querySelectorAll('tr');
+      return (rows[rows.length - 1].getBoundingClientRect().top - rows[0].getBoundingClientRect().top) / (rows.length - 1) / zoom;
+    } finally { probe.remove(); }
+  }
+  function hostPitch() {
+    const key = densityKey();
+    if (!hostPitches.has(key)) hostPitches.set(key, probePitch(1, 0));
+    return hostPitches.get(key);
+  }
+  function rowGrow(zoom) {
+    if (!(zoom > 0)) return 0;
+    const key = zoom + '@' + densityKey();
+    if (rowGrows.has(key)) return rowGrows.get(key);
+    let grow = 0;
+    try {
+      const target = hostPitch();
+      grow = probePitch(zoom, 0) - target;
+      for (let pass = 0; pass < 2; pass += 1) {
+        const left = probePitch(zoom, grow) - target;
+        if (Math.abs(left) < 0.004) break;
+        grow += left;
+      }
+    } catch (e) { grow = 0; }
+    grow = Math.abs(grow) < 0.004 || Math.abs(grow) > 4 ? 0 : Math.round(grow * 10000) / 10000;
+    rowGrows.set(key, grow);
+    return grow;
+  }
+  // Pose (ou retire, à l'échelle 1 et sans feuille) l'écart par ligne d'un conteneur, d'après le facteur qu'il vient de recevoir. Rend true quand la valeur a changé.
+  function syncRowGrow(container, zoom) {
+    if (!container) return false;
+    const grow = zoom > 0 && zoom !== 1 ? rowGrow(zoom) : 0;
+    if (grow) {
+      if (parseFloat(container.style.getPropertyValue(ROW_GROW)) === grow) return false;
+      container.style.setProperty(ROW_GROW, grow + 'px');
+      return true;
+    }
+    if (!container.style.getPropertyValue(ROW_GROW)) return false;
+    container.style.removeProperty(ROW_GROW);
+    return true;
+  }
+
   // Le facteur à poser sur `container` (js/main.js:applyPageFitZoom), ou null quand il ne se mesure pas : conteneur masqué (la Lecture quand on édite, et
   // l'inverse) en 'auto' et 'fit' - le facteur d'avant est gardé, le redimensionnement qui accompagne son retour le recalcule.
   function factorFor(container) {
@@ -110,8 +176,11 @@ const PageZoom = (function () {
     const available = container.clientWidth - padding;
     if (!(available > 0)) return null;
     // Largeur de la feuille = celle de .v2-page-sheet / .reader-content en Aperçu A4 (--pp-page-width, css/editor-v2.css) : 793.71px en A4 portrait,
-    // 1122.52px en A4 paysage, 559.37px en A5 portrait... Lue à chaque calcul, elle change avec le sens et le format du modèle.
-    const sheetWidth = PageLayout.getSheetWidthPx();
+    // 1122.52px en A4 paysage, 559.37px en A5 portrait... Lue à chaque calcul, elle change avec le sens et le format du modèle. Un macro-modèle aux sens
+    // mêlés (js/page-sections.js) a des feuilles de plusieurs largeurs : la Lecture dit la plus large sur son conteneur (js/reader-mode.js:syncWidestSheet),
+    // toutes doivent tenir.
+    const widest = parseFloat(container.getAttribute('data-pp-widest-sheet'));
+    const sheetWidth = widest > 0 ? widest : PageLayout.getSheetWidthPx();
     if (mode === 'fit') {
       // La barre de défilement verticale est comptée comme toujours présente : si la page agrandie dépasse en hauteur, elle apparaît, et la largeur utile
       // ne doit pas changer pour autant - sinon la page rétrécirait, la barre disparaîtrait, la page regrandirait, sans fin. Arrondi vers le bas : un
@@ -120,7 +189,11 @@ const PageZoom = (function () {
       return Math.floor(clamp(stable / sheetWidth) * 1000) / 1000;
     }
     const raw = available / sheetWidth;
-    return raw >= 1 ? 1 : Math.max(AUTO_FLOOR, raw);
+    // Une diapositive (le format 16:9 d'une présentation, js/slides-entry.js, ou l'un des rapports du menu Page : 4:3, 16:10, 1:1) se voit en entier, comme dans PowerPoint, même à côté de la bande des
+    // diapositives : le plancher ne vaut pas pour elle, seul MIN la borne. Un niveau choisi à la pastille garde la main.
+    // Un macro-modèle qui assemble une présentation (js/reader-mode.js:syncWidestSheet) garde une diapositive parmi ses feuilles : de même.
+    const floor = PageLayout.isSlideFormat(PageLayout.getFormat()) || container.hasAttribute('data-pp-slide-sheet') ? MIN : AUTO_FLOOR;
+    return raw >= 1 ? 1 : Math.max(floor, raw);
   }
 
   // Ce qui est à l'écran
@@ -132,15 +205,15 @@ const PageZoom = (function () {
   }
   // Celui qui montre une feuille : sans l'aperçu de la page (case décochée, grille), il n'y a rien à zoomer.
   function zoomable() {
-    const c = visibleContainer();
-    return c && c.classList.contains('a4-preview') ? c : null;
+    const container = visibleContainer();
+    return container && container.classList.contains('a4-preview') ? container : null;
   }
   function sheetOf(c) {
     return c.querySelector(c.id === EDITOR_ID ? '.v2-page-sheet' : '.reader-content');
   }
   function appliedFactor(c) {
-    const z = parseFloat(c.style.getPropertyValue('--pp-fit-zoom'));
-    return z > 0 ? z : 1;
+    const zoom = parseFloat(c.style.getPropertyValue('--pp-fit-zoom'));
+    return zoom > 0 ? zoom : 1;
   }
   // Une fenêtre (js/modal-base.js) ouverte : ses champs gardent leurs touches, le zoom du navigateur reste ce qu'il était.
   function windowOpen() {
@@ -154,29 +227,29 @@ const PageZoom = (function () {
   function hold(c, anchor) {
     const sheet = sheetOf(c);
     if (!sheet) return null;
-    const z = appliedFactor(c);
+    const zoom = appliedFactor(c);
     const box = c.getBoundingClientRect();
     const x = anchor ? anchor.x : box.left + c.clientWidth / 2;
     const y = anchor ? anchor.y : box.top + c.clientHeight / 2;
     const r = sheet.getBoundingClientRect();
-    return { sheet, x, y, u: (x - r.left) / z, v: (y - r.top) / z };
+    return { sheet, x, y, u: (x - r.left) / zoom, v: (y - r.top) / zoom };
   }
   function release(c, held) {
-    const z = appliedFactor(c);
+    const zoom = appliedFactor(c);
     const r = held.sheet.getBoundingClientRect();
-    c.scrollLeft += r.left - (held.x - held.u * z);
-    c.scrollTop += r.top - (held.y - held.v * z);
+    c.scrollLeft += r.left - (held.x - held.u * zoom);
+    c.scrollTop += r.top - (held.y - held.v * zoom);
   }
 
   function change(update, anchor) {
-    const c = zoomable();
-    if (!c || !host) return;
-    const held = hold(c, anchor);
+    const container = zoomable();
+    if (!container || !host) return;
+    const held = hold(container, anchor);
     update();
     changes++;
     unsaved = true;
     const moved = host.apply();
-    if (held) release(c, held);
+    if (held) release(container, held);
     updatePill();
     clearTimeout(settleTimer);
     needsRefresh = needsRefresh || !!moved;
@@ -189,11 +262,11 @@ const PageZoom = (function () {
     persist();
     if (!needsRefresh || !host) return;
     needsRefresh = false;
-    const c = visibleContainer();
+    const container = visibleContainer();
     const seen = changes;
-    const kept = c ? { top: c.scrollTop, left: c.scrollLeft } : null;
+    const kept = container ? { top: container.scrollTop, left: container.scrollLeft } : null;
     try { await host.refresh(); } catch (e) { console.error('[PageZoom] repagination impossible', e); }
-    if (c && kept && seen === changes && c.isConnected) { c.scrollTop = kept.top; c.scrollLeft = kept.left; }
+    if (container && kept && seen === changes && container.isConnected) { container.scrollTop = kept.top; container.scrollLeft = kept.left; }
   }
 
   function nextStep(from, direction) {
@@ -202,9 +275,9 @@ const PageZoom = (function () {
     return MIN;
   }
   function stepBy(direction) {
-    const c = zoomable();
-    if (!c) return;
-    const from = appliedFactor(c);
+    const container = zoomable();
+    if (!container) return;
+    const from = appliedFactor(container);
     const target = nextStep(from, direction);
     if (Math.abs(target - from) < 0.0005) return;
     change(() => { mode = 'manual'; level = target; });
@@ -220,11 +293,11 @@ const PageZoom = (function () {
   }
   function onWheel(event) {
     if (!(event.ctrlKey || event.metaKey) || !event.deltaY) return;
-    const c = zoomable();
-    if (!c) return;
+    const container = zoomable();
+    if (!container) return;
     event.preventDefault();
-    const from = mode === 'manual' ? level : appliedFactor(c);
-    const target = clamp(from * Math.exp(-wheelPixels(event, c) * WHEEL_SPEED));
+    const from = mode === 'manual' ? level : appliedFactor(container);
+    const target = clamp(from * Math.exp(-wheelPixels(event, container) * WHEEL_SPEED));
     if (mode === 'manual' && Math.abs(target - level) < 1e-6) return;
     change(() => { mode = 'manual'; level = target; }, { x: event.clientX, y: event.clientY });
   }
@@ -257,15 +330,31 @@ const PageZoom = (function () {
   // différence que la bibliothèque calcule reste exacte. Sans zoom (facteur 1) rien n'est touché. La poignée est « prise » quand l'éditeur porte la classe
   // resize-cursor au moment de l'appui.
   const shadowClientX = (e, x) => Object.defineProperty(e, 'clientX', { configurable: true, value: x });
+  // La bibliothèque lit aussi, à l'appui, la largeur de départ d'une colonne automatique sur le rendu (`offsetWidth`) : sans Aperçu A4 c'est celle du panneau, et le document en
+  // dépendait (la colonne tirée partait de 457 px dans un panneau de 1 400 px, de 224 px dans un de 700 px). Elle se lit sur la page à l'échelle 1 (EditorCore.pageScale) : la fenêtre
+  // s'ouvre avant l'écouteur de la bibliothèque (sur l'éditeur) et se referme après lui (sur le document, en remontée), ou au tour de boucle suivant.
+  function readStartWidthOnPage() {
+    const page = EditorCore.pageScale(EditorCore.getEditor());
+    page.measure(() => 0);
+    let timer = 0;
+    const close = () => {
+      document.removeEventListener('mousedown', close);
+      clearTimeout(timer);
+      page.close();
+    };
+    document.addEventListener('mousedown', close);
+    timer = setTimeout(close, 0);
+  }
   function onColumnDragStart(event) {
     if (event.button !== 0 || !event.target || !event.target.closest) return;
     const editorDom = event.target.closest('.tiptap');
     if (!editorDom || !editorDom.classList.contains('resize-cursor')) return;
-    const z = EditorCore.layoutZoom(editorDom);
-    if (Math.abs(z - 1) < 0.001) return;
+    const zoom = EditorCore.layoutZoom(editorDom);
+    readStartWidthOnPage();
+    if (Math.abs(zoom - 1) < 0.001) return;
     const startX = Math.round(event.clientX);
     shadowClientX(event, startX);
-    const rescale = e => shadowClientX(e, startX + Math.round((e.clientX - startX) / z));
+    const rescale = e => shadowClientX(e, startX + Math.round((e.clientX - startX) / zoom));
     const release = e => {
       rescale(e);
       window.removeEventListener('mousemove', rescale, true);
@@ -292,9 +381,9 @@ const PageZoom = (function () {
   // Pourquoi il n'y a rien à zoomer : l'aperçu de la page est décoché, ou il n'y a pas de page (grille : sa case est alors grisée, résumé d'un
   // macro-modèle).
   function unavailableText() {
-    const c = visibleContainer();
+    const container = visibleContainer();
     const toggle = document.getElementById('v2-toggle-a4-preview');
-    if (c && toggle && !toggle.disabled && !toggle.checked) return I18n.t('pageZoom.unavailable.preview', { format: PageLayout.getFormatLabel() });
+    if (container && toggle && !toggle.disabled && !toggle.checked) return I18n.t('pageZoom.unavailable.preview', { format: PageLayout.getFormatLabel() });
     return I18n.t('pageZoom.unavailable.none');
   }
 
@@ -315,27 +404,53 @@ const PageZoom = (function () {
   // est posé en variables, css/page-zoom.css y ajoute l'écart au bord. Sans document à l'écran (résumé d'un macro-modèle), la dernière place est gardée.
   function placePill() {
     if (!pill) return;
-    const c = visibleContainer();
-    if (!c) return;
-    const box = c.getBoundingClientRect();
+    const container = visibleContainer();
+    if (!container) return;
+    const box = container.getBoundingClientRect();
     const root = document.documentElement;
-    pill.style.setProperty('--pp-zoom-right', Math.max(0, Math.round(root.clientWidth - (box.left + c.clientLeft + c.clientWidth))) + 'px');
-    pill.style.setProperty('--pp-zoom-bottom', Math.max(0, Math.round(root.clientHeight - (box.top + c.clientTop + c.clientHeight))) + 'px');
+    pill.style.setProperty('--pp-zoom-right', Math.max(0, Math.round(root.clientWidth - (box.left + container.clientLeft + container.clientWidth))) + 'px');
+    pill.style.setProperty('--pp-zoom-bottom', Math.max(0, Math.round(root.clientHeight - (box.top + container.clientTop + container.clientHeight))) + 'px');
+    stepAside();
+  }
+
+  // La barre de GFS (consigne GFS 025) recouvre le cadre au bord que la personne a choisi, centrée sur lui : en bas ou à droite elle peut tomber sur le coin de la pastille. La pastille OUVERTE
+  // (survol, Tab : moins, plus, Ajuster à gauche du pourcentage) et ce qui s'accroche à sa gauche ne doivent pas passer dessous : quand leur place, ouverte, recouvre la zone, le groupe monte de la
+  // profondeur mordue (barre en bas) ou recule d'autant (barre à droite) ; sinon rien ne bouge, et la place ne dépend pas du survol, la pastille ne saute pas sous la souris. Le calcul part de la
+  // place de repos (la pastille déplacée y est ramenée par ce qu'elle a déjà cédé), jamais d'un chiffre de la barre. Une barre à gauche ou en haut ne touche la pastille que dans un cadre
+  // minuscule : rien n'est fait là.
+  function stepAside() {
+    if (!pill || !pill.isConnected) return;
+    const moved = { x: parseFloat(pill.style.getPropertyValue(SHIFT_X)) || 0, y: parseFloat(pill.style.getPropertyValue(SHIFT_Y)) || 0 };
+    const want = { x: 0, y: 0 };
+    if (GfsBar.edge() !== null) {
+      pill.classList.add(MEASURING);
+      const open = pill.getBoundingClientRect();
+      pill.classList.remove(MEASURING);
+      if (open.width > 0) {
+        const companion = document.querySelector(COMPANION);
+        const reach = companion && !companion.hidden ? companion.offsetWidth + (parseFloat(companion.getAttribute('data-pp-zoom-companion')) || 0) : 0;
+        const bite = GfsBar.bite({ left: open.left + moved.x - reach, top: open.top + moved.y, right: open.right + moved.x, bottom: open.bottom + moved.y });
+        want.x = Math.ceil(bite.right);
+        want.y = Math.ceil(bite.bottom);
+      }
+    }
+    if (want.x !== moved.x) { if (want.x) pill.style.setProperty(SHIFT_X, want.x + 'px'); else pill.style.removeProperty(SHIFT_X); }
+    if (want.y !== moved.y) { if (want.y) pill.style.setProperty(SHIFT_Y, want.y + 'px'); else pill.style.removeProperty(SHIFT_Y); }
   }
 
   function updatePill() {
     if (!pill) return;
     placePill();
-    const c = zoomable();
-    const z = c ? appliedFactor(c) : 1;
-    valueButton.textContent = I18n.t('pageZoom.value', { n: Math.round(z * 100) });
+    const container = zoomable();
+    const zoom = container ? appliedFactor(container) : 1;
+    valueButton.textContent = I18n.t('pageZoom.value', { n: Math.round(zoom * 100) });
     const grey = (button, off) => { if (off) button.setAttribute('aria-disabled', 'true'); else button.removeAttribute('aria-disabled'); };
-    grey(outButton, !c || z <= MIN + 0.001);
-    grey(inButton, !c || z >= MAX - 0.001);
-    grey(valueButton, !c);
-    grey(fitButton, !c);
-    fitButton.setAttribute('aria-pressed', c && mode === 'fit' ? 'true' : 'false');
-    applyTexts(!!c);
+    grey(outButton, !container || zoom <= MIN + 0.001);
+    grey(inButton, !container || zoom >= MAX - 0.001);
+    grey(valueButton, !container);
+    grey(fitButton, !container);
+    fitButton.setAttribute('aria-pressed', container && mode === 'fit' ? 'true' : 'false');
+    applyTexts(!!container);
   }
 
   function build() {
@@ -384,9 +499,9 @@ const PageZoom = (function () {
       const sizes = new ResizeObserver(placePill);
       [containerOf(EDITOR_ID), containerOf(READER_ID)].forEach(c => { if (c) sizes.observe(c); });
     } else window.addEventListener('resize', placePill);
-    I18n.onChange(updatePill);
+    GfsBar.onChange(stepAside);
     updatePill();
   }
 
-  return { wire, useTemplate, factorFor };
+  return { wire, useTemplate, factorFor, place: placePill, rowGrow, syncRowGrow };
 })();

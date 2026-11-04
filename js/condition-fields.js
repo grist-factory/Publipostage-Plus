@@ -36,15 +36,100 @@ const ConditionFields = (function () {
     return '';
   }
 
-  function appendColumnOption(parent, value, table, column) {
+  function appendColumnOption(parent, value, table, column, descend) {
     // Une colonne de la liste : `value` est « Colonne » (table de la page) ou « Table.Colonne », et c'est aussi son nom à l'écran. Le type Grist en est
     // l'indice dans la liste avec recherche (« Date de début (date) »), qui permet de chercher « date » ; le texte de l'<option>, « nom (indice) »,
-    // sert à la liste native de repli. Exportée : le tri d'une boucle (js/variable-loop.js) liste ses colonnes pareil.
+    // sert à la liste native de repli. Sa table et son libellé Grist se cherchent aussi (`data-search`). `descend` : une colonne Référence porte alors la
+    // table qu'elle désigne (`data-expand`), pour que la liste lui montre la flèche qui en ouvre les colonnes (columnsBelow). Exportée : le tri d'une
+    // boucle (js/variable-loop.js) liste ses colonnes pareil, sans flèche.
     const hint = friendlyTypeLabel(GristAPI.getColumnType(table, column));
     const option = Dom.option(value, hint ? value + ' (' + hint + ')' : value);
     option.dataset.name = value;
+    option.dataset.search = Variables.columnSearchText(table, column);
     if (hint) option.dataset.hint = hint;
+    const target = descend ? Variables.referencedTable(table, column) : null;
+    if (target) option.dataset.expand = target;
     parent.appendChild(option);
+  }
+
+  // La clé complète d'une ligne de la liste : « Colonne » (table de la page) devient « Table.Colonne ». C'est la forme d'un chemin
+  // (« Projet.Accompagnateur.Email ») que lit la règle : ConditionRules.parseColumnRef coupe au premier point, Variables.resolveRawValue suit le reste.
+  const fullKey = (value, pageTable) => (value.indexOf('.') === -1 ? pageTable + '.' + value : value);
+
+  function columnsBelow(item, pageTable) {
+    // Les lignes où mène la flèche de `item` dans la liste (js/search-select.js, option `expand`) : les colonnes de la table que désigne sa colonne
+    // Référence, chacune sous sa clé complète « Table.Référence.Colonne » (Variables.columnsBelow) avec le type pour indice.
+    return Variables.columnsBelow(fullKey(item.value, pageTable), (table, column) => friendlyTypeLabel(GristAPI.getColumnType(table, column)));
+  }
+
+  function addSavedPathOption(select, saved, pageTable) {
+    // Une colonne enregistrée qui est un chemin (« Projet.Accompagnateur.Email », choisi en descendant dans une Référence) n'a pas de ligne dans la liste :
+    // elle en reçoit une, comme à son choix (SearchSelect.addDynamicOption), pour s'afficher comme une colonne de la liste et non en saisie avancée. Un
+    // chemin dont un maillon a disparu reste en saisie avancée, comme toute colonne inconnue.
+    const parts = saved.split('.');
+    if (parts.length < 3) return;
+    const path = parts.slice(1).join('.');
+    const end = GristAPI.resolveColumnPath(parts[0], path);
+    if (!end) return;
+    const root = parts[0] === pageTable ? parts[1] : parts[0] + '.' + parts[1];
+    SearchSelect.addDynamicOption(select, { value: saved, hint: friendlyTypeLabel(end.type), search: Variables.columnSearchText(parts[0], path) }, root);
+  }
+
+  // === Choisir la colonne dans la fenêtre « Autres attributs » === (option `attributesWindow` de buildColumnField)
+  const sameList = (a, b) => a.length === b.length && a.every((item, i) => item === b[i]);
+
+  function windowStart(context, pageTable) {
+    // Où s'ouvre la fenêtre (js/variable-linked-attrs.js:pickColumn) : { base, hops, column } - la table d'où partent les chemins, les colonnes Référence à suivre
+    // depuis elle jusqu'au niveau montré, et la colonne à y sélectionner d'avance. C'est le niveau où l'on est dans la liste (`context.from` : la colonne Référence
+    // d'où l'on est descendu) ; à défaut, celui de la colonne déjà choisie (un clic sur sa bulle) ; sinon le premier niveau de la table de la page. La colonne
+    // déjà choisie y est sélectionnée si elle est à ce niveau. La fenêtre part de la table de la colonne : celle de la page (« Colonne », « Page.Réf.Colonne »)
+    // ou une autre (« Annuaire.Colonne », « Annuaire.Réf.Colonne »), qu'elle suit de Référence en Référence comme pour la bulle d'une variable de cette table.
+    const path = value => (value && value !== ADVANCED_COLUMN_VALUE ? fullKey(String(value), pageTable).split('.') : []);
+    const parts = path(context.value);
+    const chosen = parts.length >= 2 ? { base: parts[0], hops: parts.slice(1, -1), column: parts[parts.length - 1] } : null;
+    const from = path(context.from);
+    if (from.length) {
+      const start = { base: from[0], hops: from.slice(1), column: '' };
+      return chosen && chosen.base === start.base && sameList(chosen.hops, start.hops) ? Object.assign(start, { column: chosen.column }) : start;
+    }
+    return chosen || { base: pageTable, hops: [], column: '' };
+  }
+
+  async function browseColumn(select, search, context) {
+    // Ce que fait le bouton (ou Ctrl+Entrée, ou un clic sur la bulle du choix) d'une liste de colonnes qui a `attributesWindow` : la fenêtre « Autres attributs »
+    // s'ouvre pour choisir UNE colonne de la page ou, de Référence en Référence, d'une table qu'elle désigne, avec la valeur de chacune sur la ligne sélectionnée.
+    // La colonne choisie est posée comme la liste l'aurait posée : sa ligne si la liste n'en a pas (un chemin, addSavedPathOption), `select.value`, puis le
+    // `change` d'un choix (la règle l'adopte, la fenêtre de condition relance son aperçu). Annuler ou Échap ne change rien. Dans les deux cas le focus revient
+    // au champ.
+    const pageTable = GristAPI.getCurrentTableId();
+    if (!pageTable) return;
+    const start = windowStart(context, pageTable);
+    let picked = null;
+    try { picked = await VariableLinkedAttrs.pickColumn({ base: start.base, hops: start.hops, column: start.column, query: context.query }); }
+    catch (e) { console.error('[ConditionFields] fenêtre des attributs indisponible', e); }
+    if (!select.isConnected) return; // la règle a été redessinée ou retirée pendant le choix
+    const key = picked ? [picked.base].concat(picked.hops, picked.column).join('.') : '';
+    const listed = () => Array.prototype.some.call(select.options, option => option.value === key);
+    if (key && !listed()) addSavedPathOption(select, key, pageTable);
+    // Une colonne de la page est « Colonne » dans la liste, pas « Table.Colonne » : sa ligne est cherchée sous les deux formes.
+    const value = listed() ? key : (picked && picked.base === pageTable && !picked.hops.length ? picked.column : '');
+    if (value && Array.prototype.some.call(select.options, option => option.value === value) && select.value !== value) {
+      select.value = value;
+      search.sync();
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+    } else {
+      search.sync();
+    }
+    search.focus({ preventScroll: true });
+  }
+
+  function columnPill(value, name) {
+    // Le choix d'une règle dessiné comme une variable du document (option `pill` de SearchSelect) : son nom (« Colonne », « Table.Colonne », « Table.Réf.Colonne »)
+    // coupé en un début et une fin comme celui d'une bulle (EditorNodes.splitBadgeLabel), sous le caractère de déclenchement des variables. Pas la saisie avancée :
+    // ce n'est pas une colonne.
+    if (!value || value === ADVANCED_COLUMN_VALUE) return null;
+    const { head, tail } = EditorNodes.splitBadgeLabel(name);
+    return { prefix: Variables.triggerChar(), head, tail };
   }
 
   function appendAllTablesOptions(select, currentTableId) {
@@ -53,18 +138,19 @@ const ConditionFields = (function () {
     // quand même : l'appelant demande alors la clé du lien (options.onColumnChosen).
     const tables = GristAPI.getTables();
     const ordered = tables.includes(currentTableId) ? [currentTableId, ...tables.filter(t => t !== currentTableId)] : tables;
-    ordered.forEach(table => GristAPI.getVisibleColumns(table).forEach(c => appendColumnOption(select, table === currentTableId ? c : table + '.' + c, table, c)));
+    ordered.forEach(table => GristAPI.getVisibleColumns(table).forEach(c => appendColumnOption(select, table === currentTableId ? c : table + '.' + c, table, c, true)));
   }
 
-  function ensureTableLinked(ref, onLinked) {
+  function ensureTableLinked(ref, onLinked, zoneTables) {
     // Avant d'adopter une colonne d'une table pas encore liée à celle de la page, la fenêtre de choix de la clé s'ouvre
     // (js/variables.js:ensureLinkConfigured). Rend `true` tout de suite quand il n'y a rien à demander (colonne de la page ou table déjà liée), sinon
     // une promesse : vraie si le lien est enregistré, fausse si le choix est annulé (options.onColumnChosen remet alors la colonne précédente).
     // `onLinked`, facultatif : appelé une fois le lien enregistré et la colonne adoptée (le setTimeout laisse passer l'adoption, qui suit la résolution
-    // de la promesse).
+    // de la promesse). `zoneTables`, facultatif : les tables des zones répétées qui entourent la variable (js/variable-loop.js:loopTablesAt) ; leurs
+    // colonnes se lisent dans la ligne du tour, sans lien avec la page.
     const currentTableId = GristAPI.getCurrentTableId();
     if (!ref || !ref.table || !currentTableId || ref.table === currentTableId) return true;
-    if (GristAPI.getLinkRule(ref.table)) return true;
+    if (GristAPI.getLinkRule(ref.table) || (zoneTables && zoneTables.indexOf(ref.table) !== -1)) return true;
     const linking = Variables.ensureLinkConfigured({ table: ref.table });
     return onLinked ? linking.then(ok => { if (ok) setTimeout(() => onLinked(), 0); return ok; }) : linking;
   }
@@ -75,7 +161,7 @@ const ConditionFields = (function () {
     const pageTable = GristAPI.getCurrentTableId();
     if (opts.table) GristAPI.getVisibleColumns(opts.table).forEach(c => appendColumnOption(select, c, opts.table, c));
     else if (opts.allTables) appendAllTablesOptions(select, pageTable);
-    else if (pageTable) GristAPI.getColumns(pageTable).forEach(c => appendColumnOption(select, c, pageTable, c));
+    else if (pageTable) GristAPI.getColumns(pageTable).forEach(c => appendColumnOption(select, c, pageTable, c, true));
   }
 
   function showSavedChoice(select, advancedInput, advancedValue, saved, known) {
@@ -88,33 +174,51 @@ const ConditionFields = (function () {
   }
 
   function columnFacts(value, baseTable) {
-    // Ce que la ligne affichée sait de la colonne choisie (`value`, nue ou « Table.Colonne ») : sa colonne, sa table, son type, et si la ligne affichée
-    // ne la porte pas (colonne non transmise par grist.onRecord). `baseTable` : la table d'une colonne nue.
+    // Ce que la ligne affichée sait de la colonne choisie (`value`, nue, « Table.Colonne » ou un chemin « Table.Référence.Colonne ») : sa colonne, sa table,
+    // son type, et si la ligne affichée ne la porte pas (colonne non transmise par grist.onRecord). `baseTable` : la table d'une colonne nue. Pour un
+    // chemin, la colonne, la table et le type sont ceux où il aboutit (c'est la valeur à comparer, ses choix possibles) ; `linkTable` reste celle d'où il
+    // part, dont le lien lit la ligne, et aucune colonne de la page n'est requise (le chemin relit la ligne par son identifiant).
     const ref = value ? ConditionRules.parseColumnRef(value, baseTable()) : null;
-    const col = ref ? ref.column : null;
-    const table = ref ? ref.table : null;
-    const type = (col && table) ? GristAPI.getColumnType(table, col) : null;
-    const record = (col && table === GristAPI.getCurrentTableId()) ? GristAPI.getCurrentRecord() : null;
-    return { col, table, type, missingFromRecord: !!(col && record && !(col in record)) };
+    let col = ref ? ref.column : null;
+    let table = ref ? ref.table : null;
+    const linkTable = table;
+    const isPath = !!col && col.indexOf('.') !== -1;
+    let type = (col && table) ? GristAPI.getColumnType(table, col) : null;
+    if (isPath) {
+      const end = GristAPI.resolveColumnPath(table, col);
+      if (end) { table = end.table; col = end.column; type = end.type; }
+    }
+    const record = (col && !isPath && table === GristAPI.getCurrentTableId()) ? GristAPI.getCurrentRecord() : null;
+    return { col, table, linkTable, type, missingFromRecord: !!(col && record && !(col in record)) };
   }
 
   // Liste des colonnes réelles, plus une option « avancé » (jamais retirée) qui révèle un champ texte pour une colonne absente de la liste
-  // (« Table.Colonne », js/condition-rules.js:parseColumnRef). `onTypeChange(type, colonne, table)` prévient le champ Valeur de la colonne choisie,
-  // pour son placeholder et ses choix. Renvoie `{ wrap, typeHint }` : l'appelant place `typeHint` hors de `wrap` (voir plus bas). `options` :
+  // (« Table.Colonne », js/condition-rules.js:parseColumnRef). `onTypeChange(type, colonne, table, tableDuLien)` prévient le champ Valeur de la colonne
+  // choisie, pour son placeholder et ses choix (pour un chemin, la colonne et la table où il aboutit ; `tableDuLien` est celle d'où il part). Renvoie `{ wrap, typeHint }` : l'appelant place `typeHint` hors de `wrap` (voir plus bas). `options` :
   // { allTables: true } liste les colonnes de toutes les tables (appendAllTablesOptions) ; { onColumnChosen(ref, value) } est appelé avant d'adopter
   // une colonne de la liste : `true` l'adopte tout de suite, une promesse qui ne résout pas vrai remet la colonne précédente ; { table } (boucle,
   // js/variable-loop.js) liste les colonnes de cette seule table, en valeur nue, car le filtre d'une boucle lit la table parcourue
-  // (js/loop-rules.js:ruleHolds). Sans options : les colonnes de la page seule.
+  // (js/loop-rules.js:ruleHolds). Sans options : les colonnes de la page seule. Le même champ sert à choisir l'AUTRE colonne d'une règle qui compare
+  // deux colonnes (buildOtherColumnField) : { property: 'valueColumn' } range alors le choix dans `rule.valueColumn` au lieu de `rule.column`,
+  // { typeHint } est la ligne d'indication que l'appelant garde (cachée tant qu'elle est vide) et { warningOnly: true } n'y écrit que l'avertissement
+  // « absente de la ligne affichée », pas le type de la colonne. Une colonne Référence de la liste montre une flèche qui ouvre les colonnes de sa table (les
+  // lignes de la liste sont alors des chemins « Table.Référence.Colonne », columnsBelow) ; pas avec { table }, où le filtre d'une boucle lit la ligne
+  // parcourue seule. { attributesWindow: true } (la fenêtre de condition) ajoute à la liste un bouton, et Ctrl+Entrée, qui ouvrent la fenêtre « Autres attributs »
+  // pour y choisir la colonne en voyant leur valeur (browseColumn) ; la colonne choisie, elle, s'affiche dans le champ comme une variable du document
+  // (columnPill) et un clic sur elle - ou Ctrl+Entrée sur le champ - ouvre la même fenêtre, sur son niveau ; aussi pour l'autre colonne d'une règle qui en
+  // compare deux.
   function buildColumnField(rule, onTypeChange, options) {
     const opts = options || {};
+    const prop = opts.property || 'column';
     const baseTable = () => opts.table || GristAPI.getCurrentTableId();
     const wrap = el('span', 'macro-rule-column-wrap');
-    const select = el('select', 'macro-rule-column');
+    const select = el('select', prop === 'column' ? 'macro-rule-column' : 'macro-rule-column macro-rule-value-column');
     fillColumnList(select, opts);
+    if (!opts.table) addSavedPathOption(select, rule[prop] || '', GristAPI.getCurrentTableId());
     const listed = Array.from(select.options).map(o => o.value).filter(Boolean);
     select.appendChild(pinnedOption(ADVANCED_COLUMN_VALUE, I18n.t('macro.modal.columnAdvanced')));
     const advancedInput = textInput('macro-rule-column-advanced', I18n.t('macro.modal.columnAdvancedPlaceholder'));
-    const typeHint = el('span', 'macro-rule-column-type');
+    const typeHint = opts.typeHint || el('span', 'macro-rule-column-type');
 
     // Avertissement si la colonne choisie est absente de la ligne affichée (record) : probablement une colonne non cochée dans le panneau de droite
     // du widget, que grist.onRecord ne transmet pas (js/grist-api.js:includeColumns), si bien qu'une règle « = » échouerait sans rien dire
@@ -122,12 +226,15 @@ const ConditionFields = (function () {
     // transmet.
     function updateTypeHint() {
       const facts = columnFacts(select.value === ADVANCED_COLUMN_VALUE ? null : select.value, baseTable);
-      typeHint.textContent = facts.missingFromRecord ? I18n.t('macro.modal.columnMissingFromRecord') : (facts.type ? friendlyTypeLabel(facts.type) : '');
+      const label = facts.type && !opts.warningOnly ? friendlyTypeLabel(facts.type) : '';
+      typeHint.textContent = facts.missingFromRecord ? I18n.t('macro.modal.columnMissingFromRecord') : label;
       typeHint.classList.toggle('is-warning', facts.missingFromRecord);
-      if (onTypeChange) onTypeChange(facts.type, facts.col, facts.table);
+      // Une ligne d'indication confiée par l'appelant n'occupe de place sous la règle que quand elle dit quelque chose.
+      if (opts.typeHint) typeHint.hidden = !typeHint.textContent;
+      if (onTypeChange) onTypeChange(facts.type, facts.col, facts.table, facts.linkTable);
     }
 
-    showSavedChoice(select, advancedInput, ADVANCED_COLUMN_VALUE, rule.column || '', listed);
+    showSavedChoice(select, advancedInput, ADVANCED_COLUMN_VALUE, rule[prop] || '', listed);
     updateTypeHint();
 
     // Liste avec recherche (js/search-select.js) posée plus bas par-dessus le <select>, qui reste la source de la valeur et des évènements `change`.
@@ -142,7 +249,7 @@ const ConditionFields = (function () {
     }
     function adopt(value) {
       advancedInput.hidden = true;
-      rule.column = value;
+      rule[prop] = value;
       adoptedSelectValue = value;
       updateTypeHint();
     }
@@ -150,7 +257,7 @@ const ConditionFields = (function () {
       if (select.value === ADVANCED_COLUMN_VALUE) {
         advancedInput.hidden = false;
         advancedInput.focus();
-        rule.column = advancedInput.value;
+        rule[prop] = advancedInput.value;
         adoptedSelectValue = ADVANCED_COLUMN_VALUE;
         updateTypeHint();
         return;
@@ -168,13 +275,21 @@ const ConditionFields = (function () {
         restoreAdopted();
       });
     });
-    advancedInput.addEventListener('input', () => { rule.column = advancedInput.value; });
+    advancedInput.addEventListener('input', () => { rule[prop] = advancedInput.value; });
 
     wrap.append(select, advancedInput);
     // L'indice de type est dit dans la liste ouverte, pas dans le champ fermé : il reste sous le champ (typeHint). Si le composant échoue, le
     // <select> natif reste affiché.
-    try { search = SearchSelect.attachColumns(select, { inline: true, hintInTrigger: false }); }
-    catch (e) { console.warn('[ConditionFields] recherche de colonne indisponible, liste native conservée', e); }
+    try {
+      // La fenêtre des attributs : seulement pour les listes qui descendent dans les Références (comme la fenêtre), pas celle d'une boucle. Elle s'ouvre par le
+      // bouton de la liste, Ctrl+Entrée et un clic sur la colonne choisie, qui s'y montre comme une variable du document.
+      const windowed = !!opts.attributesWindow && !opts.table && typeof VariableLinkedAttrs !== 'undefined';
+      search = SearchSelect.attachColumns(select, {
+        inline: true, hintInTrigger: false, expand: opts.table ? undefined : item => columnsBelow(item, GristAPI.getCurrentTableId()),
+        browse: windowed ? context => browseColumn(select, search, context) : undefined,
+        pill: windowed ? columnPill : undefined,
+      });
+    } catch (e) { console.warn('[ConditionFields] recherche de colonne indisponible, liste native conservée', e); }
     // typeHint reste hors de `wrap` (largeur flex:1, un tiers de la ligne) : l'avertissement « colonne absente », long, écraserait le reste de la
     // ligne. L'appelant le place en pleine largeur sous la ligne (.macro-rule-column-type, css/toolbar-v2.css : flex-basis:100%).
     return { wrap, typeHint };
@@ -317,12 +432,11 @@ const ConditionFields = (function () {
   }
 
   // « vide » / « non vide » ne lisent jamais la valeur (js/condition-rules.js:compareValues) : le champ Valeur est grisé, pas retiré, et sa valeur
-  // reste si l'on revient à un autre opérateur.
-  const VALUELESS_OPERATORS = ['vide', 'non vide'];
+  // reste si l'on revient à un autre opérateur. Le bouton « autre colonne » (buildCompareButton) l'est avec lui : il n'y a rien à comparer.
   function syncValueDisabled(valueSlot, operator) {
-    const disabled = VALUELESS_OPERATORS.indexOf(operator) !== -1;
+    const disabled = ConditionRules.VALUELESS_OPERATORS.indexOf(operator) !== -1;
     valueSlot.classList.toggle('is-disabled', disabled);
-    valueSlot.querySelectorAll('select, input').forEach(field => {
+    valueSlot.querySelectorAll('select, input, .macro-rule-compare').forEach(field => {
       field.disabled = disabled;
       // La liste avec recherche ne lit l'état grisé de son <select> masqué qu'à sa demande (aucun évènement ne le lui dit).
       if (field.tagName === 'SELECT') SearchSelect.sync(field);
@@ -338,21 +452,74 @@ const ConditionFields = (function () {
     Array.from(operatorSelect.options).forEach(option => { option.disabled = bool && BOOL_MEANINGLESS_OPERATORS.indexOf(option.value) !== -1; });
   }
 
+  function buildCompareButton() {
+    // Le bouton qui fait passer le champ Valeur de « une valeur saisie » à « une autre colonne de la même ligne », et inversement. Un bouton à deux
+    // états (aria-pressed, enfoncé = on compare à une colonne) dont le nom ne change pas : c'est l'état qui le dit.
+    const label = I18n.t('macro.modal.compareToColumn');
+    const button = Dom.button('macro-rule-compare');
+    Dom.setMarkup(button, Icons.svg('compareColumns'));
+    button.title = label;
+    button.setAttribute('aria-label', label);
+    return button;
+  }
+
+  function buildOtherColumnField(rule, options, valueHint) {
+    // Le champ Valeur d'une règle qui compare à une autre colonne : la même liste avec recherche que celle de la colonne de la règle (buildColumnField, qui
+    // range le choix dans `rule.valueColumn`), avec les mêmes colonnes et la même clé de correspondance pour une table pas encore liée. Seul son
+    // avertissement « absente de la ligne affichée » est dit, dans `valueHint`, sous la règle ; `options.onValueColumnResolved(table)` y affiche le
+    // lien de sa table.
+    const onChosen = (type, colId, table, linkTable) => { if (options.onValueColumnResolved) options.onValueColumnResolved(linkTable || table, colId, type); };
+    const field = buildColumnField(rule, onChosen, Object.assign({}, options, { property: 'valueColumn', typeHint: valueHint, warningOnly: true }));
+    return field.wrap;
+  }
+
   function buildConditionFields(rule, options) {
-    // Le champ Valeur est reconstruit à chaque changement de colonne (renderValue) : son type, liste ou texte, dépend de celui de la colonne.
+    // Le champ Valeur est reconstruit à chaque changement de colonne (fillValueSlot) : son type, liste ou texte, dépend de celui de la colonne.
     // buildColumnField appelle renderValue tout de suite pour la colonne déjà enregistrée : valueSlot et operatorSelect doivent donc exister avant lui.
     // `options` : transmis à buildColumnField, plus { onColumnResolved(table, colonne, type) } appelé à la construction puis à chaque colonne adoptée
     // (la fenêtre de condition y affiche le lien de la table). `typeHint` est à placer par l'appelant en dernier enfant de sa ligne (voir
     // buildColumnField).
+    // { compareColumn: true } (la fenêtre de condition d'une bulle, d'un bloc, d'une valeur ou d'une case) ajoute, dans le champ Valeur, le bouton
+    // « autre colonne » (buildCompareButton) : enfoncé, la règle compare la colonne à une autre colonne de la même ligne (`rule.valueColumn`, choisie
+    // dans la même liste avec recherche ; js/condition-rules.js:compareOperands) au lieu d'une valeur saisie, qui reste là pour quand on revient. Les
+    // macro-modèles, « Modèle selon la ligne » et le filtre d'une boucle ne le demandent pas : leur évaluation ne lit qu'une valeur saisie. Il rend
+    // alors aussi `valueHint`, la ligne d'indication de l'autre colonne, à placer sous celle de la colonne, et `options.onValueColumnResolved(table)`
+    // est appelé quand l'autre colonne change (le lien de sa table).
+    const compare = !!(options && options.compareColumn);
     const valueSlot = el('span', 'macro-rule-value-slot');
     const operatorSelect = el('select');
+    const compareButton = compare ? buildCompareButton() : null;
+    const valueHint = compare ? el('span', 'macro-rule-column-type') : null;
+    if (valueHint) valueHint.hidden = true;
     let columnType = null;
-    function renderValue(type, colId, table) {
-      columnType = type;
-      syncOperatorOptions(operatorSelect, type);
-      valueSlot.replaceChildren(buildValueField(rule, type, colId, table));
+    let columnId = null;
+    let columnTable = null;
+    function fillValueSlot() {
+      // La valeur saisie (liste ou texte selon la colonne) ou, en mode « autre colonne », la liste des colonnes ; le bouton reste le même élément, il
+      // garde donc son focus au clavier.
+      const otherColumn = compare && ConditionRules.inColumnMode(rule);
+      if (valueHint && !otherColumn) {
+        valueHint.textContent = '';
+        valueHint.hidden = true;
+        if (options.onValueColumnResolved) options.onValueColumnResolved(null);
+      }
+      const field = otherColumn ? buildOtherColumnField(rule, options, valueHint) : buildValueField(rule, columnType, columnId, columnTable);
+      valueSlot.replaceChildren(...(compare ? [compareButton, field] : [field]));
+      valueSlot.classList.toggle('has-compare', compare);
+      if (compare) {
+        compareButton.classList.toggle('is-on', otherColumn);
+        compareButton.setAttribute('aria-pressed', otherColumn ? 'true' : 'false');
+      }
       syncValueDisabled(valueSlot, operatorSelect.value || rule.operator || '=');
-      if (options && options.onColumnResolved) options.onColumnResolved(table, colId, type);
+    }
+    function renderValue(type, colId, table, linkTable) {
+      columnType = type;
+      columnId = colId;
+      columnTable = table;
+      syncOperatorOptions(operatorSelect, type);
+      fillValueSlot();
+      // Le lien affiché sous la règle est celui de la table d'où part la colonne, pas de celle où un chemin aboutit.
+      if (options && options.onColumnResolved) options.onColumnResolved(linkTable || table, colId, type);
     }
 
     const columnField = buildColumnField(rule, renderValue, options);
@@ -363,18 +530,54 @@ const ConditionFields = (function () {
     syncOperatorOptions(operatorSelect, columnType);
     syncValueDisabled(valueSlot, operatorSelect.value);
     operatorSelect.addEventListener('change', () => { rule.operator = operatorSelect.value; syncValueDisabled(valueSlot, operatorSelect.value); });
+    if (compareButton) {
+      // Comme la valeur saisie, qui reste dans la règle pendant qu'on compare à une colonne, l'autre colonne choisie est gardée par la ligne tant qu'on est en mode
+      // « valeur » : un second clic sur le bouton, fait par erreur ou pour y regarder, la retrouve au lieu d'un champ vide.
+      let rememberedColumn = '';
+      compareButton.addEventListener('click', () => {
+        if (ConditionRules.inColumnMode(rule)) { rememberedColumn = rule.valueColumn; delete rule.valueColumn; } else rule.valueColumn = rememberedColumn;
+        fillValueSlot();
+        compareButton.focus();
+        // Aucun champ n'a parlé : la fenêtre relance son aperçu sur ce `change`, comme à toute saisie dans une règle.
+        valueSlot.dispatchEvent(new Event('change', { bubbles: true }));
+      });
+    }
 
-    return { columnWrap: columnField.wrap, operatorSelect, valueSlot, typeHint: columnField.typeHint };
+    return { columnWrap: columnField.wrap, operatorSelect, valueSlot, typeHint: columnField.typeHint, valueHint };
   }
 
   // Une règle sans colonne, telle que « + Ajouter une condition » la pose.
   const emptyRule = () => ({ column: '', operator: '=', value: '' });
+  // Un groupe sans colonne, tel que « + Groupe » le pose : les « parenthèses » d'une condition, { mode, rules } (js/condition-rules.js:isGroup), avec deux lignes vides
+  // et la combinaison inverse de celle de la condition qui l'entoure - on pose des parenthèses pour mêler « et » et « ou » : « A et (B ou C) ».
+  const emptyGroup = outerMode => ({ mode: outerMode === 'any' ? 'all' : 'any', rules: [emptyRule(), emptyRule()] });
 
-  function buildRuleRow(rule, index, { mode, options, onRemove, extra = [] }) {
+  function buildConnector(index, mode, onMode, inGroup) {
+    // « Si » devant la première règle ; « Et » ou « Ou » devant les suivantes, selon `mode` ('all' ou 'any' : une condition, ou un groupe, n'a qu'UN mode, le même
+    // entre tous ses éléments). Avec `onMode`, ce mot est un bouton : un clic relie tous les éléments par l'autre mot et appelle `onMode('all' | 'any')`, que la
+    // fenêtre applique à son brouillon avant de se retracer. Sans `onMode` (ou devant la première règle), c'est un simple texte. `inGroup` : le bouton d'une ligne
+    // de groupe ne parle que des lignes du groupe.
+    if (index === 0) return el('span', 'macro-rule-connector', I18n.t('macro.modal.ruleIf'));
+    const word = I18n.t(mode === 'any' ? 'varCond.ruleOr' : 'varCond.ruleAnd');
+    if (!onMode) return el('span', 'macro-rule-connector', word);
+    const next = mode === 'any' ? 'all' : 'any';
+    const hint = I18n.t(next === 'any'
+      ? (inGroup ? 'varCond.group.connectorToOr' : 'varCond.connectorToOr')
+      : (inGroup ? 'varCond.group.connectorToAnd' : 'varCond.connectorToAnd'));
+    const toggle = el('button', 'macro-rule-connector macro-rule-connector-toggle', word);
+    toggle.type = 'button';
+    // Le nom accessible commence par le mot qu'on voit (« Et »), puis dit ce que fait le clic.
+    toggle.setAttribute('aria-label', word + ' : ' + hint);
+    toggle.title = hint;
+    toggle.addEventListener('click', () => onMode(next));
+    return toggle;
+  }
+
+  function buildRuleRow(rule, index, { mode, options, onRemove, extra = [], onMode = null, inGroup = false }) {
     // La ligne d'une règle de la condition d'une bulle ou du filtre d'une boucle (js/variable-condition.js, js/variable-loop.js), en une seule ligne :
-    // le connecteur (« Si », puis « et » ou « ou » selon `mode`), la colonne, l'opérateur, la valeur, la croix qui retire la règle (`onRemove`), puis
-    // l'indication de type et les nœuds `extra` : en dernier, pour la raison donnée à buildTemplateRule. `options` : celles de buildConditionFields.
-    const connectorKey = index === 0 ? 'macro.modal.ruleIf' : (mode === 'any' ? 'varCond.ruleOr' : 'varCond.ruleAnd');
+    // le connecteur (« Si », puis « et » ou « ou » selon `mode` ; un bouton qui change `mode` quand la fenêtre donne `onMode`, cf. buildConnector), la
+    // colonne, l'opérateur, la valeur, la croix qui retire la règle (`onRemove`), puis l'indication de type (puis celle de l'autre colonne, quand la règle
+    // peut en comparer une) et les nœuds `extra` : en dernier, pour la raison donnée à buildTemplateRule. `options` : celles de buildConditionFields.
     const fields = buildConditionFields(rule, options);
     const remove = el('button', 'macro-rule-remove');
     remove.type = 'button';
@@ -382,22 +585,126 @@ const ConditionFields = (function () {
     remove.title = I18n.t('varCond.removeRule');
     remove.addEventListener('click', onRemove);
     const row = el('div', 'macro-rule-row');
-    row.append(el('span', 'macro-rule-connector', I18n.t(connectorKey)), fields.columnWrap, fields.operatorSelect, fields.valueSlot, remove, fields.typeHint, ...extra);
+    row.append(buildConnector(index, mode, onMode, inGroup), fields.columnWrap, fields.operatorSelect, fields.valueSlot, remove, fields.typeHint,
+      ...(fields.valueHint ? [fields.valueHint] : []), ...extra);
     return row;
   }
 
-  function buildAddRuleButton(box, rules, redraw) {
-    // « + Ajouter une condition » : ajoute une règle vide à `rules`, `redraw` redessine la fenêtre, puis la colonne de la dernière ligne de `box` prend
-    // le focus.
+  // Le champ Colonne de la règle `path` de `root`, une fois la fenêtre retracée : « 2 » est la 3e ligne de la condition, « 1.0 » la 1re ligne du groupe qui est en 2e.
+  function focusRule(root, path) {
+    const select = root.querySelector('[data-rule-path="' + path + '"] select.macro-rule-column:not(.macro-rule-value-column)');
+    if (select) select.focus();
+  }
+
+  function buildAddRuleButton(root, rules, redraw, pathPrefix = '') {
+    // « + Ajouter une condition » : ajoute une règle vide à `rules`, `redraw` redessine la fenêtre, puis la colonne de la nouvelle ligne prend le focus (`root` :
+    // ce qui reste en place d'un tracé à l'autre ; `pathPrefix` : « 2. » pour une ligne du groupe qui est en 3e, rien pour une ligne de la condition).
     const button = el('button', 'var-condition-add', I18n.t('varCond.addRule'));
     button.type = 'button';
     button.addEventListener('click', () => {
       rules.push(emptyRule());
       redraw();
-      const selects = box.querySelectorAll('select.macro-rule-column');
-      if (selects.length) selects[selects.length - 1].focus();
+      focusRule(root, pathPrefix + (rules.length - 1));
     });
     return button;
+  }
+
+  function buildAddGroupButton(root, rules, getMode, redraw) {
+    // « + Groupe » : ajoute à `rules` un groupe de deux lignes vides, combinées à l'inverse de `getMode()` (emptyGroup) ; la colonne de sa première ligne prend le
+    // focus. Le nom accessible commence par ce qu'on voit, puis dit ce que fait le bouton.
+    const button = el('button', 'var-condition-add var-condition-add-group', I18n.t('varCond.addGroup'));
+    button.type = 'button';
+    const title = I18n.t('varCond.addGroupTitle');
+    button.title = title;
+    button.setAttribute('aria-label', button.textContent + ' : ' + title);
+    button.addEventListener('click', () => {
+      rules.push(emptyGroup(getMode()));
+      redraw();
+      focusRule(root, (rules.length - 1) + '.0');
+    });
+    return button;
+  }
+
+  // Le bouton « Et » / « Ou » du chemin `path` de `root`, retracé : le focus lui revient, pour que le clavier garde sa place.
+  function focusToggle(root, path) {
+    const toggle = root.querySelector('[data-toggle-path="' + path + '"]');
+    if (toggle) toggle.focus();
+  }
+
+  function buildGroupRow(group, index, path, level, shared) {
+    // Un groupe de conditions : à gauche le connecteur du niveau (« Si », ou le bouton « Et » / « Ou » des lignes de ce niveau), puis un encadré avec sa propre
+    // combinaison (« Toutes ces conditions » / « Au moins une de ces conditions »), la croix qui retire le groupe et ses lignes, ses lignes (les mêmes que celles
+    // de la condition) et son « + Ajouter une condition ». Un groupe vidé de ses lignes disparaît. Le conteneur n'a PAS la classe `.macro-rule-row` : celle-ci ne
+    // désigne que des lignes de règle.
+    const { root, redraw } = shared;
+    const row = el('div', 'cond-group-row');
+    row.dataset.groupPath = path;
+    const connector = buildConnector(index, level.mode, level.onMode(index, path), level.inGroup);
+    if (connector.tagName === 'BUTTON') connector.dataset.togglePath = path;
+    const box = el('div', 'cond-group');
+    box.setAttribute('role', 'group');
+    box.setAttribute('aria-label', I18n.t('varCond.group.aria'));
+    const head = el('div', 'cond-group-head');
+    const modeSelect = el('select', 'cond-group-mode');
+    modeSelect.setAttribute('aria-label', I18n.t('varCond.group.modeAria'));
+    modeSelect.append(Dom.option('all', I18n.t('varCond.group.modeAll')), Dom.option('any', I18n.t('varCond.group.modeAny')));
+    modeSelect.value = group.mode === 'any' ? 'any' : 'all';
+    modeSelect.addEventListener('change', () => {
+      group.mode = modeSelect.value === 'any' ? 'any' : 'all';
+      redraw();
+      const next = root.querySelector('[data-group-path="' + path + '"] > .cond-group > .cond-group-head > select');
+      if (next) next.focus();
+    });
+    const remove = el('button', 'macro-rule-remove cond-group-remove');
+    remove.type = 'button';
+    remove.setAttribute('aria-label', I18n.t('varCond.group.remove'));
+    remove.title = I18n.t('varCond.group.remove');
+    remove.addEventListener('click', () => level.removeAt(index));
+    head.append(modeSelect, remove);
+    box.appendChild(head);
+    renderLevel(box, group.rules, {
+      mode: group.mode === 'any' ? 'any' : 'all',
+      setMode: next => { group.mode = next; },
+      removeAt: i => {
+        group.rules.splice(i, 1);
+        if (group.rules.length) redraw(); else level.removeAt(index);
+      },
+      inGroup: true,
+      prefix: path + '.',
+    }, shared);
+    box.appendChild(buildAddRuleButton(root, group.rules, redraw, path + '.'));
+    row.append(connector, box);
+    return row;
+  }
+
+  function renderLevel(container, items, level, shared) {
+    // Les éléments de `items` à la suite dans `container` : une ligne par règle (`shared.buildRow`), un encadré par groupe (buildGroupRow, à toute profondeur :
+    // un groupe dans un groupe, que la fenêtre ne pose pas mais qu'une condition collée peut porter, se trace de même). `level.onMode(index, path)` rend ce que
+    // le clic sur le « Et » / « Ou » du niveau fait : le mode du niveau change, la fenêtre se retrace, le focus revient au bouton.
+    const { root, redraw } = shared;
+    level.mode = level.mode === 'any' ? 'any' : 'all';
+    level.onMode = (index, path) => next => { level.setMode(next); redraw(); focusToggle(root, path); };
+    items.forEach((item, index) => {
+      const path = level.prefix + index;
+      if (ConditionRules.isGroup(item)) {
+        container.appendChild(buildGroupRow(item, index, path, level, shared));
+        return;
+      }
+      const row = shared.buildRow(item, { index, mode: level.mode, onMode: level.onMode(index, path), onRemove: () => level.removeAt(index), inGroup: level.inGroup });
+      row.dataset.rulePath = path;
+      const toggle = row.querySelector(':scope > .macro-rule-connector-toggle');
+      if (toggle) toggle.dataset.togglePath = path;
+      container.appendChild(row);
+    });
+  }
+
+  function renderItems(box, { items, mode, setMode, buildRow, removeItem, redraw, root = box }) {
+    // Les règles ET les groupes d'une condition, tracés dans `box` (la boîte des règles, déjà vidée) : la fenêtre de condition d'une variable et le filtre d'une
+    // boucle passent par ici. `items` : les règles `{ column, operator, value }` et les groupes `{ mode, rules }` ; `mode` : la combinaison du premier niveau, que
+    // le « Et » / « Ou » devant une ligne change par `setMode(next)` (la fenêtre l'écrit dans son brouillon) avant `redraw()`. `buildRow(rule, { index, mode, onMode,
+    // onRemove, inGroup })` construit la ligne d'une règle avec les options de la fenêtre (buildRuleRow). `removeItem(index)` retire un élément du premier niveau :
+    // la fenêtre seule sait si une ligne vide doit rester. `root` : ce qui reste en place quand `box` est remplacée (le focus y est cherché).
+    renderLevel(box, items, { mode, setMode, removeAt: removeItem, inGroup: false, prefix: '' }, { root, redraw, buildRow });
   }
 
   // Options de buildConditionFields pour une règle « condition → modèle » : la colonne se choisit dans une seule liste avec recherche qui réunit
@@ -439,5 +746,5 @@ const ConditionFields = (function () {
     return { row, modeleSelect };
   }
 
-  return { appendColumnOption, ensureTableLinked, emptyRule, buildRuleRow, buildAddRuleButton, buildTemplateRule };
+  return { appendColumnOption, ensureTableLinked, emptyRule, buildRuleRow, buildAddRuleButton, buildAddGroupButton, renderItems, buildTemplateRule };
 })();

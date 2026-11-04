@@ -1,4 +1,5 @@
-// Fenêtre « Liste » d'une bulle #Variable dont la colonne est une liste de choix ou de références (ChoiceList, RefList) : toutes les valeurs avec le
+// Fenêtre « Liste » d'une bulle #Variable qui écrit une liste : sa colonne est une liste de choix ou de références (ChoiceList, RefList), ou son chemin
+// en traverse une (#Dossiers.Equipe.Email : l'email de chaque ligne de l'équipe, Variables.writesList). Toutes les valeurs avec le
 // séparateur voulu, ou la première, la dernière, la n-ième. Sans réglage la bulle les écrit toutes, séparées par « , ». Le réglage vit dans le
 // `format.list` de la bulle (js/variable-format.js), que Variables.formatValue lit pour tous les rendus : Lecture, PDF, Word, Excel, e-mail, export
 // en lot. La case « Un document par valeur » (js/list-split.js) fait sortir un document par valeur aux exports PDF, Word et Excel ; la Lecture et
@@ -21,18 +22,19 @@ const VariableList = (function () {
   function isOpen() { return !!state; }
   const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 
-  // La colonne de la bulle (ou le bout de son chemin « Responsable.Competences ») est une liste de choix ou une liste de références.
-  function isListColumn(attrs) {
-    return !!attrs && !!attrs.table && !!attrs.column && VariableFormat.isListType(GristAPI.getColumnType(attrs.table, attrs.column));
+  // La bulle écrit une liste : la colonne de la bulle (ou le bout de son chemin « Responsable.Competences ») est une liste de choix ou une liste de
+  // références, ou son chemin traverse une liste de références (« Equipe.Email » : une valeur par ligne de l'équipe).
+  function isListValue(attrs) {
+    return !!attrs && !!attrs.table && !!attrs.column && Variables.writesList(attrs.table, attrs.column);
   }
   // Les réglages d'une bulle, complets (jamais null) : ce que la fenêtre montre à l'ouverture.
   function listOf(node) { return VariableFormat.normalizeList(node.attrs.format && node.attrs.format.list); }
 
   // Icône Liste de la barre flottante : active quand un réglage s'écarte du défaut ; grisée, avec l'info-bulle qui dit pourquoi, pour une colonne qui
-  // n'est pas une liste, ou quand une boucle écrit déjà chaque valeur (à chaque tour la bulle ne porte plus qu'une valeur : « première » ou
-  // « n-ième » n'auraient aucun sens).
+  // n'est pas une liste (et dont le chemin n'en traverse pas), ou quand une boucle écrit déjà chaque valeur (à chaque tour la bulle ne porte plus
+  // qu'une valeur : « première » ou « n-ième » n'auraient aucun sens).
   function status(node) {
-    if (!isListColumn(node.attrs)) return { active: false, enabled: false, title: I18n.t('varToolbar.listDisabled') };
+    if (!isListValue(node.attrs)) return { active: false, enabled: false, title: I18n.t('varToolbar.listDisabled') };
     if (LoopRules.normalizeLoop(node.attrs.loop)) return { active: false, enabled: false, title: I18n.t('varToolbar.listLoop') };
     return { active: !VariableFormat.isDefaultList(node.attrs.format && node.attrs.format.list), enabled: true, title: I18n.t('varToolbar.list') };
   }
@@ -111,10 +113,15 @@ const VariableList = (function () {
     win.box.addEventListener('change', previewRun.schedule);
   }
 
+  // Ce que la bulle écrit : les lignes d'une liste de références que son chemin traverse, celles de la colonne Liste de références elle-même, ou les
+  // choix d'une liste de choix.
   function renderIntro() {
     const { table, column } = state.node.attrs;
+    const crossed = Variables.crossedListTable(table, String(column).split('.').slice(0, -1));
     const target = GristAPI.referenceOf(GristAPI.getColumnType(table, column));
-    const text = target && target.list ? I18n.t('varList.intro.ref', { table: target.table }) : I18n.t('varList.intro.choice');
+    let text = I18n.t('varList.intro.choice');
+    if (crossed) text = I18n.t('varList.intro.path', { table: crossed });
+    else if (target && target.list) text = I18n.t('varList.intro.ref', { table: target.table });
     refs.intro.replaceChildren(el('span', 'var-badge', VariableModal.badgeText(state.node)), document.createTextNode(' ' + text));
   }
   // Le bouton du choix en cours est enfoncé ; les champs de « toutes » et de « n-ième » n'apparaissent que pour leur choix.
@@ -199,15 +206,19 @@ const VariableList = (function () {
   }
 
   // `pos` : position de la bulle dans le document, capturée au clic sur l'icône (la sélection de l'éditeur est une NodeSelection sur elle).
-  function open(editor, pos) {
+  // `options.field` : la bulle d'un champ texte (Objet, À, Cc, Cci, nom du PDF) ; « Un document par valeur » n'y a pas d'objet - il se règle sur les
+  // bulles du corps du modèle -, la case reste là, grisée et décochée.
+  function openAt(editor, pos, options) {
     const node = editor && editor.state.doc.nodeAt(pos);
     if (!node || node.type.name !== 'varBadge' || !status(node).enabled) return;
     ensureModal();
+    const inField = !!(options && options.field);
     state = {
       editor, pos, node,
       had: !VariableFormat.isDefaultList(node.attrs.format && node.attrs.format.list),
       working: listOf(node),
     };
+    if (inField) state.working.perValue = false;
     const { title, pickLabel, pickButtons, separators, number, numberHint, split, splitHint, resetBtn, cancelBtn, saveBtn } = refs;
     title.textContent = I18n.t('varList.title');
     pickLabel.textContent = I18n.t('varList.section.pick');
@@ -222,8 +233,9 @@ const VariableList = (function () {
     numberHint.textContent = I18n.t('varList.numberHint');
     number.input.value = String(state.working.index);
     split.label.textContent = I18n.t('varList.split.label');
-    splitHint.textContent = I18n.t('varList.split.hint');
+    splitHint.textContent = I18n.t(inField ? 'varList.split.hintField' : 'varList.split.hint');
     split.input.checked = state.working.perValue;
+    split.input.disabled = inField;
     resetBtn.textContent = I18n.t('varList.reset');
     resetBtn.hidden = !state.had;
     cancelBtn.textContent = I18n.t('common.cancel');
@@ -237,5 +249,5 @@ const VariableList = (function () {
     updatePreview();
   }
 
-  return { open, isOpen, status };
+  return { openAt, isOpen, status };
 })();

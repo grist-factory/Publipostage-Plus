@@ -33,6 +33,14 @@
 .reader-content ul[data-bullet-style="circle"] li::marker { content: '° '; }
 .tiptap ul[data-bullet-style="square"] li::marker,
 .reader-content ul[data-bullet-style="square"] li::marker { content: '* '; }
+/* Le signe choisi pour la liste (« Puce… », js/bullet-format.js) : écrit en variable CSS sur la liste avec un espace après lui ; il l'emporte sur le style de la liste, qu'un des trois boutons de style retire. */
+.tiptap ul[data-bullet-char] li::marker,
+.reader-content ul[data-bullet-char] li::marker { content: var(--pp-bullet-char); }
+/* Le rond, le tiret ou le numéro suit la couleur et la taille du début du texte de son point (js/list-markers.js : l'éditeur pose les deux variables en décoration, la Lecture et les exports sur le HTML résolu). Une
+   variable CSS s'hérite : sans la remise à zéro du <li>, une sous-liste recevrait le réglage de son parent ; le style en ligne que porte un point l'emporte sur elle. Sans variable, la couleur et la taille du point,
+   comme avant. */
+.tiptap li, .reader-content li { --pp-marker-color: initial; --pp-marker-size: initial; }
+.tiptap li::marker, .reader-content li::marker { color: var(--pp-marker-color, currentcolor); font-size: var(--pp-marker-size, 1em); }
 /* Styles de numérotation (bouton « Liste ») : les lettres et le romain sont de l'ASCII pur, sans contrainte de police, donc un `list-style-type`
    suffit à rester identique au PDF (listMarkerFor, js/pdf-export.js). */
 .tiptap ol[data-number-style="alpha"], .reader-content ol[data-number-style="alpha"] { list-style-type: lower-alpha; }
@@ -89,6 +97,13 @@
   border: solid currentColor; border-width: 0 .143em .143em 0; transform: rotate(40deg);
 }
 .resolved-checkbox[data-checked="true"]:not([data-checkbox-style="classic"])::after { border-color: #fff; }
+/* Le souligné et le barré posés sur une case conditionnelle ou sur la bulle d'une variable Oui / Non (js/conditional-checkbox.js:resolve et js/reader-mode.js:carryBoxLines les écrivent
+   en `data-checkbox-lines`) : la case est une boîte en ligne, que le trait d'une marque parente n'atteint pas. Le barré la traverse (un fin dégradé, blanc sur une case d'accent cochée, comme sa coche) ; le souligné passe juste sous elle (une ombre
+   sans flou : le `overflow: hidden` de la case ne coupe pas la sienne). `[data-checked]` donne à la première règle le poids du fond de la case cochée, `background: currentColor`,
+   qu'elle suit : sans lui, ce raccourci remettrait la taille du dégradé à « auto » et la case cochée apparaîtrait toute blanche. */
+.resolved-checkbox[data-checkbox-lines~="line-through"][data-checked] { background-image: linear-gradient(currentColor, currentColor); background-size: 100% .1em; background-position: 0 50%; background-repeat: no-repeat; }
+.resolved-checkbox[data-checkbox-lines~="line-through"][data-checked="true"]:not([data-checkbox-style="classic"]) { background-image: linear-gradient(#fff, #fff); }
+.resolved-checkbox[data-checkbox-lines~="underline"] { box-shadow: 0 .17em 0 -.08em currentColor; }
 /* Parité de la Lecture (#reader-container, .reader-content) avec `.tiptap`, au-delà des puces et numéros : les règles génériques de
    #reader-container (css/style.css) ne portent pas les valeurs de l'éditeur (pas de taille de police, donc 16 px contre 14 px ; marge de
    paragraphe 6 px contre 0 ; autres bordures et espacements des tableaux et de la zone 2 colonnes). Les valeurs sont exactement celles de
@@ -110,7 +125,7 @@
 #reader-container table { border-collapse: collapse; table-layout: fixed; width: 100%; margin: 6px 0; }
 /* `overflow-wrap: break-word` : un mot plus large que sa case se coupe dans la case, comme dans l'éditeur (ProseMirror l'impose à `.tiptap`, jamais présent
    dans le HTML résolu de la Lecture) et dans le PDF ; sans lui il restait sur une ligne et passait sur la case voisine. */
-#reader-container td, #reader-container th { border: 1px solid #b8c0c9; padding: 4px 6px; position: relative; vertical-align: top; text-align: left; font-weight: normal; overflow-wrap: break-word; }
+#reader-container td, #reader-container th { border: 1px solid #b8c0c9; padding: 4px 6px max(0px, calc(4px - var(--pp-row-grow, 0px))); position: relative; vertical-align: top; text-align: left; font-weight: normal; overflow-wrap: break-word; }
 /* Zone 2 colonnes en Lecture : les règles génériques .two-columns-zone et .two-columns-column de css/style.css (bordure pleine sur chaque colonne,
    gap 18 px au lieu de 16, padding de colonne 6 px au lieu de 4) feraient couper le texte ailleurs qu'en édition. */
 /* `border: 0` plutôt que la bordure transparente de css/style.css : sous `box-sizing: border-box`, 1 px de bordure de chaque côté retire 2 px à la
@@ -130,11 +145,24 @@
    comme à l'export. 9,5 pt, un peu sous le texte courant (10,5 pt). Le schéma TipTap n'y permet aucune marque : ni gras, ni couleur, ni lien. */
 .tiptap pre { margin: 4px 0; padding: 8px 10px; background: #f6f8fa; border: 1px solid #d0d7de; border-radius: 4px; color: #1b2430; font-family: 'Cousine', 'Courier New', Courier, monospace; font-size: 9.5pt; line-height: 1.42; white-space: pre-wrap; overflow-wrap: anywhere; tab-size: 4; }
 .tiptap pre code { font: inherit; color: inherit; background: none; padding: 0; white-space: inherit; }
-.tiptap hr { border: none; border-top: 1px solid #d0d7de; margin: 10px 0; }
+/* Le trait : 21 px de haut en tout (10 px d'air, 1 px de trait, 10 px d'air), la même place dans l'éditeur, la Lecture, l'impression et le PDF (15,75 pt). L'air est
+   en REMPLISSAGE, pas en marge : la pagination (js/header-footer-preview.js, js/reader-mode.js) additionne les hauteurs de blocs sans leurs marges, et une
+   marge ne s'additionne pas à celle du bloc voisin, ni à la couture en haut d'une page. En remplissage, le trait pèse ses 21 px dans le compte des pages,
+   comme dans le PDF. En contraste renforcé le navigateur ôte les fonds : le trait prend alors la couleur du texte.
+   Le trait d'un en-tête ou d'un pied de page est le même quand la zone est fermée : dans sa bande (`.v2-hf-zone-body`), dans les espaceurs de bord et les bandes de couture
+   de l'éditeur et de la Lecture. Ces zones ne sont pas des descendantes de `.tiptap` ni de `.reader-content` : leur trait reprenait celui du navigateur (2 px en relief gris, 7 px
+   d'air de chaque côté), plus épais, plus foncé et 5 px moins haut que celui de la zone ouverte et du PDF. */
+.tiptap hr, #reader-container .reader-content hr, .v2-hf-zone-body hr, .v2-page-edge-spacer hr, .v2-page-band-header hr, .v2-page-band-footer hr { box-sizing: content-box; height: 1px; margin: 0; padding: 10px 0; border: none; background-color: #d0d7de; background-clip: content-box; }
+/* Sélectionné, le trait garde sa bande bleue d'avant : 1 px de trait entouré de 2 px de contour (le contour de ProseMirror suit le bord de la boîte, qui compte maintenant l'air). */
+.tiptap hr.ProseMirror-selectednode { outline-offset: -10px; }
+@media (forced-colors: active) { .tiptap hr, #reader-container .reader-content hr, .v2-hf-zone-body hr, .v2-page-edge-spacer hr, .v2-page-band-header hr, .v2-page-band-footer hr { background-color: CanvasText; } }
 .tiptap table { border-collapse: collapse; table-layout: fixed; width: 100%; margin: 6px 0; }
+/* Le bas d'une case perd `--pp-row-grow` (js/page-zoom.js:rowGrow, posé avec `--pp-fit-zoom` ; absent, donc 0, à l'échelle 1, dans l'hôte de mesure des exports et à l'impression) : sous le zoom de la feuille le navigateur
+   dessine le trait de 1 px d'un tableau sur des pixels d'écran entiers (1,18 px de mise en page à 0,847), et chaque ligne serait plus haute que celle du PDF ; avec ce retrait elle a la même hauteur à toute taille de panneau, et
+   l'écran coupe un long tableau où le PDF le coupe. Même retrait dans la Lecture et dans les zones d'en-tête et de pied. */
 /* Pas de style propre à `<th>` (gras, fond) : les tableaux insérés par la barre n'ont pas de ligne d'en-tête (withHeaderRow: false,
    js/editor.js:insertTable), une cellule reste identique à une autre quel que soit son tag. */
-.tiptap table td, .tiptap table th { border: 1px solid #b8c0c9; padding: 4px 6px; position: relative; vertical-align: top; text-align: left; font-weight: normal; }
+.tiptap table td, .tiptap table th { border: 1px solid #b8c0c9; padding: 4px 6px max(0px, calc(4px - var(--pp-row-grow, 0px))); position: relative; vertical-align: top; text-align: left; font-weight: normal; }
 /* Cases sélectionnées : un voile posé par-dessus la case (::after), pas un fond. Le fond d'une case colorée (style en ligne) l'emporterait sur une
    règle de classe et la sélection ne s'y verrait plus. La page et le tableau restent blancs dans les deux thèmes, d'où un bleu écrit en dur, comme
    celui du lien. */
@@ -165,7 +193,7 @@
 .tiptap .two-columns-mm-button {
   position: absolute; top: calc(50% - 26px); left: var(--pp-col-left, var(--layout-left, 50%)); transform: translateX(-50%);
   display: flex; align-items: center; justify-content: center; height: 18px; padding: 0 6px; border: none; border-radius: 4px;
-  background: var(--accent-solid, #2f6fed); color: #fff; font-family: var(--font-ui); font-size: 10px; font-weight: 700; line-height: 1;
+  background: var(--fill, var(--accent-solid, #2f6fed)) border-box; color: var(--on-accent); font-family: var(--font-ui); font-size: 10px; font-weight: 700; line-height: 1;
   cursor: pointer; opacity: 0; transition: opacity .15s ease; z-index: 5;
 }
 .tiptap .two-columns-zone-outer:hover .two-columns-mm-button { opacity: 1; }
@@ -175,10 +203,10 @@
 .two-columns-mm-popover {
   position: absolute; top: calc(50% + 22px); left: var(--pp-col-left, var(--layout-left, 50%)); transform: translateX(-50%);
   display: flex; flex-direction: column; gap: 6px; padding: 8px 10px; background: var(--surface, #fff); border: 1px solid var(--border-strong, #c3cad6);
-  border-radius: 6px; box-shadow: 0 6px 16px rgba(20, 28, 46, .16); z-index: 6; font-size: 12.5px; color: var(--text, #3a4452); white-space: nowrap;
+  border-radius: var(--radius-md, 6px); box-shadow: 0 6px 16px rgba(20, 28, 46, .16); z-index: 6; font-size: 12.5px; color: var(--text, #3a4452); white-space: nowrap;
 }
 .two-columns-mm-popover label { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
-.two-columns-mm-popover input { width: 56px; padding: 3px 5px; border: 1px solid var(--border, #d7dde3); border-radius: 4px; font-size: 12.5px; }
+.two-columns-mm-popover input { width: 56px; padding: 3px 5px; border: 1px solid var(--border, #d7dde3); border-radius: var(--radius-xs, 4px); font-size: 12.5px; }
 .two-columns-mm-computed { display: inline-block; width: 56px; padding: 3px 5px; text-align: right; color: var(--text-faint, #6b7684); }
 .tiptap img.editor-image { max-width: 100%; height: auto; vertical-align: bottom; }
 
@@ -269,10 +297,33 @@
 
 /* Mode d'édition d'en-tête ou de pied (`.hf-editing`, posée par js/editor.js:enterHeaderFooterMode) : `.tiptap` n'affiche plus le document
    principal (échangé par `setContent`), d'où un cadre en pointillés d'accent pour qu'on ne croie pas éditer le corps. `min-height` réduit (200 px
-   sont pensés pour un document vide) : un en-tête d'une ligne ne doit pas ouvrir une grande zone blanche. Il est aligné sur le plafond de taille
-   d'image (HF_MAX_IMAGE_HEIGHT_PX, 60 px) pour qu'un en-tête typique remplisse la zone sans marge résiduelle. On y entre d'un clic sur la marge de
-   page, par la pastille #v2-hf-pill. */
-#editor-container.hf-editing .tiptap { outline: 2px dashed var(--accent, #2f6fed); outline-offset: 4px; min-height: 60px; max-height: 60px; overflow: hidden; }
+   sont pensés pour un document vide) : un en-tête d'une ligne ne doit pas ouvrir une grande zone blanche. Il est aligné sur la bande que la page
+   réserve à une zone (PageLayout.HEADER_FOOTER_ZONE_PX, 60 px) pour qu'un en-tête typique remplisse la zone sans marge résiduelle. On y entre d'un clic
+   sur la marge de page, par la pastille #v2-hf-pill. La zone ouverte grandit avec son contenu, sans plafond ni défilement : le corps n'est pas à l'écran,
+   rien ne bouge. `flow-root` : un logo aligné (flottant) plus haut que le texte agrandit la zone, comme la ligne de tableau que Word en fait, et le fond
+   rouge pâle, le trait de limite et la mesure (refreshZoneOverflow) le comptent. */
+#editor-container.hf-editing .tiptap { display: flow-root; outline: 2px dashed var(--accent, #2f6fed); outline-offset: 4px; min-height: 60px; }
+/* Ce qui dépasse la bande (js/header-footer-preview.js:refreshZoneOverflow pose `hf-over` sur le conteneur et `--v2-hf-limit`, la limite depuis le haut de `.tiptap`) est
+   coupé partout : à l'écran, à l'impression, dans le PDF et dans le Word. Un trait en tirets rouges à la limite, un fond rouge pâle dessous (derrière le texte : il
+   reste lisible) et, sous la feuille, la note #v2-hf-overflow (juste après). Le papier est blanc dans les deux thèmes : le rouge du papier, `--paper-danger`
+   (css/external-images.css, celui du contour d'une image d'un autre site), pas un jeton du thème ; le fond en est le même à 9 %. Le trait est un pseudo-élément :
+   ProseMirror ne le voit pas, et il ne prend pas la souris. */
+#editor-container.hf-editing.hf-over .tiptap { background-image: linear-gradient(to bottom, transparent var(--v2-hf-limit, 60px), rgba(197, 48, 48, .09) var(--v2-hf-limit, 60px)); }
+#editor-container.hf-editing.hf-over .tiptap::after { content: ''; position: absolute; left: 0; right: 0; top: var(--v2-hf-limit, 60px); border-top: 2px dashed var(--paper-danger, #c53030); pointer-events: none; }
+/* Note de la zone ouverte qui dépasse sa bande (#v2-hf-overflow, js/header-footer-preview.js:refreshZoneOverflow) : sous la feuille, donc rien au-dessus ne bouge quand elle vient ou
+   part, et `position: sticky` la garde au bas du panneau quand la zone est plus haute que lui. Ce n'est pas un bouton de la barre d'outils : elle n'existe que pendant l'édition
+   d'un en-tête ou d'un pied qui dépasse. */
+.v2-hf-overflow {
+  position: sticky; bottom: 10px; z-index: 25; width: fit-content; max-width: calc(100% - 28px); margin: 12px auto 0;
+  display: flex; align-items: center; gap: 10px; padding: 7px 8px 7px 14px;
+  background: var(--surface); border: 1px solid var(--danger-ink); border-radius: var(--radius-lg, 14px);
+  box-shadow: 0 6px 18px rgba(20, 28, 46, .16); font-family: var(--font-ui); font-size: 12.5px; line-height: 1.4; color: var(--text);
+}
+.v2-hf-overflow[hidden] { display: none; }
+.v2-hf-overflow-text { min-width: 0; }
+.v2-hf-overflow-btn { flex: none; width: auto; height: 28px; padding: 0 12px; font-size: 12.5px; font-weight: 700; border-radius: var(--radius-pill, 999px); border: 1px solid var(--border-strong); background: var(--surface-sunken); color: var(--text); cursor: pointer; }
+.v2-hf-overflow-btn:hover { background: var(--accent-soft); border-color: var(--accent-soft-border); }
+.v2-hf-overflow-btn[hidden] { display: none; }
 
 /* Aperçu A4 (case #v2-toggle-a4-preview) : `.tiptap` prend la largeur de contenu d'une page PDF A4 (595,28 pt - 2 × 28 pt de marge, soit 719,04 px
    à 96/72), pour que le texte se répartisse comme à l'export (CONTENT_WIDTH_PX, pdf-export.js). `width` est la largeur totale (page et marges), le
@@ -289,6 +340,22 @@
    1122,52 px en paysage) ; 793,71 px n'est que le repli d'avant le premier réglage. */
 #editor-container.a4-preview .v2-page-sheet { display: flow-root; box-sizing: border-box; width: var(--pp-page-width, 793.71px); margin: 0 auto; background: #fff; box-shadow: 0 0 0 1px #d7dde3, 0 4px 16px rgba(20, 28, 46, .10); }
 #editor-container.a4-preview .tiptap { box-sizing: border-box; width: auto; padding: var(--pp-margin-top, 37.33px) var(--pp-margin-right, 37.33px) var(--pp-margin-bottom, 37.33px) var(--pp-margin-left, 37.33px); background: transparent; box-shadow: none; }
+/* Le contenu de la feuille au zoom de la feuille, quoi que le moteur y ajoute (js/editor-core.js:settleContentZoom pose `--pp-content-fix` ; 1, donc sans effet, tant que le contenu est déjà
+   au zoom de la feuille). */
+#editor-container.a4-preview .v2-page-sheet > .tiptap { zoom: var(--pp-content-fix, 1); }
+/* Une page tournée au milieu d'un document (js/page-section-view.js pose `pp-mixed-pages` sur le conteneur dès que des pages de sens différents s'y suivent) : l'éditeur n'a qu'une colonne de
+   texte, la feuille prend donc la largeur de la plus large des pages (`--pp-mixed-sheet-width`) et devient transparente - chaque page y est un papier à sa taille (`.v2-page-paper`, posé par
+   js/header-footer-preview.js:paintPapers), la gouttière entre deux pages est le fond du conteneur. Les blocs d'une page plus étroite (`pp-sec-narrow`, une décoration) sont rentrés du même
+   écart de chaque côté (`--pp-sec-gap`) : leur texte se répartit dans la largeur de SA page. Une image en calque de ces blocs, posée depuis le bord de `.tiptap`, suit sa page du même écart,
+   par sa marge gauche (pas par `translate` : une transformation ferait de son cadre un contexte d'empilement, qui garderait le z-index négatif de l'<img> « derrière le texte » à l'intérieur et la
+   remettrait devant le texte) ; son `left` enregistré, lui, reste compté depuis le coin de la page (PageSectionView.layerGapAt, retranchée de `offsetLeft` là où il se relit). Les images d'une
+   case, d'une zone ou d'un encadré, dont le parent positionné est déjà rentré avec leur bloc, ne bougent pas une seconde fois. */
+#editor-container.a4-preview.pp-mixed-pages .v2-page-sheet { width: var(--pp-mixed-sheet-width, 1122.52px); background: transparent; box-shadow: none; }
+#editor-container.a4-preview.pp-mixed-pages .tiptap > .pp-sec-narrow { margin-left: var(--pp-sec-gap, 0px); margin-right: var(--pp-sec-gap, 0px); }
+#editor-container.a4-preview.pp-mixed-pages .tiptap > .pp-sec-narrow .editor-image-layered:not(td *, th *, .two-columns-zone-outer *, .callout *) { margin-left: var(--pp-sec-gap, 0px); }
+.v2-page-papers { position: absolute; top: 0; left: 0; width: 100%; height: 0; z-index: 0; pointer-events: none; }
+.v2-page-paper { position: absolute; box-sizing: border-box; background: #fff; box-shadow: 0 0 0 1px #d7dde3, 0 4px 16px rgba(20, 28, 46, .10); }
+#editor-container.a4-preview.pp-mixed-pages .v2-page-seam-divider { background: transparent; box-shadow: none; }
 /* En édition d'en-tête ou de pied (`.hf-editing`), `.tiptap` affiche le contenu de l'en-tête ou du pied : le padding vertical de 37,33 px
    ci-dessus simule la marge de page du document principal et n'a pas de sens ici, c'est déjà le contenu de la marge. Il est ramené à 8 px, comme
    la zone d'aperçu en lecture seule (`.v2-page-edge-spacer`), pour que l'édition corresponde à ce qu'on voit après « Terminer ». Le padding
@@ -336,6 +403,11 @@
    `.v2-page-band-footer`) font de même plus bas. En édition de la zone le texte est dans `.tiptap`, déjà à 14 px : la taille ne saute pas à
    l'entrée. */
 .v2-hf-zone-body, #reader-container.a4-preview .v2-page-edge-spacer { font-size: 14px; }
+/* Le texte d'un en-tête ou d'un pied est du contenu du modèle : il s'écrit en Roboto, comme `.tiptap`, la Lecture et le PDF (js/pdf-fonts.js). Le corps d'une
+   zone (`.v2-hf-zone-body`, rattaché à la feuille et non à `.tiptap`) et les bandes de couture n'avaient pas de police à eux et reprenaient l'Arial de `body` :
+   la feuille montrait d'autres lettres et d'autres coupures de ligne que le PDF, et la hauteur de la zone, mesurée dans un `.tiptap`, n'était pas celle du
+   texte affiché. La Lecture est déjà en Roboto par `#reader-container`. */
+.v2-hf-zone-body, .v2-page-band-header, .v2-page-band-footer { font-family: 'Roboto', Helvetica, Arial, sans-serif; }
 /* Un espaceur ne prend jamais le clic : il recouvre la marge de `.tiptap` (celui du haut passe dessous), et une image en calque posée dans cette
    marge, comme le triangle d'un coin de feuille, doit rester atteignable. Le clic dans la marge (là où rien n'est posé : le padding de `.tiptap`,
    ou le fond de la feuille au-dessus) est repris par js/header-footer-preview.js:zoneUnderPointer, qui ouvre l'en-tête ou le pied ; le survol, par
@@ -380,9 +452,16 @@
 #editor-container.a4-preview .v2-page-sheet .v2-hf-zone.v2-hf-zone-filled.v2-hf-zone-hover, #editor-container.a4-preview .v2-page-sheet .v2-hf-zone.v2-hf-zone-filled:hover { background: var(--accent-soft, #e8f0fe); box-shadow: none; }
 /* Le fantôme n'apparaît qu'au survol, sur le fond teinté que la zone prend alors (`--accent-soft`) : `--accent` n'y fait que 3,97:1 en clair et
    4,17:1 en sombre. */
-.v2-hf-zone-ghost { display: none; align-items: center; gap: 5px; color: var(--accent-ink, #2558c4); font-weight: 600; pointer-events: auto; }
+.v2-hf-zone-ghost { display: none; align-items: center; gap: 5px; color: var(--accent-ink, #2558c4); font-family: var(--font-ui); font-weight: 600; pointer-events: auto; }
 #editor-container.a4-preview .v2-hf-zone.v2-hf-zone-empty.v2-hf-zone-hover .v2-hf-zone-ghost, #editor-container.a4-preview .v2-hf-zone.v2-hf-zone-empty:hover .v2-hf-zone-ghost { display: inline-flex; }
 .v2-hf-zone-body { color: var(--paper-text-faint, #667085); max-height: 60px; overflow: hidden; }
+/* Un tableau dans la zone fermée (`.v2-hf-zone-body` est rattaché à la feuille, pas à `.tiptap`) a le quadrillage et les marges de case de la zone ouverte : « Terminer » ne
+   change ni sa forme, ni sa hauteur, et c'est celle que le PDF et le Word reprennent. Sans ces règles le tableau se lisait comme du texte sans bordure. */
+.v2-hf-zone-body table { border-collapse: collapse; table-layout: fixed; width: 100%; margin: 6px 0; }
+.v2-hf-zone-body td, .v2-hf-zone-body th { border: 1px solid #b8c0c9; padding: 4px 6px max(0px, calc(4px - var(--pp-row-grow, 0px))); position: relative; vertical-align: top; text-align: left; font-weight: normal; }
+/* La limite de la zone en Lecture et à l'impression : 60 px (PageLayout.HEADER_FOOTER_ZONE_PX), comme `.v2-hf-zone-body` dans l'éditeur. Ce qui dépasse est coupé, jamais
+   posé sur le corps de la page. */
+.v2-hf-clip { max-height: 60px; overflow: hidden; }
 /* Au survol la zone prend le fond teinté du thème : le gris de la page blanche n'y ferait que 2,6:1 en sombre, et le gris du thème 4,34:1 en
    clair. Même mélange que les puces de la galerie. */
 #editor-container.a4-preview .v2-hf-zone.v2-hf-zone-filled.v2-hf-zone-hover .v2-hf-zone-body, #editor-container.a4-preview .v2-hf-zone.v2-hf-zone-filled:hover .v2-hf-zone-body { color: color-mix(in srgb, var(--text-faint) 80%, var(--text)); }
@@ -401,11 +480,13 @@
 .v2-hf-zone-body img { vertical-align: bottom; }
 /* Même raison que `.tiptap img.editor-image[data-align="left"/"right"]` : une image alignée à gauche ou à droite dans l'éditeur (habillage réel,
    float natif) tomberait ici en flux normal (bloc plein) et le texte suivant passerait dessous au lieu de se placer à côté. Centre : pas
-   d'habillage, bloc centré. */
-.v2-hf-zone-body img[data-align="left"] { float: left; margin: 0 12px 8px 0; }
-.v2-hf-zone-body img[data-align="right"] { float: right; margin: 0 0 8px 12px; }
+   d'habillage, bloc centré. La Lecture et l'impression posent l'en-tête et le pied hors de `.reader-content` (l'espaceur de bord de la première et
+   de la dernière page, les bandes de couture) : l'habillage que `css/style.css` n'y donne qu'au corps leur est donné ici, pour que le logo y soit à
+   côté de son texte comme dans l'éditeur et dans le PDF. */
+.v2-hf-zone-body img[data-align="left"], .v2-page-edge-spacer img[data-align="left"], .v2-page-band-header img[data-align="left"], .v2-page-band-footer img[data-align="left"] { float: left; margin: 0 12px 8px 0; }
+.v2-hf-zone-body img[data-align="right"], .v2-page-edge-spacer img[data-align="right"], .v2-page-band-header img[data-align="right"], .v2-page-band-footer img[data-align="right"] { float: right; margin: 0 0 8px 12px; }
 .v2-hf-zone-body img[data-align="center"] { display: block; margin-left: auto; margin-right: auto; }
-.v2-hf-zone-pencil { display: none; position: absolute; top: 50%; right: 12px; transform: translateY(-50%); width: 20px; height: 20px; border-radius: 5px; background: #fff; box-shadow: 0 0 0 1px var(--accent-soft-border, #c7dbfd); color: var(--accent, #2f6fed); }
+.v2-hf-zone-pencil { display: none; position: absolute; top: 50%; right: 12px; transform: translateY(-50%); width: 20px; height: 20px; border-radius: var(--radius-xs, 5px); background: #fff; box-shadow: 0 0 0 1px var(--accent-soft-border, #c7dbfd); color: var(--accent, #2f6fed); }
 .v2-hf-zone-pencil::before { content: ''; position: absolute; inset: 5px; background-color: currentColor; -webkit-mask-size: contain; mask-size: contain; -webkit-mask-repeat: no-repeat; mask-repeat: no-repeat; -webkit-mask-position: center; mask-position: center; -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2'%3E%3Cpath d='M12 20h9'/%3E%3Cpath d='M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z'/%3E%3C/svg%3E"); mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2'%3E%3Cpath d='M12 20h9'/%3E%3Cpath d='M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z'/%3E%3C/svg%3E"); }
 #editor-container.a4-preview .v2-hf-zone.v2-hf-zone-filled.v2-hf-zone-hover .v2-hf-zone-pencil, #editor-container.a4-preview .v2-hf-zone.v2-hf-zone-filled:hover .v2-hf-zone-pencil { display: block; }
 
@@ -454,12 +535,14 @@
    la page reste blanche dans les deux thèmes. */
 .v2-page-seam-cap { position: absolute; bottom: 0; height: 1px; background: #b8c0c9; pointer-events: none; }
 
-#v2-a4-toggle { display: inline-flex; align-items: center; gap: 5px; height: 28px; padding: 0 8px; border: 1px solid var(--border, #d7dde3); border-radius: 4px; font-size: 12.5px; cursor: pointer; user-select: none; }
+#v2-a4-toggle { display: inline-flex; align-items: center; gap: 5px; height: 28px; padding: 0 8px; border: 1px solid var(--border, #d7dde3); border-radius: var(--radius-xs, 4px); font-size: 12.5px; cursor: pointer; user-select: none; }
 #v2-a4-toggle:hover { background: var(--surface-sunken, #f2f4f7); }
 
 /* Numérotation des titres : compteurs CSS scopés à `.tiptap`. Seuls les titres de premier niveau du flux principal sont numérotés (sélecteur
-   enfant direct), pas ceux d'un tableau ou d'une zone 2 colonnes. */
-.tiptap[data-heading-style] { counter-reset: h1c h2c h3c h4c h5c h6c; }
+   enfant direct), pas ceux d'un tableau ou d'une zone 2 colonnes. Aucun `counter-reset` sur `.tiptap` lui-même : un compteur remis à zéro sur la
+   racine masque celui que remet à zéro un titre frère, et les lettres d'un titre 2 continuaient d'un titre 1 à l'autre (« c) » au lieu de « a) »,
+   « 2.c » au lieu de « 2.a »). Plus spécifique que `.tiptap { counter-reset: footnote-ref }` plus bas, il lui retirait aussi sa remise à zéro :
+   chaque note de bas de page portait « 1 ». */
 .tiptap[data-heading-style] > h1 { counter-reset: h2c h3c h4c h5c h6c; counter-increment: h1c; }
 .tiptap[data-heading-style] > h2 { counter-reset: h3c h4c h5c h6c; counter-increment: h2c; }
 .tiptap[data-heading-style] > h3 { counter-reset: h4c h5c h6c; counter-increment: h3c; }
@@ -484,14 +567,34 @@
 .tiptap[data-heading-style="roman"] > h4::before { content: counter(h4c, upper-roman) ") "; }
 .tiptap[data-heading-style="roman"] > h5::before { content: counter(h5c, decimal) ") "; }
 .tiptap[data-heading-style="roman"] > h6::before { content: counter(h6c, lower-alpha) ") "; }
+/* « Article » : le chemin des compteurs, pas le seul compteur du niveau (« Article 1 », « 1.a », « 1.a.1 », « 1.a.1.a »...) ; le mot ne précède que le
+   titre 1, décimal et lettres alternent. Un compteur à zéro (un titre 2 avant tout titre 1) s'écrit « 0 », même en lettres. js/heading-numbering.js
+   (PATH_SCHEMES) écrit le même texte pour le sommaire, le PDF, le Word et le Markdown ; css/style.css pour la Lecture. */
+.tiptap[data-heading-style="article"] > h1::before { content: "Article " counter(h1c, decimal) " "; }
+.tiptap[data-heading-style="article"] > h2::before { content: counter(h1c, decimal) "." counter(h2c, lower-alpha) " "; }
+.tiptap[data-heading-style="article"] > h3::before { content: counter(h1c, decimal) "." counter(h2c, lower-alpha) "." counter(h3c, decimal) " "; }
+.tiptap[data-heading-style="article"] > h4::before { content: counter(h1c, decimal) "." counter(h2c, lower-alpha) "." counter(h3c, decimal) "." counter(h4c, lower-alpha) " "; }
+.tiptap[data-heading-style="article"] > h5::before { content: counter(h1c, decimal) "." counter(h2c, lower-alpha) "." counter(h3c, decimal) "." counter(h4c, lower-alpha) "." counter(h5c, decimal) " "; }
+.tiptap[data-heading-style="article"] > h6::before { content: counter(h1c, decimal) "." counter(h2c, lower-alpha) "." counter(h3c, decimal) "." counter(h4c, lower-alpha) "." counter(h5c, decimal) "." counter(h6c, lower-alpha) " "; }
 
 /* Aperçu vivant du sommaire dans l'éditeur (Toc.addNodeView), purement visuel. */
 .tiptap .toc-entry-preview { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
+/* Le drapeau d'un signet (js/anchors.js:flagElement) : un repère de l'éditeur seulement, dans la marge à gauche du début du bloc qui porte le signet. `position: absolute` sans
+   `top` ni `left` le laisse là où il serait dans la ligne (le début du bloc) et la marge négative le sort du texte : rien ne se décale, et aucun repère de position n'est posé sur
+   le bloc (`.tiptap` est celui des images en calque, qu'un bloc positionné leur prendrait). Une décoration : rien dans le document, ni dans la Lecture ni dans les exports. Le
+   gris de la bordure de la feuille fait 4,6:1 sur le blanc de la feuille, en thème sombre aussi. */
+.tiptap .pp-anchor-flag {
+  position: absolute; margin: 4px 0 0 -22px; width: 12px; height: 15px; cursor: pointer; background-color: var(--paper-frame-line, #6b7686);
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='%23000' d='m19 21-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v16z'/%3E%3C/svg%3E") center / contain no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='%23000' d='m19 21-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v16z'/%3E%3C/svg%3E") center / contain no-repeat;
+}
+.tiptap .pp-anchor-flag:hover { background-color: var(--paper-ink, #1b2430); }
+
 /* Petit repère (point plein en haut à droite de la bulle) quand un format de nombre ou de date a été choisi par la barre flottante dédiée : sans
-   lui, rien ne distingue une bulle formatée d'une bulle par défaut. `.var-badge` reste dans css/style.css, scopé ici à `.tiptap`. */
-.tiptap .var-badge { position: relative; }
-.tiptap .var-badge[data-format]::after { content: ''; position: absolute; top: -3px; right: -3px; width: 6px; height: 6px; border-radius: 50%; background: var(--accent, #2f6fed); border: 1px solid #fff; }
+   lui, rien ne distingue une bulle formatée d'une bulle par défaut. `.var-badge` reste dans css/style.css, scopé ici à `.tiptap` et aux champs texte à bulles (`.pp-field-editor`, js/field-editor.js). */
+:is(.tiptap, .pp-field-editor) .var-badge { position: relative; }
+:is(.tiptap, .pp-field-editor) .var-badge[data-format]::after { content: ''; position: absolute; top: -3px; right: -3px; width: 6px; height: 6px; border-radius: 50%; background: var(--accent, #2f6fed); border: 1px solid #fff; }
 
 /* Badge de numéro de page (js/editor.js:createPageNumberBadgeNode) : même gabarit que `.var-badge` ci-dessus, mais d'une teinte propre (vert
    plutôt que bleu) pour rester distinct d'une bulle #Variable, les deux pouvant cohabiter dans un en-tête ou un pied. Il n'est résolu en vrai
@@ -500,12 +603,15 @@
 
 /* Chips intelligents (js/editor.js:createSmartChipNode, createFootnoteRefNode) : même palette verte que `.page-number-badge`, celle de « valeur
    calculée, pas une #Variable ». Le marqueur de note reste sans pastille ni fond (un chiffre vert en exposant). */
-.tiptap .smart-chip, .reader-content .smart-chip { display: inline-block; background: #e7f7ee; color: #146c43; border: 1px solid #b8e6cc; padding: 0 4px; border-radius: 3px; font-size: .92em; line-height: 1.4; }
+.tiptap .smart-chip, .pp-field-editor .smart-chip, .reader-content .smart-chip { display: inline-block; background: #e7f7ee; color: #146c43; border: 1px solid #b8e6cc; padding: 0 4px; border-radius: 3px; font-size: .92em; line-height: 1.4; }
 /* Numérotation continue sur tout le document (pas de remise à zéro par page) : un seul compteur racine, incrémenté en CSS, jamais recalculé en JS
    à l'écran. */
 .tiptap, .reader-content { counter-reset: footnote-ref; }
 .tiptap .footnote-ref-marker, .reader-content .footnote-ref-marker { counter-increment: footnote-ref; color: #146c43; font-weight: 600; cursor: pointer; }
 .tiptap .footnote-ref-marker::before, .reader-content .footnote-ref-marker::before { content: counter(footnote-ref); }
+/* Une couleur posée sur la note, que la Lecture montre à la place du vert du renvoi (js/reader-mode.js:carryNoteColors l'écrit en `--pp-note-color`) ; l'éditeur a la sienne
+   (css/variable-actions.css, sous le choix de Réglages > Thème). */
+.reader-content .footnote-ref-marker { color: var(--pp-note-color, #146c43); }
 
 /* Effet discret à dessein : un soulignement et un fond très pâle, jamais un bloc plein comme `.smart-chip` ; un commentaire ne doit pas dominer le
    texte qu'il annote, seulement le signaler. Seulement `.tiptap`, jamais `.reader-content` : un commentaire est un artefact d'édition et de
@@ -516,27 +622,27 @@
 
 /* Popup d'édition du texte d'une note (js/editor.js:ensureFootnotePopupBox) : mêmes jetons que #v2-image-var-picker (`--surface`,
    `--border-strong`, `--font-ui`), jamais la teinte verte des chips, réservée au contenu des bulles et pas au chrome. */
-#v2-footnote-popup { position: absolute; z-index: var(--z-menu); background: var(--surface); border: 1px solid var(--border-strong); border-radius: 6px; box-shadow: 0 4px 14px rgba(0,0,0,.10); padding: 8px; width: 240px; font-family: var(--font-ui); }
-#v2-footnote-popup textarea { width: 100%; box-sizing: border-box; font: inherit; font-size: 12.5px; color: var(--text); border: 1px solid var(--border-strong); border-radius: 5px; padding: 5px 6px; resize: vertical; }
+#v2-footnote-popup { position: absolute; z-index: var(--z-menu); background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--radius-md, 6px); box-shadow: 0 4px 14px rgba(0,0,0,.10); padding: 8px; width: 240px; font-family: var(--font-ui); }
+#v2-footnote-popup textarea { width: 100%; box-sizing: border-box; font: inherit; font-size: 12.5px; color: var(--text); border: 1px solid var(--border-strong); border-radius: var(--radius-xs, 5px); padding: 5px 6px; resize: vertical; }
 #v2-footnote-popup textarea:focus-visible { outline: 2px solid var(--accent-soft-border); outline-offset: -1px; }
 #v2-footnote-popup .v2-footnote-popup-actions { display: flex; justify-content: space-between; gap: 6px; margin-top: 6px; }
 /* Mêmes boutons que `.link-rules-modal-content .modal-actions` : OK en primaire (accent plein), Supprimer en secondaire teinté danger
    (`--danger`), comme les autres actions destructives de l'application. */
-#v2-footnote-popup .v2-footnote-popup-actions button { font-family: var(--font-ui); font-weight: 600; font-size: 12.5px; height: 26px; padding: 0 10px; border-radius: var(--radius-sm); border: 1px solid var(--border-strong); background: var(--surface); color: var(--text); cursor: pointer; }
+#v2-footnote-popup .v2-footnote-popup-actions button { font-family: var(--font-ui); font-weight: 600; font-size: 12.5px; height: 26px; padding: 0 10px; border-radius: var(--radius-btn, var(--radius-sm)); border: 1px solid var(--border-strong); background: var(--surface); color: var(--text); cursor: pointer; }
 #v2-footnote-popup .v2-footnote-popup-actions button:hover { background: var(--surface-sunken); }
 /* `button.xxx` et non `.xxx` seul : sans l'élément, ces deux règles auraient la même spécificité que la règle générique au-dessus et perdraient
    contre elle (OK et Supprimer resteraient blancs et gris). */
 #v2-footnote-popup button.v2-footnote-popup-delete { color: var(--danger-ink); border-color: var(--danger-soft); }
 #v2-footnote-popup button.v2-footnote-popup-delete:hover { background: var(--danger-soft); }
-#v2-footnote-popup button.v2-footnote-popup-ok { background: var(--accent-solid); border-color: var(--accent-solid); color: #fff; }
-#v2-footnote-popup button.v2-footnote-popup-ok:hover { background: var(--accent-solid-hover); }
+#v2-footnote-popup button.v2-footnote-popup-ok { background: var(--fill, var(--accent-solid)) border-box; border-color: var(--fill-line, var(--accent-solid)); color: var(--on-accent); }
+#v2-footnote-popup button.v2-footnote-popup-ok:hover { background: var(--fill-hover, var(--accent-solid-hover)) border-box; }
 
 /* Carte de commentaire (js/comments.js) : même chrome et mêmes jetons que #v2-footnote-popup, en plus large (fil de discussion et réponse), sur le
    modèle de Google Docs : bandeau d'état en tête, messages empilés, réponse et actions en pied. Elle ne se ferme que par la ×, comme le popup de
    note : la fermeture au clic extérieur y a déjà causé des régressions. */
-#v2-comment-popup { position: absolute; z-index: var(--z-menu); background: var(--surface); border: 1px solid var(--border-strong); border-radius: 8px; box-shadow: 0 4px 14px rgba(0,0,0,.10); padding: 10px; width: 280px; font-family: var(--font-ui); }
+#v2-comment-popup { position: absolute; z-index: var(--z-menu); background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--radius-md, 8px); box-shadow: 0 4px 14px rgba(0,0,0,.10); padding: 10px; width: 280px; font-family: var(--font-ui); }
 #v2-comment-popup .v2-comment-popup-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
-#v2-comment-popup .v2-comment-popup-badge { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .03em; color: #8a6d00; background: #fff3cf; border-radius: 4px; padding: 2px 6px; }
+#v2-comment-popup .v2-comment-popup-badge { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .03em; color: #8a6d00; background: #fff3cf; border-radius: var(--radius-xs, 4px); padding: 2px 6px; }
 #v2-comment-popup .v2-comment-popup-badge.is-resolved { color: var(--text-muted); background: var(--surface-sunken); }
 #v2-comment-popup .v2-comment-popup-close { border: none; background: none; font-size: 18px; line-height: 1; color: var(--text-faint); cursor: pointer; padding: 0 2px; }
 #v2-comment-popup .v2-comment-popup-close:hover { color: var(--text); }
@@ -545,20 +651,20 @@
 #v2-comment-popup .v2-comment-popup-message:last-child { border-bottom: none; }
 #v2-comment-popup .v2-comment-popup-meta { font-size: 11px; color: var(--text-muted); margin-bottom: 2px; }
 #v2-comment-popup .v2-comment-popup-text { font-size: 12.5px; color: var(--text); white-space: pre-wrap; word-break: break-word; }
-#v2-comment-popup .v2-comment-popup-reply { width: 100%; box-sizing: border-box; font: inherit; font-size: 12.5px; color: var(--text); border: 1px solid var(--border-strong); border-radius: 5px; padding: 5px 6px; resize: vertical; }
+#v2-comment-popup .v2-comment-popup-reply { width: 100%; box-sizing: border-box; font: inherit; font-size: 12.5px; color: var(--text); border: 1px solid var(--border-strong); border-radius: var(--radius-xs, 5px); padding: 5px 6px; resize: vertical; }
 #v2-comment-popup .v2-comment-popup-reply:focus-visible { outline: 2px solid var(--accent-soft-border); outline-offset: -1px; }
 #v2-comment-popup .v2-comment-popup-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; margin-top: 6px; }
-#v2-comment-popup .v2-comment-popup-actions button { font-family: var(--font-ui); font-weight: 600; font-size: 12.5px; height: 26px; padding: 0 10px; border-radius: var(--radius-sm); border: 1px solid var(--border-strong); background: var(--surface); color: var(--text); cursor: pointer; }
+#v2-comment-popup .v2-comment-popup-actions button { font-family: var(--font-ui); font-weight: 600; font-size: 12.5px; height: 26px; padding: 0 10px; border-radius: var(--radius-btn, var(--radius-sm)); border: 1px solid var(--border-strong); background: var(--surface); color: var(--text); cursor: pointer; }
 #v2-comment-popup .v2-comment-popup-actions button:hover { background: var(--surface-sunken); }
-#v2-comment-popup button.v2-comment-popup-post { background: var(--accent-solid); border-color: var(--accent-solid); color: #fff; margin-right: auto; }
-#v2-comment-popup button.v2-comment-popup-post:hover { background: var(--accent-solid-hover); }
+#v2-comment-popup button.v2-comment-popup-post { background: var(--fill, var(--accent-solid)) border-box; border-color: var(--fill-line, var(--accent-solid)); color: var(--on-accent); margin-right: auto; }
+#v2-comment-popup button.v2-comment-popup-post:hover { background: var(--fill-hover, var(--accent-solid-hover)) border-box; }
 #v2-comment-popup button.v2-comment-popup-delete { color: var(--danger-ink); border-color: var(--danger-soft); }
 #v2-comment-popup button.v2-comment-popup-delete:hover { background: var(--danger-soft); }
 
 /* Panneau `#` (js/variables.js:ensureBox), seule définition de #autocomplete-box : colonne flex (le JS bascule son display en `flex`) pour que
    `.ac-tabs` reste fixe pendant que `.ac-items` défile seul. Onglets Variables (par défaut) et Chips, en `--accent` pour l'onglet actif comme
    partout dans ce fichier, pas le vert des chips (réservé au contenu des bulles, pas à la navigation). */
-#autocomplete-box { position: absolute; z-index: var(--z-menu); min-width: 160px; max-width: 320px; display: flex; flex-direction: column; max-height: 280px; overflow: hidden; padding: 0; font-family: var(--font-ui); font-size: 12.5px; background: var(--surface); border: 1px solid var(--border-strong); box-shadow: 0 4px 14px rgba(0,0,0,.10); border-radius: 6px; }
+#autocomplete-box { position: absolute; z-index: var(--z-menu); min-width: 160px; max-width: 320px; display: flex; flex-direction: column; max-height: 280px; overflow: hidden; padding: 0; font-family: var(--font-ui); font-size: 12.5px; background: var(--surface); border: 1px solid var(--border-strong); box-shadow: 0 4px 14px rgba(0,0,0,.10); border-radius: var(--radius-md, 6px); }
 #autocomplete-box .ac-items { overflow: auto; }
 #autocomplete-box .ac-item { padding: 4px 8px; cursor: pointer; color: var(--text); }
 #autocomplete-box .ac-item:hover, #autocomplete-box .ac-item.selected { background: var(--surface-sunken); }
@@ -566,6 +672,8 @@
 .ac-tab { flex: 1; text-align: center; padding: 5px 8px; font-size: 12px; font-weight: 600; color: var(--text-faint); cursor: pointer; }
 .ac-tab:hover { background: var(--surface-sunken); }
 .ac-tab.active { color: var(--accent); box-shadow: inset 0 -2px 0 var(--accent); }
+/* L'onglet choisi sous la souris, comme la ligne choisie d'un menu (`.v2-hover-row.is-active:hover`, plus bas) : `--accent-ink` sur le gris du survol, 5,67 et 5,41:1 au lieu de 4,02 et 4,43. */
+.ac-tab.active:hover { color: var(--accent-ink); }
 
 #v2-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; padding: 6px 10px; border-bottom: 1px solid var(--border, #d7dde3); background: var(--surface, #fff); }
 /* #v2-toolbar est imbriqué dans #toolbar-top : la règle générique `#toolbar-top button::before` de css/style.css s'y applique donc aussi, et sans
@@ -576,7 +684,7 @@
    (info-bulle au survol), présent sur chaque bouton, les identifie. */
 /* Pas de contour gris permanent (trop lourd) : le bouton reste nu au repos, un fond et une bordure discrète n'apparaissent qu'au survol (comme les
    boutons indenter et désindenter, ce traitement est ici le style par défaut). */
-#v2-toolbar button { display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 28px; border: 1px solid transparent; background: transparent; border-radius: 5px; padding: 0; cursor: pointer; color: var(--text, #3a4452); }
+#v2-toolbar button { display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 28px; border: 1px solid transparent; background: transparent; border-radius: var(--radius-xs, 5px); padding: 0; cursor: pointer; color: var(--text, #3a4452); }
 #v2-toolbar button svg { width: 16px; height: 16px; }
 #v2-toolbar button:hover { background: var(--surface-sunken, #f2f4f7); border-color: var(--border, #d7dde3); }
 /* État actif (par exemple le gras là où est le curseur), voir MainToolbar.syncToolbarState (js/main-toolbar.js). */
@@ -589,7 +697,7 @@
 #v2-toolbar button.v2-btn-variable { border-color: var(--accent-soft-border, #c7dbfd); color: var(--accent, #2f6fed); }
 #v2-toolbar button.v2-btn-variable:hover { background: var(--accent-soft, #e8f0fe); }
 #v2-toolbar button:disabled, #v2-toolbar button:disabled:hover { opacity: .35; cursor: default; background: transparent; border-color: transparent; }
-#v2-toolbar select { border: 1px solid transparent; border-radius: 4px; padding: 3px 6px; font-size: 12.5px; background: transparent; }
+#v2-toolbar select { border: 1px solid transparent; border-radius: var(--radius-xs, 4px); padding: 3px 6px; font-size: 12.5px; background: transparent; }
 #v2-toolbar select:hover, #v2-toolbar select:focus-visible { border-color: var(--border, #d7dde3); background: var(--surface, #fff); }
 #v2-toolbar .v2-sep { width: 1px; align-self: stretch; background: var(--border, #d7dde3); margin: 0 4px; }
 /* Groupe « bouton principal et variantes au survol » (alignement, puces, numérotation) : le bouton principal reste l'action rapide par défaut ; le
@@ -606,11 +714,14 @@
    positionFlyout le remonte au-dessus des menus déjà ouverts (Layers.raise, js/layers.js). */
 .v2-hover-flyout {
   position: absolute; top: 100%; left: 0; display: none; gap: 3px; padding: 4px;
-  background: var(--surface, #fff); border: 1px solid var(--border-strong, #c3cad6); border-radius: 6px;
+  background: var(--surface, #fff); border: 1px solid var(--border-strong, #c3cad6); border-radius: var(--radius-md, 6px);
   box-shadow: 0 6px 16px rgba(20, 28, 46, .16); z-index: var(--z-menu);
   opacity: 0; transform: translateY(-4px);
 }
 .v2-hover-group:hover .v2-hover-flyout, .v2-hover-group:focus-within .v2-hover-flyout { display: flex; opacity: 1; transform: translateY(var(--v2-flyout-gap)); }
+/* Menu refermé par un clic de souris sur son bouton (`data-close-on-click`, js/editor-core.js) : il reste fermé, souris encore dessus, jusqu'à ce qu'elle sorte du
+   groupe. Ces deux sélecteurs pèsent plus que la règle d'ouverture ci-dessus : le résultat ne tient pas à l'ordre du fichier. */
+.v2-hover-group.v2-hover-closed:hover .v2-hover-flyout, .v2-hover-group.v2-hover-closed:focus-within .v2-hover-flyout { display: none; }
 /* Pont de survol : le décalage `--v2-flyout-gap` laisse entre le bouton et son menu une bande qui n'appartient à aucun élément du groupe ; un
    pointeur qui la traverse perd le `:hover` du groupe, le menu repasse en `display: none` et la souris tombe sur ce qu'il y a dessous. Un
    pseudo-élément du groupe, présent tant que le groupe (donc son menu, son descendant) est survolé, reprend cette bande. Pas un pseudo-élément du
@@ -626,6 +737,13 @@
    porte `[data-tip]`, il rognerait l'info-bulle (`[data-tip]::after`, css/toolbar-v2.css). positionFlyout (js/editor-core.js, réservé à cette
    classe) fixe le `max-height` réel à l'ouverture ; la valeur ci-dessous n'est qu'un repli tant que le JS n'a pas tourné. */
 .v2-hover-flyout-scrollable { max-height: 280px; overflow-y: auto; }
+/* Un menu que la barre de GFS posée en bas du cadre empêcherait de tenir (consigne GFS 025) : positionFlyout (js/editor-core.js) pose cette classe et le `max-height`
+   qui le garde au-dessus de la zone, et son contenu défile. Les lignes à info-bulle y sont gardées (js/viewport-fit.js tient l'info-bulle dans la boîte du menu). Sans
+   cette barre, aucun menu ne porte la classe. `overscroll-behavior` : au bout du menu, la molette ne fait pas défiler la page derrière lui. */
+.v2-hover-flyout-capped { overflow-y: auto; overscroll-behavior: contain; }
+/* Un popup, une liste ou un panneau flottant que la barre de GFS posée en bas du cadre empêcherait de tenir (ViewportFit.avoidBar, js/viewport-fit.js) : `--pp-bar-cap` est son `max-height`
+   ramené à sa boîte de contenu, qui passe devant celui que son positionneur a pu poser en ligne, et son contenu défile. Sans cette barre, aucun composant ne porte la classe. */
+.pp-bar-capped { max-height: var(--pp-bar-cap) !important; overflow-y: auto; overscroll-behavior: contain; }
 /* Panneau « Liste » en trois lignes empilées (puces, numéros, cases à cocher), plus lisible que trois groupes en rangée. Le conteneur passe en
    colonne (`.v2-hover-flyout-v`) ; chaque ligne redevient une rangée par `.v2-hover-icon-row`, séparée par un filet horizontal (`.v2-hover-hsep`). */
 .v2-hover-icon-row { display: flex; gap: 3px; }
@@ -633,17 +751,31 @@
 /* Rappel non cliquable de l'action du bouton principal, en tête du flyout : il remplace l'info-bulle `[data-tip]` du bouton, qui se superposerait
    au flyout au survol. Un seul panneau porte ainsi les deux informations, empilées et lisibles. */
 .v2-hover-flyout-label { display: block; padding: 6px 9px 3px; font-size: 11px; font-weight: 600; color: var(--text-faint, #98a2b3); white-space: nowrap; }
-.v2-hover-row { padding: 6px 9px; border-radius: 5px; font-size: 12.5px; color: var(--text, #3a4452); cursor: pointer; white-space: nowrap; }
+.v2-hover-row { padding: 6px 9px; border-radius: var(--radius-xs, 5px); font-size: 12.5px; color: var(--text, #3a4452); cursor: pointer; white-space: nowrap; }
 .v2-hover-row:hover { background: var(--surface-sunken, #f2f4f7); }
 .v2-hover-row.is-active { color: var(--accent, #2f6fed); font-weight: 700; }
+/* La ligne choisie sous la souris, dans tout menu au survol (Type d'export, qualité du PDF, titres) : le bleu d'accent ne fait que 4,02:1 (clair) et 4,43:1
+   (sombre) sur le gris du survol. `--accent-ink`, le bleu des textes sur fond teinté, en fait 5,67 et 5,41. */
+.v2-hover-row.is-active:hover { color: var(--accent-ink, #2558c4); }
 .v2-hover-row-disabled { color: var(--text-muted, #9aa3b2); cursor: not-allowed; }
 .v2-hover-row-disabled:hover { background: none; }
+/* Une ligne, un intitulé ou un filet qu'un menu ne montre que dans un certain état (la qualité du PDF du menu Type d'export et les options du menu Exporter, selon
+   le type d'export : `data-export-for`) : `hidden` suffit, sauf pour une ligne que le CSS passe en `display: flex` (clé d'un raccourci, css/shortcuts.css) ou un
+   intitulé en `display: block`. */
+.v2-hover-row[hidden], .v2-hover-flyout-label[hidden], .v2-hover-hsep[hidden] { display: none; }
 /* Lignes du menu « Lien, citation, bloc de code » (#v2-blocks-flyout) : de vrais boutons, atteignables au clavier (les `.v2-hover-row` sont des
    `<span>`), avec l'icône de la fonction devant et le raccourci à droite. Plus spécifique que `#v2-toolbar button` (30 × 28, centré), qui vise
    tout bouton de la barre. */
-#v2-toolbar .v2-hover-flyout .v2-menu-row { display: flex; align-items: center; justify-content: flex-start; gap: 8px; width: 100%; height: auto; min-height: 28px; padding: 5px 9px; border: 1px solid transparent; border-radius: 5px; background: transparent; font: inherit; font-size: 12.5px; text-align: left; white-space: nowrap; color: var(--text, #3a4452); }
+#v2-toolbar .v2-hover-flyout .v2-menu-row { display: flex; align-items: center; justify-content: flex-start; gap: 8px; width: 100%; height: auto; min-height: 28px; padding: 5px 9px; border: 1px solid transparent; border-radius: var(--radius-xs, 5px); background: transparent; font: inherit; font-size: 12.5px; text-align: left; white-space: nowrap; color: var(--text, #3a4452); }
 #v2-toolbar .v2-hover-flyout .v2-menu-row:hover, #v2-toolbar .v2-hover-flyout .v2-menu-row:focus-visible { background: var(--surface-sunken, #f2f4f7); border-color: transparent; }
 #v2-toolbar .v2-hover-flyout .v2-menu-row.is-active { background: transparent; border-color: transparent; color: var(--accent, #2f6fed); font-weight: 700; }
+/* Le menu « Lien et blocs de contenu » a huit lignes depuis « Signet… », neuf depuis « Diapositive d'une présentation… » : dans un panneau bas (700 x 400, celui de Grist), neuf lignes de 28 px
+   sortiraient sous le bas de la fenêtre. Elles se resserrent alors (24 px, sans espace entre elles, comme le menu Type d'export) : le menu finit vers 394 px et garde toutes ses lignes, sans
+   défilement (qui rognerait les info-bulles des icônes Exposant et Indice). Une ligne de plus n'y tiendrait plus : ce serait un autre dessin du menu. Gardé par `slidesToText`. */
+@media (max-height: 470px) {
+  #v2-blocks-flyout { gap: 0; }
+  #v2-toolbar #v2-blocks-flyout .v2-menu-row { min-height: 24px; padding-top: 3px; padding-bottom: 3px; }
+}
 .v2-menu-row-icon { display: inline-flex; flex: none; }
 .v2-menu-row-kbd { margin-left: auto; padding-left: 18px; font-size: 11px; font-weight: 400; color: var(--text-faint, #98a2b3); }
 /* Ligne de menu atteignable au clavier (`tabindex="0"` ; menu Enregistrer, js/main.js:wireSaveMenu) : un `<span>` ne reçoit pas le focus de
@@ -652,19 +784,44 @@
 .v2-hover-row:focus-visible { outline: 2px solid var(--accent, #2f6fed); outline-offset: -2px; }
 /* Ligne à cocher (« Enregistrement automatique ») : la coche est à droite du libellé et ne se voit que si la ligne est cochée
    (`aria-checked="true"`) ; le libellé reste aligné à gauche comme dans les autres menus. Trait sans remplissage, en `mask` comme les autres
-   icônes de la barre, à la couleur d'accent. */
+   icônes de la barre, à la couleur d'accent. `v2-hover-row-check-start` : la même coche DEVANT le libellé (menu Exporter, demande du
+   12/10 : « une petite coche devant ») ; sa place reste réservée quand elle est cachée, les libellés restent alignés. */
 .v2-hover-row-check { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
-.v2-hover-row-check::after {
+.v2-hover-row-check-start { display: flex; align-items: center; gap: 8px; }
+.v2-hover-row-check::after, .v2-hover-row-check-start::before {
   content: ''; flex: none; width: 13px; height: 13px; background-color: var(--accent, #2f6fed); visibility: hidden;
   -webkit-mask-size: contain; mask-size: contain; -webkit-mask-repeat: no-repeat; mask-repeat: no-repeat; -webkit-mask-position: center; mask-position: center;
   -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M5 13l4 4L19 7'/%3E%3C/svg%3E");
   mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M5 13l4 4L19 7'/%3E%3C/svg%3E");
 }
-.v2-hover-row-check[aria-checked="true"]::after { visibility: visible; }
+.v2-hover-row-check[aria-checked="true"]::after, .v2-hover-row-check-start[aria-checked="true"]::before { visibility: visible; }
 /* Menu Page (#v2-page-flyout, js/orientation-toggle.js) : le nom de la ligne prend la place libre, les dimensions du format restent discrètes
    entre lui et la coche. */
 .v2-page-row-name { flex: 1; }
 .v2-page-row-size { font-size: 11px; color: var(--text-muted, #667085); }
+/* « Tout le document / Cette page » en tête du menu Page d'un document (js/orientation-toggle.js) : le contrôle segmenté de la pastille d'en-tête et de pied (`.v2-segmented`, css/toolbar-v2.css), à la largeur
+   du menu. Des <span> (pas des <button> : `#toolbar-top button` leur donnerait la hauteur, le cadre et l'icône des boutons de la barre). Le menu s'élargit pour que les deux libellés tiennent côte à côte. Le choix
+   non retenu est au texte courant (`--text`) et celui qui ne peut pas se choisir au texte atténué : l'atténué du contrôle d'origine suffit ailleurs, ici il ne distinguerait pas le grisé du simple non-choisi.
+   Le menu d'une présentation a le même contrôle sous son titre pour les rapports de la diapositive (`.v2-page-ratio-block`, 16:9 4:3 16:10 1:1) : même bloc, même largeur de menu. */
+#v2-page-flyout.v2-page-flyout-scoped, #v2-page-flyout.v2-page-flyout-ratios { min-width: 232px; }
+.v2-page-scope-block { padding: 4px 9px 6px; }
+.v2-page-scope-block[hidden] { display: none; }
+#v2-page-flyout .v2-page-scope-block .v2-segmented { display: flex; }
+#v2-page-flyout .v2-segmented-btn { flex: 1 1 0; display: inline-flex; align-items: center; justify-content: center; white-space: nowrap; color: var(--text); cursor: pointer; }
+#v2-page-flyout .v2-segmented-btn.active { color: var(--on-accent); }
+#v2-page-flyout .v2-segmented-btn:focus-visible { outline: 2px solid var(--accent, #2f6fed); outline-offset: -2px; }
+#v2-page-flyout .v2-segmented-btn.is-disabled { color: var(--text-muted); cursor: not-allowed; }
+#v2-page-flyout .v2-segmented-btn.is-disabled:hover { background: transparent; }
+/* Le choix retenu quand le menu est grisé (un export en cours) garde son fond et son texte blanc : seul son opacité baisse. */
+#v2-page-flyout .v2-segmented-btn.active.is-disabled, #v2-page-flyout .v2-segmented-btn.active.is-disabled:hover { background: var(--fill, var(--accent-solid)) border-box; color: var(--on-accent); opacity: .55; }
+/* Le menu Page d'une présentation (rapports de la diapositive, sens, formats, « Format libre… », « Thème… », « Filigrane… ») : neuf lignes sous deux blocs, 401 px de haut à 27 px par ligne et 3 px d'écart, sous le bas d'un panneau
+   de 700 x 400 (celui de Grist), et plus encore avec une police du système aux lignes hautes. Dans un panneau bas il se resserre comme le menu « Type d'export » plus bas : lignes de 24 px (la taille minimale d'une cible,
+   WCAG 2.5.8) dont la hauteur de texte est fixée, pour que la police du système ne la fasse pas varier d'un ordinateur à l'autre, et 2 px d'écart ; il finit vers 360 px et garde toutes ses lignes, sans défilement. Le menu
+   d'un document et celui d'un macro-modèle, plus courts, gardent leur dessin. Gardé par `slidesHarmony` et `slideThemeMouse`. */
+@media (max-height: 470px) {
+  #v2-page-flyout.v2-page-flyout-ratios { gap: 2px; }
+  #v2-page-flyout.v2-page-flyout-ratios .v2-hover-row { padding: 4px 9px; line-height: 16px; }
+}
 /* Bloc « Numérotation des titres » du flyout Titre : mêmes `.v2-segmented` et `.v2-segmented-btn` que la pastille d'en-tête et de pied, pour ne
    pas inventer un second style de contrôle segmenté dans ce fichier. */
 .v2-numbering-block { padding: 6px 9px 4px; }
@@ -675,20 +832,29 @@
    et 1 classe). */
 #v2-toolbar .v2-segmented-btn { width: auto; flex-shrink: 0; }
 /* Élargi pour ce flyout seulement : les 168 px génériques de `.v2-hover-flyout-v` suffisent à peine à la rangée de titres et serraient le segmenté
-   à quatre boutons en dessous. Les autres flyouts qui partagent `.v2-hover-flyout-v` gardent leur largeur : ciblé par ID, pas par classe. */
+   à cinq boutons en dessous (« Aucune », « 1. », « a. », « I. » et « Article 1 », dont le libellé ne se coupe pas : `white-space: nowrap`). Les autres
+   flyouts qui partagent `.v2-hover-flyout-v` gardent leur largeur : ciblé par ID, pas par classe. */
 #v2-heading-flyout { min-width: 224px; }
 #v2-heading-flyout .v2-numbering-block { padding: 10px 12px 8px; }
 #v2-heading-flyout .v2-numbering-label { margin-bottom: 8px; }
-#v2-heading-flyout .v2-segmented-btn { padding: 0 14px; font-size: 12.5px; }
+#v2-heading-flyout .v2-segmented-btn { padding: 0 14px; font-size: 12.5px; white-space: nowrap; }
+/* Menu « Type d'export » : neuf types (PDF, PDF protégé, Word, PowerPoint, Excel, Markdown, Markdown (modèle) et les deux HTML) puis, pour les deux PDF, l'intitulé et les trois
+   qualités. Au rythme des autres menus (lignes de 27 px, 3 px d'écart) elles finissaient sous le pli d'un panneau de 700×400 (onze lignes déjà à 436 px), où « Impression navigateur » et « Léger »
+   n'étaient plus atteignables à la souris. Resserré pour ce menu seulement (ciblé par ID, comme #v2-heading-flyout) : lignes de 24 px (la taille minimale d'une cible, WCAG 2.5.8) sans écart
+   entre elles, le menu finit vers 390 px (avec 2 px d'écart, onze lignes finissaient à 390 px et douze à 416 px). La hauteur de ligne est fixée (`line-height`), pour que la police du système ne
+   la fasse pas varier d'un ordinateur à l'autre. */
+#v2-quality-flyout { gap: 0; }
+#v2-quality-flyout .v2-hover-row { padding: 4px 9px; line-height: 16px; }
+#v2-quality-flyout .v2-hover-flyout-label { line-height: 14px; }
 /* Pas de petit point sous le bouton principal d'un groupe au survol : l'indice est retiré à dessein (`.v2-hover-group > button::after`), ne pas le
    remettre. Le bouton garde `aria-haspopup` et `aria-expanded` (js/editor-core.js). */
 /* Couleur de police et surlignage : deux boutons indépendants. Le premier (l'icône) applique directement la dernière couleur choisie, le second
    (le chevron) ouvre le menu de nuances (`.v2-color-dropdown`), comme dans Word ou Google Docs. C'est l'icône elle-même qui se teinte
    (setColorIcon). */
-.v2-color-split { display: inline-flex; align-items: stretch; height: 28px; border-radius: 5px; overflow: hidden; }
+.v2-color-split { display: inline-flex; align-items: stretch; height: 28px; border-radius: var(--radius-xs, 5px); overflow: hidden; }
 #v2-toolbar .v2-color-split button { width: auto; height: 28px; padding: 0 6px; border: 1px solid transparent; border-radius: 0; background: transparent; }
-#v2-toolbar .v2-color-split button:first-child { border-radius: 5px 0 0 5px; }
-#v2-toolbar .v2-color-split button:last-child { border-radius: 0 5px 5px 0; }
+#v2-toolbar .v2-color-split button:first-child { border-radius: var(--radius-xs, 5px) 0 0 var(--radius-xs, 5px); }
+#v2-toolbar .v2-color-split button:last-child { border-radius: 0 var(--radius-xs, 5px) var(--radius-xs, 5px) 0; }
 .v2-color-split-icon { font-size: 13px; font-weight: 700; line-height: 1; display: inline-flex; }
 .v2-color-split-icon svg { width: 14px; height: 14px; }
 .v2-color-split-caret { display: inline-flex; color: #8a94a3; }
@@ -697,10 +863,10 @@
 
 /* Fond de cellule (barre flottante de tableau) : un bouton unique, sans « dernière couleur » à appliquer d'un clic. Classe dédiée pour ne pas
    hériter du split ci-dessus, avec sa pastille de couleur courante. */
-.v2-fill-chip { display: inline-flex; align-items: center; gap: 4px; height: 26px; padding: 0 6px; border: 1px solid transparent; border-radius: 4px; background: transparent; cursor: pointer; color: var(--text, #3a4452); }
+.v2-fill-chip { display: inline-flex; align-items: center; gap: 4px; height: 26px; padding: 0 6px; border: 1px solid transparent; border-radius: var(--radius-xs, 4px); background: transparent; cursor: pointer; color: var(--text, #3a4452); }
 .v2-fill-chip:hover { background: var(--surface-sunken, #f2f4f7); border-color: var(--border, #d7dde3); }
 .v2-fill-chip svg { width: 14px; height: 14px; }
-.v2-fill-bar { width: 14px; height: 3px; border-radius: 1px; background: #000; box-shadow: inset 0 0 0 1px rgba(0, 0, 0, .08); }
+.v2-fill-bar { width: 14px; height: 3px; border-radius: var(--radius-xs, 1px); background: #000; box-shadow: inset 0 0 0 1px rgba(0, 0, 0, .08); }
 
 /* Police et taille compactes : une pastille icône et valeur et un stepper -/valeur/+ remplacent les `<select>` natifs (la police imposait sa
    largeur de texte, « Times New Roman » par exemple, à toute la barre) et ouvrent `.v2-format-panel` au clic (même mécanisme flottant que le menu
@@ -708,45 +874,40 @@
 /* `width: auto` et `flex-shrink: 0` : `#v2-toolbar button` pose `width: 30px` et un chip ne redéfinissait pas `width` (la cascade s'applique par
    propriété, la spécificité ne sert à rien pour une propriété non redéclarée). Le chip et sa valeur seraient écrasés à quelques pixels dès que la
    barre manque de place ; `flex-shrink: 0` seul ne suffit pas depuis une base de 30 px déjà trop étroite. */
-.v2-format-chip, #v2-toolbar button.v2-format-chip { display: inline-flex; align-items: center; gap: 4px; width: auto; height: 28px; padding: 0 7px 0 6px; border: 1px solid transparent; border-radius: 5px; background: transparent; cursor: pointer; color: var(--text, #3a4452); font-family: inherit; flex-shrink: 0; }
+.v2-format-chip, #v2-toolbar button.v2-format-chip { display: inline-flex; align-items: center; gap: 4px; width: auto; height: 28px; padding: 0 7px 0 6px; border: 1px solid transparent; border-radius: var(--radius-xs, 5px); background: transparent; cursor: pointer; color: var(--text, #3a4452); font-family: inherit; flex-shrink: 0; }
 .v2-format-chip:hover { background: var(--surface-sunken, #f2f4f7); border-color: var(--border, #d7dde3); }
 .v2-format-chip-val { font-size: 12px; font-weight: 700; max-width: 92px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .v2-format-chip-caret { display: inline-flex; color: #8a94a3; }
 .v2-format-chip-caret svg { width: 10px; height: 10px; }
-.v2-stepper { display: inline-flex; align-items: stretch; height: 28px; border: 1px solid transparent; border-radius: 5px; overflow: hidden; }
+.v2-stepper { display: inline-flex; align-items: stretch; height: 28px; border: 1px solid transparent; border-radius: var(--radius-xs, 5px); overflow: hidden; }
 .v2-stepper:hover { border-color: var(--border, #d7dde3); }
 .v2-stepper button { border: none; border-radius: 0; background: transparent; cursor: pointer; color: var(--text, #3a4452); padding: 0; }
 .v2-stepper button:hover { background: var(--surface-sunken, #f2f4f7); }
 #v2-size-minus, #v2-size-plus { width: 20px; font-size: 15px; font-weight: 700; line-height: 1; }
 .v2-stepper-val { width: 46px; font-size: 11.5px; font-weight: 700; }
-.v2-format-panel { display: none; position: absolute; top: 0; left: 0; z-index: var(--z-menu); background: var(--surface, #fff); border: 1px solid var(--border, #d7dde3); border-radius: 8px; box-shadow: 0 4px 16px rgba(20, 28, 46, .18); padding: 5px; min-width: 168px; max-height: 260px; overflow-y: auto; }
+/* `font-family` explicite : rattaché à document.body, le panneau sort de la cascade de la barre d'outils (--font-ui) et ses boutons (`font-family: inherit`)
+   retomberaient sur l'Arial de body. */
+.v2-format-panel { display: none; position: absolute; top: 0; left: 0; z-index: var(--z-menu); background: var(--surface, #fff); border: 1px solid var(--border, #d7dde3); border-radius: var(--radius-md, 8px); box-shadow: 0 4px 16px rgba(20, 28, 46, .18); padding: 5px; min-width: 168px; max-height: 260px; overflow-y: auto; font-family: var(--font-ui); }
 .v2-format-panel.visible { display: block; }
-.v2-format-panel button { display: block; width: 100%; text-align: left; padding: 6px 9px; border: none; border-radius: 5px; background: none; cursor: pointer; font-size: 12.5px; color: var(--text, #3a4452); font-family: inherit; }
+/* `line-height: 14px` : la hauteur de ligne que l'Arial donnait (`normal`, à 12,5 px). Avec `normal`, chaque police du système donne la sienne et le menu grandit
+   d'un ou deux pixels par ligne. */
+.v2-format-panel button { display: block; width: 100%; text-align: left; padding: 6px 9px; border: none; border-radius: var(--radius-xs, 5px); background: none; cursor: pointer; font-size: 12.5px; line-height: 14px; color: var(--text, #3a4452); font-family: inherit; }
 .v2-format-panel button:hover { background: var(--surface-sunken, #f2f4f7); }
 .v2-format-panel button.is-active { color: var(--accent, #2f6fed); font-weight: 700; }
+.v2-format-panel button.is-active:hover { color: var(--accent-ink, #2558c4); }
 
-/* Menu déroulant de nuances (bouton couleur ci-dessus) : grille de pastilles, case « personnalisé » (ouvre le sélecteur natif,
-   `.v2-color-dropdown-native`) et case « aucune » optionnelle. */
-.v2-color-dropdown { display: none; position: absolute; top: 0; left: 0; z-index: var(--z-menu); background: var(--surface, #fff); border: 1px solid var(--border, #d7dde3); border-radius: 8px; box-shadow: 0 4px 16px rgba(20, 28, 46, .18); padding: 8px; }
+/* Menu déroulant de couleur (bouton couleur ci-dessus) : le panneau seulement. Sa palette, ses rangées de couleurs gardées, son pied et la fenêtre
+   « Couleur personnalisée » sont à css/color-palette.css (js/color-palette.js). */
+.v2-color-dropdown { display: none; position: absolute; top: 0; left: 0; z-index: var(--z-menu); background: var(--surface, #fff); border: 1px solid var(--border, #d7dde3); border-radius: var(--radius-md, 8px); box-shadow: 0 4px 16px rgba(20, 28, 46, .18); padding: 5px 8px; }
 .v2-color-dropdown.visible { display: block; }
-.v2-color-grid { display: grid; grid-template-columns: repeat(8, 20px); gap: 5px; }
-.v2-color-grid button { width: 20px; height: 20px; border-radius: 4px; border: 1px solid rgba(0, 0, 0, .1); padding: 0; cursor: pointer; }
-.v2-color-grid button:hover { transform: scale(1.12); }
-.v2-color-dropdown-footer { display: flex; gap: 5px; margin-top: 8px; padding-top: 7px; border-top: 1px solid var(--border, #d7dde3); }
-.v2-color-dropdown-footer button { display: inline-flex; align-items: center; gap: 5px; padding: 4px 7px; border: 1px solid var(--border, #d7dde3); border-radius: 5px; background: var(--surface, #fff); cursor: pointer; font-size: 12px; color: var(--text, #3a4452); white-space: nowrap; }
-.v2-color-dropdown-footer button svg { width: 13px; height: 13px; }
-.v2-color-dropdown-footer button:hover { background: var(--surface-sunken, #f2f4f7); }
-/* Sélecteur natif caché mais cliquable par `.click()` (pas `display: none`, qui empêche l'ouverture programmatique du sélecteur dans la plupart
-   des navigateurs), déclenché par la case « Personnalisé… ». */
-.v2-color-dropdown-native { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
 
 /* Barre contextuelle flottante (tableau, image...), positionnée par @floating-ui/dom et ancrée dans `document.body` plutôt que dans
    #editor-container pour éviter tout souci de contexte d'empilement avec un ancêtre. Niveau `--z-floating-toolbar` (css/style.css) : sous tous les
    menus, listes et popups (`--z-menu`), qui s'ouvrent donc par-dessus, et sous les fenêtres. Layers.raise ne les range pas entre elles : celle
    d'une bulle ou d'une image, créée après celle du tableau, reste dessus quand un seul clic ouvre les deux (js/layers.js). */
-.v2-floating-toolbar { display: none; position: absolute; top: 0; left: 0; z-index: var(--z-floating-toolbar); gap: 2px; padding: 3px; background: var(--surface, #fff); border: 1px solid var(--border, #d7dde3); border-radius: 6px; box-shadow: 0 4px 16px rgba(20, 28, 46, .18); }
+.v2-floating-toolbar { display: none; position: absolute; top: 0; left: 0; z-index: var(--z-floating-toolbar); gap: 2px; padding: 3px; background: var(--surface, #fff); border: 1px solid var(--border, #d7dde3); border-radius: var(--radius-md, 6px); box-shadow: 0 4px 16px rgba(20, 28, 46, .18); }
 .v2-floating-toolbar.visible { display: flex; }
-.v2-floating-toolbar button { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 26px; border: none; background: transparent; border-radius: 4px; padding: 0; cursor: pointer; color: var(--text, #3a4452); }
+.v2-floating-toolbar button { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 26px; border: none; background: transparent; border-radius: var(--radius-xs, 4px); padding: 0; cursor: pointer; color: var(--text, #3a4452); }
 .v2-floating-toolbar button svg { width: 15px; height: 15px; }
 .v2-floating-toolbar button:hover { background: var(--surface-sunken, #f2f4f7); }
 /* État actif (par exemple le calque courant du sélecteur normal, devant, derrière) : même traitement que la barre principale, pour voir lequel des
@@ -763,4 +924,5 @@
 #reader-container.a4-preview .reader-content,
 #reader-container.a4-preview .v2-page-edge-spacer,
 #reader-container.a4-preview .v2-reader-backdrop,
+#reader-container.a4-preview .v2-reader-gutter,
 #reader-container.a4-preview .v2-pagination-overlay { zoom: var(--pp-fit-zoom, 1); }

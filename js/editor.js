@@ -19,15 +19,9 @@ const Editor = (function () {
   let tableTools = null; // { selectedRect, isInTable } de prosemirror-tables, posés par init()
 
   async function insertImageAtDefaultSize(src) {
-    // Partagée par le bouton toolbar et le collage presse-papiers (src = URL ou data URI).
-    let width = 320;
-    if (HeaderFooterPreview.getHfMode()) {
-      try {
-        const image = await ImageIo.load(src);
-        width = HeaderFooterPreview.clampWidthForHfMaxSize(width, image.naturalWidth, image.naturalHeight);
-      } catch (e) { /* repli sur 320px */ }
-    }
-    editor.chain().focus().insertImage({ src, alt: 'Image', width: Math.round(width) + 'px' }).run();
+    // Partagée par le bouton toolbar et le collage presse-papiers (src = URL ou data URI). Dans un en-tête ou un pied de page l'image se pose à la même taille que
+    // dans le texte, quelle que soit celle de la zone : si elle la dépasse, la zone le dit (HeaderFooterPreview.refreshZoneOverflow) et propose de la réduire.
+    editor.chain().focus().insertImage({ src, alt: 'Image', width: '320px' }).run();
   }
 
   // Popup d'édition d'une note de bas de page. Une seule est active à la fois : en ouvrir une valide celle qui était ouverte (commitFootnotePopup).
@@ -136,32 +130,44 @@ const Editor = (function () {
   function fixColumnWidths(currentEditor, trigger, widthsFor) {
     // Pose sur les cases des tableaux du document les largeurs que choisit `widthsFor(table)` : pour un tableau, la fonction (case, position) ->
     // `colwidth` voulu (undefined : case laissée telle quelle), ou null pour ne pas toucher au tableau. Les tableaux imbriqués dans une case ne sont
-    // pas parcourus.
+    // pas parcourus. `widthsFor(table, pos, page)` reçoit aussi la position du tableau, pour le mesurer dans le DOM, et la fenêtre de mesure
+    // (EditorCore.pageScale) : ce qui s'écrit dans le document se mesure sur la page à l'échelle 1, jamais à celle que le panneau impose à l'écran.
+    // Elle se referme avant la transaction.
     const { state } = currentEditor;
+    const page = EditorCore.pageScale(currentEditor);
     let tr = null;
-    state.doc.descendants((table, pos) => {
-      if (table.type.name !== 'table') return true;
-      const widthOf = table.firstChild && widthsFor(table);
-      if (widthOf) {
-        table.forEach((row, rowOffset) => row.forEach((cell, cellOffset) => {
-          const cellPos = pos + 2 + rowOffset + cellOffset;
-          const colwidth = widthOf(cell, cellPos);
-          if (!colwidth) return;
-          tr = tr || state.tr;
-          tr.setNodeMarkup(cellPos, undefined, Object.assign({}, cell.attrs, { colwidth }));
-        }));
-      }
-      return false;
-    });
+    try {
+      state.doc.descendants((table, pos) => {
+        if (table.type.name !== 'table') return true;
+        const widthOf = table.firstChild && widthsFor(table, pos, page);
+        if (widthOf) {
+          table.forEach((row, rowOffset) => row.forEach((cell, cellOffset) => {
+            const cellPos = pos + 2 + rowOffset + cellOffset;
+            const colwidth = widthOf(cell, cellPos);
+            if (!colwidth) return;
+            tr = tr || state.tr;
+            tr.setNodeMarkup(cellPos, undefined, Object.assign({}, cell.attrs, { colwidth }));
+          }));
+        }
+        return false;
+      });
+    } finally {
+      page.close();
+    }
     if (tr) dispatchColumnWidthFix(currentEditor, tr, trigger);
   }
 
   const DEFAULT_COL_PX = 25;
+  // Ce qu'une largeur de colonne lue à l'échelle de l'écran peut s'écarter de la vraie (entiers arrondis deux fois, à la feuille réduite jusqu'à moitié).
+  const ZONE_QUICK_MARGIN_PX = 2;
+  // Un tableau qui dépasse sa page de moins d'un pixel n'en sort pas : la bêta écrit « toute la page » en pixels entiers (658 px pour une page de 657,65 px, 18 mm de marges), et la
+  // largeur exacte de la page (EditorCore.pageContentWidthPx) rognait ces modèles d'un pixel par colonne à chaque ouverture.
+  const OVERFLOW_TOLERANCE_PX = 1;
 
   function backfillAutoColumnWidths(currentEditor, trigger) {
     // Tant qu'une colonne reste "auto" (sans `colwidth`), le tableau garde `width:100%` et une poignée de bord droit ne peut jamais l'agrandir ; on
     // gèle donc la largeur rendue de chaque colonne "auto" dès le premier redimensionnement, pour libérer le `width` exact du tableau.
-    fixColumnWidths(currentEditor, trigger, table => {
+    fixColumnWidths(currentEditor, trigger, (table, pos, page) => {
       let hasExplicit = false; let hasAuto = false;
       table.firstChild.forEach(cell => { if (cell.attrs.colwidth) hasExplicit = true; else hasAuto = true; });
       if (!hasExplicit || !hasAuto) return null;
@@ -169,9 +175,14 @@ const Editor = (function () {
         if (cell.attrs.colwidth) return undefined;
         const dom = currentEditor.view.nodeDOM(cellPos);
         if (!dom || !dom.getBoundingClientRect) return undefined;
+        // Une mesure est en pixels écran, un `colwidth` en pixels de mise en page : la feuille réduite (~0,85 dans un panneau de 700 px, EditorCore.layoutZoom)
+        // sépare les deux. Gelée sur la mesure brute, une colonne perdait 15 % de sa largeur et le tableau rétrécissait d'autant dès la première largeur posée.
+        // Prise sur la page à l'échelle 1 (`page`) : à une autre, le moteur arrondit la mesure à sa façon et le même modèle se figeait à 1 ou 2 px près selon le
+        // panneau ; sans Aperçu A4, la page garde sa largeur d'une page A4 au lieu de prendre celle du panneau (les colonnes se figeaient à 236 px dans un panneau de 700 px,
+        // 586 px dans un de 1400, et le modèle les enregistrait).
         // Éditeur masqué (Lecture, macro-modèle) : la largeur mesurée vaut 0 et geler la colonne dessus la ramènerait au plancher de 25 px
         // ci-dessous. Rejoué quand l'éditeur redevient visible (refreshLayout).
-        const renderedWidth = dom.getBoundingClientRect().width;
+        const renderedWidth = page.measure(() => dom.getBoundingClientRect().width / EditorCore.layoutZoom(dom));
         if (!(renderedWidth > 0)) return undefined;
         const span = cell.attrs.colspan || 1;
         return Array(span).fill(Math.max(DEFAULT_COL_PX, Math.round(renderedWidth / span)));
@@ -181,34 +192,70 @@ const Editor = (function () {
 
   function clampOverflowingTables(currentEditor, trigger) {
     // Un <col> à largeur explicite n'a pas de plafond naturel (contrairement à min-width) : rétrécit après coup les colonnes redimensionnées quand le
-    // tableau dépasse la page en Aperçu A4 (léger rebond au relâcher, tolérable).
+    // tableau dépasse la page en Aperçu A4 (léger rebond au relâcher, tolérable). Un tableau d'une colonne de zone à deux colonnes se règle sur le texte de
+    // sa colonne, plus étroit que la page : il ne passe plus sur le texte de l'autre colonne.
     const editorContainer = document.getElementById('editor-container');
     if (!editorContainer || !editorContainer.classList.contains('a4-preview')) return;
     const containerWidth = EditorCore.editorContentWidthPx(currentEditor);
     // 0 : éditeur masqué (Lecture, macro-modèle), rien à mesurer - les largeurs restent celles du modèle. Rejoué quand l'éditeur redevient visible
     // (refreshLayout). Calculé sur une largeur négative, le facteur ci-dessous ramenait toutes les colonnes à 25 px.
     if (!containerWidth) return;
-    fixColumnWidths(currentEditor, trigger, table => {
+    fixColumnWidths(currentEditor, trigger, (table, pos, page) => {
       // Calculé sur la première ligne, mais appliqué à toutes : sinon prosemirror-tables (largeur cohérente par colonne exigée) annule la correction
       // pour la réaligner sur les lignes non corrigées.
-      let total = 0;
-      table.firstChild.forEach(cell => {
-        const colwidth = cell.attrs.colwidth;
-        total += colwidth ? colwidth.reduce((sum, w) => sum + (w || DEFAULT_COL_PX), 0) : DEFAULT_COL_PX * (cell.attrs.colspan || 1);
-      });
-      if (total <= containerWidth) return null;
-      const scale = containerWidth / total;
+      const rowWidth = widthOf => {
+        let sum = 0;
+        table.firstChild.forEach(cell => {
+          const colwidth = cell.attrs.colwidth;
+          sum += colwidth ? colwidth.reduce((acc, w) => acc + widthOf(w), 0) : DEFAULT_COL_PX * (cell.attrs.colspan || 1);
+        });
+        return sum;
+      };
+      const total = rowWidth(w => w || DEFAULT_COL_PX);
+      const tableDom = currentEditor.view.nodeDOM(pos);
+      // Une page plus étroite que la feuille (js/page-section-view.js) laisse un écart de chaque côté de ses blocs : la largeur utile d'un tableau est celle de SA page.
+      const pageWidth = Math.max(0, containerWidth - 2 * PageSectionView.gapAt(tableDom));
+      let limit = pageWidth;
+      // Un tableau de colonne de zone se règle sur sa colonne, dont la largeur se mesure sur la page à l'échelle 1 (`page`). La lecture rapide, à l'échelle de l'écran, dit à
+      // un pixel ou deux près si le tableau en est loin : c'est presque toujours le cas, et la mise en page n'est refaite que pour un tableau qui frôle sa colonne ou la dépasse.
+      const quickColumnWidth = ExportCommon.zoneColumnWidthPx(tableDom);
+      if (quickColumnWidth > 0) {
+        if (total <= Math.min(pageWidth, quickColumnWidth - ZONE_QUICK_MARGIN_PX)) return null;
+        const columnWidth = page.measure(() => ExportCommon.zoneColumnWidthPx(tableDom));
+        if (columnWidth > 0) limit = Math.min(pageWidth, columnWidth);
+      }
+      if (total <= limit + OVERFLOW_TOLERANCE_PX) return null;
+      const scale = limit / total;
       // Une colonne "auto" par défaut reste telle quelle.
-      return cell => cell.attrs.colwidth && cell.attrs.colwidth.map(w => (w ? Math.max(DEFAULT_COL_PX, Math.round(w * scale)) : w));
+      const columnAt = round => w => (w ? Math.max(DEFAULT_COL_PX, round(w * scale)) : w);
+      // Arrondies au plus près, les colonnes peuvent dépasser ensemble la limite d'un demi-pixel chacune (3 × 161,57 donnent 3 × 162 pour une page de 484,7) : le tableau
+      // sortait de sa page, ou non selon la décimale que la mesure du panneau laissait à la limite. Elles s'arrondissent alors vers le bas.
+      let scaled = columnAt(Math.round);
+      if (rowWidth(w => scaled(w) || DEFAULT_COL_PX) > limit) scaled = columnAt(Math.floor);
+      // Déjà au plus étroit (chaque colonne à son plancher de 25 px) : rien à ramener, et rien à écrire - la correction, rejouée par onUpdate à chaque
+      // écriture, ne finirait jamais.
+      if (rowWidth(w => scaled(w) || DEFAULT_COL_PX) >= total) return null;
+      return cell => cell.attrs.colwidth && cell.attrs.colwidth.map(scaled);
     });
   }
 
-  async function loadLibraries() {
+  // Les classes de TipTap et de ProseMirror, chargées une seule fois : l'éditeur du document (init) et les champs texte à bulles (js/field-editor.js)
+  // les prennent au même endroit.
+  let librariesLoading = null;
+  let librariesLoaded = null;
+  function loadLibraries() {
+    if (!librariesLoading) librariesLoading = importLibraries().then(libs => { librariesLoaded = libs; return libs; });
+    return librariesLoading;
+  }
+  // Les mêmes classes, tout de suite, ou null tant qu'elles ne sont pas chargées : la fenêtre de condition (js/variable-condition.js) monte son champ « Sinon afficher » à
+  // l'ouverture, sans attendre - le document dont elle règle un nœud a déjà chargé l'éditeur.
+  const loadedLibraries = () => librariesLoaded;
+  async function importLibraries() {
     // TipTap et ProseMirror se chargent par import() : leurs classes n'existent pas avant. Aucune dépendance d'ordre entre ces modules (chacun
     // n'alimente que sa propre variable) : ils partent en parallèle plutôt qu'en `await` séquentiels, car un import() est une requête réseau vers
     // esm.sh et la cascade ajoutait jusqu'à 1 à 2 s au démarrage sur une connexion lente ou à cache froid.
     const [
-      { Editor: TiptapEditor, Extension, Node, Mark, mergeAttributes, InputRule },
+      { Editor: TiptapEditor, Extension, Node, Mark, mergeAttributes, InputRule, getHTMLFromFragment, commands: coreCommands },
       { StarterKit },
       { TextAlign },
       { TextStyle },
@@ -225,7 +272,10 @@ const Editor = (function () {
       { computePosition, offset, flip, shift, autoUpdate },
       { NodeSelection, TextSelection, EditorState, Plugin, PluginKey },
       { Decoration, DecorationSet },
-      { TableMap, CellSelection, selectedRect, isInTable },
+      { TableMap, CellSelection, selectedRect, isInTable, addRow, addColumn, __pastedCells: pastedCells },
+      { DOMParser: PMDOMParser, DOMSerializer: PMDOMSerializer },
+      { Step, StepResult, StepMap },
+      { undoDepth },
     ] = await Promise.all([
       import('@tiptap/core'),
       import('@tiptap/starter-kit'),
@@ -245,21 +295,28 @@ const Editor = (function () {
       import('prosemirror-state'),
       import('prosemirror-view'),
       import('prosemirror-tables'),
+      import('prosemirror-model'),
+      import('prosemirror-transform'),
+      import('prosemirror-history'),
     ]);
     return {
-      TiptapEditor, Extension, Node, Mark, mergeAttributes, InputRule, StarterKit, TextAlign, TextStyle, FontFamily, Suggestion, Document,
+      TiptapEditor, Extension, Node, Mark, mergeAttributes, InputRule, getHTMLFromFragment, coreCommands, StarterKit, TextAlign, TextStyle, FontFamily, Suggestion, Document,
       Table, TableView, TableRow, TableCell, TableHeader, TaskList, TaskItem, Placeholder, computePosition, offset, flip, shift, autoUpdate,
       NodeSelection, TextSelection, EditorState, Plugin, PluginKey, Decoration, DecorationSet, TableMap, CellSelection, selectedRect, isInTable,
+      addRow, addColumn, pastedCells, PMDOMParser, PMDOMSerializer, Step, StepResult, StepMap, undoDepth,
     };
   }
 
   function configureModules({
-    computePosition, offset, flip, shift, autoUpdate, NodeSelection, TextSelection, Plugin, PluginKey, Decoration, DecorationSet,
-    TableMap, CellSelection, selectedRect, isInTable,
+    computePosition, offset, flip, shift, autoUpdate, NodeSelection, TextSelection, EditorState, Plugin, PluginKey, Decoration, DecorationSet,
+    TableMap, CellSelection, selectedRect, isInTable, addRow, addColumn, pastedCells, PMDOMParser, PMDOMSerializer,
   }) {
     // Remet aux modules du widget les classes de TipTap et de ProseMirror dont ils ont besoin : bulles flottantes, sélections, tableaux, grille.
     EditorCore.setFloatingUi({ computePosition, offset, flip, shift, autoUpdate });
-    GridEditor.configure({ Plugin, PluginKey, TextSelection, Decoration, DecorationSet, TableMap, CellSelection });
+    GridEditor.configure({ Plugin, PluginKey, TextSelection, EditorState, Decoration, DecorationSet, TableMap, CellSelection, addRow, addColumn, pastedCells });
+    LinkedTable.configure({ Plugin, PluginKey, TextSelection, Decoration, DecorationSet, PMDOMParser, PMDOMSerializer });
+    SlideLinks.configure({ PMDOMParser, EditorState });
+    FreeFrame.configure({ NodeSelection, TextSelection });
     tableTools = { selectedRect, isInTable };
     TableMerge.configure({ TableMap, selectedRect, isInTable });
     EditorCore.setNodeSelectionClass(NodeSelection);
@@ -272,10 +329,15 @@ const Editor = (function () {
   function tracked(extension) { return TrackChanges.extendForTracking(extension); }
 
   function onEditorUpdate({ editor: updatedEditor, transaction }) {
-    HeaderFooterPreview.enforceZoneHeightLimit(updatedEditor, transaction);
-    backfillAutoColumnWidths(updatedEditor, transaction);
-    clampOverflowingTables(updatedEditor, transaction);
-    HeaderFooterPreview.schedulePaginationRecompute();
+    HeaderFooterPreview.scheduleZoneCheck();
+    // Ce qu'une autre personne vient d'écrire (écriture en direct, js/live-entry.js) a déjà eu ses largeurs de colonnes corrigées chez elle, et la correction est revenue dans le texte partagé : la
+    // refaire ici, d'après une autre fenêtre, ferait écrire les mêmes cases par tout le monde.
+    if (!LiveEntry.isRemote(transaction)) {
+      backfillAutoColumnWidths(updatedEditor, transaction);
+      clampOverflowingTables(updatedEditor, transaction);
+    }
+    // Un texte dont seuls des cadres libres (de hauteur nulle) ont changé garde la pagination qu'il avait : rien à recalculer (HeaderFooterPreview.paginationHolds).
+    if (!HeaderFooterPreview.paginationHolds()) HeaderFooterPreview.schedulePaginationRecompute();
     refreshVariableBadgeValidity();
   }
 
@@ -285,10 +347,18 @@ const Editor = (function () {
       // reste garde le texte par défaut.
       clipboardTextSerializer: slice => TableSelect.clipboardText(slice),
       // Un tableau de tableur (Excel, Sheets, LibreOffice) collé dans un document devient un tableau du document, case par case
-      // (js/grid-table.js) ; dans une grille, c'est le plugin de la grille (GridEditor.createExtension) qui le réécrit pour elle.
-      transformPastedHTML: html => (GridEditor.isActive() ? html : GridTable.cleanPastedDocumentHtml(html)),
+      // (js/grid-table.js) ; dans une grille, c'est le plugin de la grille (GridEditor.createExtension) qui le réécrit pour elle. Un exposant collé de
+      // Google Docs perd d'abord la taille réduite de son <span> (js/script-marks.js : la marque réduit déjà le texte). Une diapositive copiée de la bande des diapositives devient du texte du
+      // document, à sa taille (js/slide-text.js) ; ni une grille ni un e-mail n'en veulent.
+      transformPastedHTML: html => {
+        const slide = GridEditor.isActive() || EmailPlainText.isActive() ? html : SlidesEntry.pastedInDocument(html);
+        const pasted = ScriptMarks.cleanPastedHtml(slide);
+        return GridEditor.isActive() ? pasted : GridTable.cleanPastedDocumentHtml(pasted);
+      },
       // Ne consomme que si le presse-papiers contient réellement une image ; un collage de texte normal suit le traitement natif de ProseMirror.
       handlePaste(view, event) {
+        // Un email est du texte brut : pas d'image, le collage suit alors le traitement natif (le texte du presse-papiers, s'il y en a un).
+        if (EmailPlainText.isActive()) return false;
         const items = Array.from((event.clipboardData && event.clipboardData.items) || []);
         const imageItem = items.find(item => item.kind === 'file' && item.type && item.type.startsWith('image/'));
         if (!imageItem) return false;
@@ -320,6 +390,8 @@ const Editor = (function () {
       EditorNodes.createFontSizeExtension(Extension),
       EditorNodes.createTextColorExtension(Extension),
       EditorNodes.createHighlightExtension(Extension),
+      // Exposant et indice (js/script-marks.js) : deux marques de caractère, qui s'excluent l'une l'autre.
+      ...ScriptMarks.createMarks(Mark),
       EditorNodes.createBulletStyleExtension(Extension),
       EditorNodes.createOrderedListStyleExtension(Extension),
       TaskList,
@@ -327,17 +399,22 @@ const Editor = (function () {
       EditorNodes.createTaskListStyleExtension(Extension),
       // `includeChildren` n'est volontairement pas activé (défaut false) : un placeholder par cellule de tableau ou colonne vide encombrerait
       // l'écran de plusieurs textes gris, alors que seul le document principal, pris dans son ensemble, doit en montrer un. `placeholder` est une
-      // fonction, pas une chaîne figée à la construction, pour deux raisons : (1) l'extension la relit à chaque recalcul de décoration (donc à
-      // chaque frappe ou sélection), et un I18n.t() dedans suit un changement de langue en cours de session sans I18n.onChange ; (2) ce même
-      // éditeur sert à éditer un en-tête ou un pied de page vide (contenu échangé par setContent, cf. header-footer-preview.js) : « Commencez à
-      // écrire votre modèle ici… » y serait trompeur, donc rien n'y est affiché.
-      Placeholder.configure({ placeholder: () => (HeaderFooterPreview.isEditingHeaderFooter() ? '' : I18n.t('editor.placeholder')) }),
+      // fonction, pas une chaîne figée à la construction : l'extension la relit à chaque recalcul de décoration, et ce même éditeur sert à
+      // éditer un en-tête ou un pied de page vide (contenu échangé par setContent, cf. header-footer-preview.js) : « Commencez à écrire votre
+      // modèle ici… » y serait trompeur, donc rien n'y est affiché. Une présentation vierge parle de sa première diapositive, pas d'un modèle.
+      Placeholder.configure({ placeholder: () => (HeaderFooterPreview.isEditingHeaderFooter() ? '' : I18n.t(SlidesEntry.presentationShown() ? 'editor.placeholder.slide' : 'editor.placeholder')) }),
       EditorNodes.createVarBadgeNode(Node, mergeAttributes),
       EditorNodes.createCalcBadgeNode(Node, mergeAttributes),
       EditorNodes.createCalcBadgeKeysExtension(Extension),
       EditorNodes.createPageNumberBadgeNode(Node, mergeAttributes),
       EditorNodes.createSmartChipNode(Node, mergeAttributes),
+      // Tabulation (js/tab-indent.js) : ce que Tab écrit, un nœud en ligne que le HTML relu garde jusqu'en fin de bloc (un caractère de blanc y serait effacé).
+      TabIndent.createNode(Node),
+      // Pastille « @ » (js/mention.js) : la fiche d'une ligne précise d'une table, pas une valeur de la ligne affichée.
+      Mention.createNode(Node, mergeAttributes),
       EditorNodes.createFootnoteRefNode(Node, mergeAttributes),
+      // Les marques de ces nœuds en ligne, gardées dans un attribut pour l'écriture en direct (js/editor-nodes.js:createInlineMarksCarrier) : inerte tant qu'elle ne s'en sert pas.
+      EditorNodes.createInlineMarksCarrier(Extension),
       EditorNodes.createCommentMark(Mark, mergeAttributes),
       trackChangesApi.InsertionMark,
       trackChangesApi.DeletionMark,
@@ -347,17 +424,17 @@ const Editor = (function () {
   }
 
   function structureExtensions({
-    Extension, Node, mergeAttributes, Plugin, PluginKey, Decoration, DecorationSet, EditorState, Suggestion, InputRule,
-    Table, TableView, TableRow, TableHeader, TableCell,
+    Extension, Node, mergeAttributes, Plugin, PluginKey, Decoration, DecorationSet, EditorState, Suggestion, InputRule, coreCommands,
+    Table, TableView, TableRow, TableHeader, TableCell, PMDOMParser, Step, StepResult, StepMap, undoDepth,
   }) {
     // Les touches, les variables, les liens, la recherche, les tableaux, les colonnes, les blocs conditionnels, la légende, les images et les pages,
     // puis la grille.
     const withCellStyle = Cell => EditorNodes.withCellBackground(GridEditor.withCellAttributes(EditorNodes.withFastColwidth(Cell)));
     const { TwoColumnsColumn, TwoColumnsZone } = EditorNodes.createTwoColumnsNodes(Node, mergeAttributes);
     return [
-      // Entrée d'une grille (descend d'une case), rangée à cet endroit : après StarterKit et avant Variables et TextExpansion. TipTap essaie la
-      // dernière extension rangée en premier : leurs listes ouvertes gardent donc Entrée, et la liste à puces aussi (cf.
-      // GridEditor.createEnterExtension). Hors grille, elle ne fait rien.
+      // Entrée d'une case de tableau, de grille ou de document (descend d'une case), rangée à cet endroit : après StarterKit et avant Variables et
+      // TextExpansion. TipTap essaie la dernière extension rangée en premier : leurs listes ouvertes gardent donc Entrée, et la liste à puces aussi (cf.
+      // GridEditor.createEnterExtension). Hors d'une case de tableau, elle ne fait rien.
       GridEditor.createEnterExtension(Extension),
       // Les touches d'une valeur conditionnelle (Entrée = retour à la ligne dans la valeur, Retour arrière la retire vide) : même rang que l'Entrée
       // d'une grille, pour la même raison.
@@ -370,11 +447,14 @@ const Editor = (function () {
       EditorNodes.createBehindImageClickThroughExtension(Extension, Plugin, PluginKey),
       Variables.createExtension(Extension, Suggestion),
       TextExpansion.createExtension(Extension, Suggestion, InputRule, PluginKey),
+      // La liste « @ » (js/mention.js), rangée après celle de « § » : elle voit les touches avant celle de « # » et de « § » quand elle est ouverte.
+      Mention.createExtension(Extension, Suggestion, PluginKey),
       LinkDialog.createExtension(Extension),
       // Rechercher / Remplacer (js/find-replace.js) : surlignage des résultats par décorations (Ctrl+F et Ctrl+H sont écoutés sur le document, cf.
       // wireEditor).
-      FindReplace.createExtension(Extension, { Plugin, PluginKey, Decoration, DecorationSet }),
-      tracked(Table).configure({ resizable: true, View: EditorNodes.createTableView(TableView) }),
+      FindReplace.createExtension(Extension, { Plugin, PluginKey, Decoration, DecorationSet, PMDOMParser }),
+      // Le tableau porte les attributs de la grille (quadrillage) et le numéro du modèle Grille dont il est la copie (js/linked-table.js).
+      tracked(LinkedTable.withAttributes(GridEditor.withTableAttributes(Table))).configure({ resizable: true, View: EditorNodes.createTableView(TableView) }),
       // La ligne aussi : « Colonne avant / après » et « Supprimer la colonne » posent une marque sur chaque case de la colonne, des enfants directs
       // d'une ligne.
       tracked(GridEditor.withRowAttributes(TableRow)),
@@ -385,46 +465,120 @@ const Editor = (function () {
       // Encadré (js/callout.js) : un bloc qui contient des blocs, comme une colonne - il doit donc, lui aussi, accepter les marques de suivi sur
       // ses enfants.
       tracked(Callout.createNode(Node, mergeAttributes)),
-      tracked(EditorNodes.createConditionalTextNode(Node, mergeAttributes)),
+      tracked(EditorNodes.createConditionalTextNode(Node, mergeAttributes, Plugin, PluginKey)),
       EditorNodes.createConditionalCheckboxNode(Node, mergeAttributes),
       EditorNodes.createConditionalValueNode(Node, mergeAttributes),
       // Légende (js/caption.js) : un attribut du paragraphe, plus le texte d'attente de la légende vide où se trouve le curseur.
       Caption.createExtension(Extension, { Plugin, PluginKey, Decoration, DecorationSet }),
       // « Garder avec le suivant » (js/keep-with-next.js) : un attribut du paragraphe, sans plugin.
       KeepWithNext.createExtension(Extension),
+      // « Texte de droite à gauche » (js/text-direction.js) : le sens d'écriture d'un paragraphe, d'un titre ou d'une liste, un attribut `dir`, sans plugin.
+      TextDirection.createExtension(Extension),
+      // « Paragraphe… » (js/paragraph-format.js) : l'interligne, l'espace avant et après et les retraits d'un paragraphe, cinq attributs du paragraphe, sans plugin.
+      ParagraphFormat.createExtension(Extension),
+      // « Caractère… » (js/character-format.js) : l'espacement des caractères et les petites capitales, deux réglages de la marque textStyle, sans plugin.
+      CharacterFormat.createExtension(Extension),
+      BulletFormat.createExtension(Extension),
+      // Le style de frappe d'une case vide (js/typing-style.js) : la mise en forme de caractère choisie sur des cases sans texte, gardée pour ce qu'on y écrira ensuite (un attribut du paragraphe vide, un
+      // plugin, et les trois commandes de marque de TipTap reprises pour l'écrire).
+      TypingStyle.createExtension(Extension, { Plugin, PluginKey, commands: coreCommands }),
+      // Les ronds et les numéros d'une liste suivent la couleur et la taille du début de leur texte (js/list-markers.js) : une décoration par point de liste, rien n'est écrit dans le document.
+      ListMarkers.createExtension(Extension, { Plugin, PluginKey, Decoration, DecorationSet }),
+      // Le style d'un niveau de titre (js/heading-styles.js), pris d'après la sélection et gardé dans le modèle : une décoration par titre, rien n'est écrit dans le titre.
+      HeadingStyles.createExtension(Extension, { Plugin, PluginKey, Decoration, DecorationSet }),
+      // Signets (js/anchors.js) : l'adresse et le nom d'un paragraphe ou d'un titre, plus le drapeau de l'éditeur et la correction des doublons.
+      Anchors.createExtension(Extension, { Plugin, PluginKey, Decoration, DecorationSet }),
       EditorNodes.createEditorImageNode(Node),
       EditorNodes.createPageBreakNode(Node),
+      // Pages tournées d'un document (js/page-section-view.js) : les blocs d'une page plus étroite que la feuille sont rentrés (une décoration), la feuille prend la largeur de la plus large.
+      PageSectionView.createExtension(Extension, { Plugin, PluginKey, Decoration, DecorationSet }),
       EditorNodes.createHeadingNumberingConfigNode(Node),
       EditorNodes.createTocNode(Node),
+      // Diapositive liée d'une présentation (js/slide-links.js) : son repère caché, et ses garde-fous (un collage ne lie jamais, une diapositive bloquée refuse la frappe).
+      EditorNodes.createSlideLinkNode(Node),
+      SlideLinks.createExtension(Extension, { Plugin, PluginKey }),
+      // La copie en texte d'une diapositive, dans un document (js/slide-copies.js) : son verrou et le trait d'accent qui la signale dans la marge.
+      SlideCopies.createExtension(Extension, { Plugin, PluginKey, Decoration, DecorationSet }),
+      // Les diapositives d'une page de document, liées à elle (js/page-copies.js) : leur verrou dans la présentation, et dans le document source, le repère de la page qui ne gêne pas l'écriture.
+      PageCopies.createExtension(Extension, { Plugin, PluginKey }),
+      // Le texte neuf d'une présentation, à 20 pt, et ses titres plus grands (js/slides-entry.js).
+      SlidesEntry.createTextExtension(Extension, { Plugin, PluginKey }),
+      // Cadre de texte libre d'une présentation (js/free-frame.js) : un bloc de texte posé n'importe où sur sa diapositive, rangé au début d'elle ; ses gestes, son rangement et son collage.
+      tracked(FreeFrame.createNode(Node)),
+      // Ligne d'une présentation (js/free-frame.js) : une feuille sans texte, rangée avec les cadres, que ses deux bouts se glissent ; sa pointe est une extrémité, comme dans PowerPoint.
+      tracked(FreeFrame.createLineNode(Node)),
+      FreeFrame.createExtension(Extension, { Plugin, PluginKey, Decoration, DecorationSet }),
+      // Transition d'une diapositive (js/slide-props.js) : son repère caché, rangé au début d'elle, et ses garde-fous (un seul, Retour arrière ne l'efface pas, un collage hors d'une présentation ne le pose pas).
+      SlideProps.createNode(Node),
+      SlideProps.createExtension(Extension, { Plugin, PluginKey }),
+      // Le décor commun d'une présentation (js/slide-theme.js : bandeau, logo, numéro, pied du thème) : une décoration au début de chaque diapositive, jamais dans le texte.
+      SlideTheme.createExtension(Extension, { Plugin, PluginKey, Decoration, DecorationSet }),
       EditorNodes.createTabNavigationExtension(Extension),
+      // Échap dans l'en-tête ou le pied de page (js/header-footer-preview.js) : la sortie du mode, comme « Terminer ». À la priorité de la tabulation et AVANT elle dans cette liste : TipTap essaie à priorité
+      // égale la dernière ajoutée d'abord, si bien que la tabulation arme sa sortie (« Échap puis Tab ») avant que celle-ci ne referme le mode.
+      HeaderFooterPreview.createEscapeExtension(Extension, { Plugin, PluginKey }),
+      // Tab dans le texte (js/tab-indent.js) : une tabulation, Maj+Tab la retire. La priorité la plus basse : ce que Tab faisait déjà (liste, colonnes, case) passe d'abord.
+      TabIndent.createExtension(Extension, { Plugin, PluginKey }),
       EditorNodes.createClearHistoryExtension(Extension, EditorState),
+      // Les gestes de la page (format, sens, marges, filigrane, couleurs du modèle) dans l'historique d'Annuler / Rétablir, entre les frappes (js/history-markers.js).
+      HistoryMarkers.createExtension(Extension, { Step, StepResult, StepMap, undoDepth, Plugin, PluginKey }),
+      // Modèle email (js/email-plain-text.js) : ni raccourci de mise en forme, ni mise en forme collée, que le texte brut du lien ne porte pas.
+      EmailPlainText.createExtension(Extension, { Plugin, PluginKey }),
+      // Tableau lié à un modèle Grille : ses cases suivent les règles d'une grille, un modèle n'y est lié qu'une fois par document, un repère le montre.
+      LinkedTable.createExtension(Extension),
       GridEditor.createExtension(Extension),
     ];
   }
 
   async function init() {
     const libs = await loadLibraries();
+    htmlOfFragment = libs.getHTMLFromFragment;
+    domSerializerClass = libs.PMDOMSerializer;
     configureModules(libs);
     // Les marques de suivi et le pont ProseMirror se construisent une fois, avant les extensions qui s'en servent.
     trackChangesApi = await TrackChanges.createExtensions(libs.Node, libs.Mark, libs.Extension, libs.mergeAttributes);
     // Une modification neuve ne reprend jamais le numéro d'une modification que la session connaît, résolue ou non
     // (js/track-changes.js:nextSuggestionId).
     TrackChanges.setKnownSuggestionIds(() => Object.keys(suiviMetadataCache));
+    // Le caractère de déclenchement du panneau # est lu une fois, à la construction de l'éditeur (js/variables.js) : hébergé par GFS, il vient de l'espace de l'app, qui arrive avec le contexte. Les bibliothèques se
+    // sont chargées pendant ce temps ; seul, ou si GFS ne répond pas (5 secondes au plus), rien n'attend.
+    await PersonStore.ready;
     editor = new libs.TiptapEditor({
       element: document.getElementById('editor-container'),
       onUpdate: onEditorUpdate,
       editorProps: clipboardProps(),
+      // « Tout accepter » et « Tout refuser » sont UNE transaction de milliers d'étapes (js/track-changes-commands.js) : l'événement `delete` de TipTap, que rien du widget n'écoute, lui lit
+      // `getChangedRanges` dans une tâche qui suit, un coût qui grandit comme le carré de ses étapes. Ce filtre l'écarte ; il garde l'écart que TipTap fait seul quand il n'y a pas de filtre,
+      // les transactions venues d'une autre personne en écriture en direct (`y-sync$`).
+      coreExtensionOptions: { delete: { filterTransaction: tr => !!(tr.getMeta('y-sync$') || TrackChanges.isBulkResolution(tr)) } },
       // L'ordre compte : TipTap essaie la dernière extension rangée en premier (cf. GridEditor.createEnterExtension).
       extensions: [...textExtensions(libs), ...structureExtensions(libs)],
       content: '',
     });
     wireEditor();
+    // La table de la page change avec le widget : les bulles reprennent alors la couleur qu'elle leur donne.
+    GristAPI.onRecord(() => { if (GristAPI.getCurrentTableId() !== markedPage) refreshLinkState(); });
     return editor;
+  }
+
+  // Ce que lit un lecteur d'écran sur la zone où l'on écrit : une zone de texte à plusieurs lignes qui porte un nom (RGAA ; relevé par axe-core sur la bêta). Une fonction relue par ProseMirror
+  // à chaque état, jamais un objet figé : le nom dit « En-tête ou pied de page » quand ce même
+  // éditeur sert à les écrire (header-footer-preview.js : `hfMode` posé avant l'échange du contenu, donc avant l'état qui relit ce nom). Elle est posée après la construction par
+  // `view.setProps`, pas par `editorProps.attributes` : TipTap n'y accepte qu'un objet (il le recopie dans un autre) et `role` y est déjà son seul attribut ; `role` est donc repris ici.
+  function editorAttributes() {
+    return {
+      role: 'textbox',
+      'aria-multiline': 'true',
+      'aria-label': I18n.t(HeaderFooterPreview.isEditingHeaderFooter() ? 'editor.ariaLabelHeaderFooter' : 'editor.ariaLabel'),
+      // Tab écrit une tabulation dans cette zone (js/tab-indent.js) : la sortie au clavier (Échap puis Tab) s'annonce, sans quoi le clavier n'en sortirait plus que par la souris.
+      'aria-description': I18n.t('editor.ariaTabHint'),
+    };
   }
 
   function wireEditor() {
     // Branche l'éditeur construit sur les modules qui le pilotent (barres d'outils, boîtes, pagination).
     EditorCore.setEditor(editor);
+    editor.view.setProps({ attributes: editorAttributes });
     trackChangesApi.installSerializer(editor.schema);
     HeaderFooterPreview.setEditor(editor);
 
@@ -445,20 +599,63 @@ const Editor = (function () {
     FloatingToolbars.wireTableFloatingToolbar();
     FloatingToolbars.wireImageFloatingToolbar();
     FloatingToolbars.wireVariableFloatingToolbar();
+    FloatingToolbars.wireTimeChipFloatingToolbar();
+    FloatingToolbars.wireMentionFloatingToolbar();
+    FloatingToolbars.wireCopyFloatingToolbar();
     FloatingToolbars.wireSuggestionFloatingToolbar({ of: getSuggestionAuthors, onChange: onSuggestionAuthorsChange });
+    FreeFrame.wireToolbar(editor);
     Comments.setEditor(editor);
     Comments.wireClickToOpen();
     editor.on('selectionUpdate', MainToolbar.syncToolbarState);
     editor.on('transaction', MainToolbar.syncToolbarState);
-    // Le placeholder (plus haut) relit I18n.t() à chaque recalcul de décoration, mais ProseMirror pilote ce recalcul (sur chaque transaction), jamais
-    // I18n : changer de langue pendant que l'éditeur est vide ne redessine donc rien tout seul, aucune transaction n'ayant eu lieu. Une transaction
-    // vide (même idiome que setHTML plus bas) force ce recalcul sans toucher au document.
-    I18n.onChange(() => { if (editor) editor.view.dispatch(editor.state.tr); });
     window.addEventListener('resize', HeaderFooterPreview.schedulePaginationRecompute);
   }
 
-  // Une grille s'enregistre et s'exporte sans le paragraphe vide caché sous son tableau (GridEditor.serialize).
-  function getHTML() { return editor ? GridEditor.serialize(editor.getHTML()) : ''; }
+  let htmlOfFragment = null;
+  let domSerializerClass = null;
+  // Le HTML du document, un bloc de premier niveau après l'autre : l'enregistrement automatique le relit toutes les 2,5 s tant qu'on écrit (90 ms pour « Présentation commerciale », 590 blocs de premier niveau), alors
+  // qu'une frappe n'en change qu'un. ProseMirror ne remplace que les nœuds qu'un pas touche, les autres gardent leur identité : le HTML d'un bloc se garde donc par nœud (WeakMap, il s'en va avec lui)
+  // et seuls les blocs neufs se sérialisent. Même sérialiseur que `editor.getHTML()` (celui du schéma, qui écrit les marques de suivi des cases) sur le même nœud ; les blocs d'un document ne
+  // portent aucune marque (`serializeFragment` n'a alors rien à regrouper d'un bloc à l'autre) et l'`innerHTML` d'un conteneur est la suite des HTML de ses enfants : la sortie est la même, octet pour octet.
+  // Seul le rendu peut changer sans que le nœud change : ce qui ne vient pas de ses attributs (la langue de l'interface pour la puce d'une date, la touche de déclenchement du panneau « # » pour la
+  // bulle d'une variable ou d'un calcul) fait repartir la mémoire à neuf. Une marque sur un bloc de premier niveau, ou une erreur : le calcul d'avant, en entier. Un bloc de plus de 64 Ko (une photo
+  // collée dans le texte) ne se garde pas : le texte gardé doublerait le poids de l'image en mémoire, et la refaire coûte quelques millisecondes.
+  const BLOCK_HTML_KEPT_MAX = 65536;
+  let blockHtml = new WeakMap();
+  let blockHtmlSetup = '';
+  function documentHtml(content, schema) {
+    let plain = !!domSerializerClass;
+    content.forEach(node => { if (node.marks.length) plain = false; });
+    if (!plain) return htmlOfFragment(content, schema);
+    try {
+      const setup = I18n.getLang() + '|' + Variables.triggerChar();
+      if (setup !== blockHtmlSetup) { blockHtml = new WeakMap(); blockHtmlSetup = setup; }
+      const serializer = domSerializerClass.fromSchema(schema);
+      let holder = null;
+      const parts = [];
+      content.forEach(node => {
+        let html = blockHtml.get(node);
+        if (html === undefined) {
+          if (!holder) holder = document.implementation.createHTMLDocument().createElement('div');
+          holder.appendChild(serializer.serializeNode(node));
+          html = holder.innerHTML;
+          holder.textContent = '';
+          if (html.length <= BLOCK_HTML_KEPT_MAX) blockHtml.set(node, html);
+        }
+        parts.push(html);
+      });
+      return parts.join('');
+    } catch (e) {
+      return htmlOfFragment(content, schema);
+    }
+  }
+  // Une grille s'enregistre et s'exporte sans le paragraphe vide caché sous son tableau (GridEditor.serialize). `doc` : le HTML d'un état à venir du document, jamais posé dans l'éditeur,
+  // écrit par le même sérialiseur que celui de l'éditeur (js/linked-table.js:prepareSend écrit le document avec les bases d'après un envoi aux modèles, que l'éditeur ne prend qu'une fois
+  // Grist d'accord).
+  function getHTML(doc) {
+    if (!editor) return '';
+    return GridEditor.serialize(documentHtml(doc && doc.content ? doc.content : editor.state.doc.content, editor.schema));
+  }
 
   function getHeadingNumberingStyle() {
     if (!editor) return 'none';
@@ -478,18 +675,95 @@ const Editor = (function () {
     }
   }
 
+  // Message en info-bulle d'une bulle #Variable dont la table n'a plus de lien avec la page (Variables.isUnlinked) : la Lecture et les exports écrivent
+  // « aucune correspondance configurée » à sa place. Sauf dans une zone répétée qui lui donne sa ligne (VariableColumn.isUnlinkedAt, d'après la position
+  // de la bulle dans `owner`, l'éditeur du DOM marqué) ; '' quand tout va bien.
+  function badgeUnlinkedText(badge, owner) {
+    const table = badge.dataset.table;
+    if (!Variables.isUnlinked(table)) return '';
+    try {
+      if (owner) {
+        // Les attributs du nœud, avec sa boucle : « toutes les lignes » posée sur la bulle seule lui donne ses lignes.
+        const pos = owner.view.posAtDOM(badge, 0);
+        const node = owner.state.doc.nodeAt(pos);
+        const attrs = node && node.type.name === 'varBadge' ? node.attrs : { table, column: badge.dataset.column };
+        if (!VariableColumn.isUnlinkedAt(owner, pos, attrs)) return '';
+      }
+    } catch (e) { /* bulle hors de la vue : sans zone connue autour d'elle, le lien manque bel et bien */ }
+    return I18n.t('varBadge.unlinked', { table, page: GristAPI.getCurrentTableId() });
+  }
+
+  // Message en info-bulle d'une bulle « Calcul » dont la formule lit une table sans lien avec la page : la Lecture et les exports écrivent à sa place l'erreur de
+  // la première variable qui ne se lit pas (Variables.resolveCalcResult). Mêmes règles qu'une bulle #Variable (badgeUnlinkedText), table par table de la
+  // formule et d'après la position de la bulle : une zone répétée qui donne sa ligne à cette table la lui fait lire. '' quand tout va bien, et pour une formule
+  // qui ne se lit pas ou cite une colonne disparue (rouge, Variables.calcProblem) : l'appelant ne demande rien alors.
+  function calcUnlinkedText(badge, owner) {
+    const parsed = Formula.parse(badge.getAttribute('data-formula') || '');
+    if (parsed.error) return '';
+    const unlinked = Formula.variablesOf(parsed.ast).filter(variable => Variables.isUnlinked(variable.table));
+    if (!unlinked.length) return '';
+    let pos = null;
+    try { if (owner) pos = owner.view.posAtDOM(badge, 0); } catch (e) { /* bulle hors de la vue : sans zone connue autour d'elle, le lien manque bel et bien */ }
+    const missing = unlinked.find(variable => pos === null || VariableColumn.isUnlinkedAt(owner, pos, variable));
+    return missing ? I18n.t('varBadge.calcUnlinked', { table: missing.table, page: GristAPI.getCurrentTableId() }) : '';
+  }
+
+  // Ce qui manque à un sinon en texte et variables (js/variable-otherwise.js) : le problème de la première de ses variables dont la table ou la colonne n'existe plus, '' sinon.
+  function otherwiseTextProblem(raw) {
+    if (!raw) return '';
+    for (const { table, column } of FieldCodec.variablesIn(raw)) {
+      const problem = badgeProblemText(table, column);
+      if (problem) return problem;
+    }
+    return '';
+  }
+
+  // Signale, dans `root` (le DOM de l'éditeur `owner`), les bulles #Variable dont la table ou la colonne n'existe plus : une classe et un title sur le
+  // <span> rendu, jamais un attribut du nœud (cela dépend d'un état externe, pas du contenu). Rouge pour une table, une colonne ou un maillon de chemin
+  // disparus ; orange (`var-badge-unlinked`) pour une table qui n'a plus de lien avec la page, la colonne étant là : c'est le lien à refaire. Une
+  // bulle « Calcul » est cassée (rouge) quand sa formule ne se lit plus ou cite une colonne qui n'existe plus (Variables.calcProblem), orange
+  // (`calc-badge-unlinked`) quand elle lit une table sans lien avec la page (calcUnlinkedText), avec le message en info-bulle. Le sinon d'une bulle
+  // (js/variable-otherwise.js) qui n'existe plus rougit sa seule pastille (`var-badge-otherwise-broken`), la bulle gardant son aspect : sa condition peut
+  // très bien être remplie.
+  function markBadgeValidity(root, owner) {
+    root.querySelectorAll('span.var-badge').forEach(badge => {
+      const problem = badgeProblemText(badge.dataset.table, badge.dataset.column);
+      const unlinked = problem ? '' : badgeUnlinkedText(badge, owner);
+      const otherwise = badge.dataset.otherwiseKey ? badgeProblemText(badge.dataset.otherwiseTable, badge.dataset.otherwiseColumn) : otherwiseTextProblem(badge.getAttribute('data-otherwise'));
+      badge.classList.toggle('var-badge-otherwise-broken', !!otherwise);
+      badge.classList.toggle('var-badge-broken', !!problem);
+      badge.classList.toggle('var-badge-unlinked', !!unlinked);
+      const title = problem || unlinked || (otherwise ? I18n.t('varBadge.brokenOtherwise', { problem: otherwise }) : '');
+      if (title) badge.title = title; else badge.removeAttribute('title');
+    });
+    root.querySelectorAll('span.calc-badge').forEach(badge => {
+      const problem = Variables.calcProblem(badge.getAttribute('data-formula') || '');
+      const unlinked = problem ? '' : calcUnlinkedText(badge, owner);
+      badge.classList.toggle('calc-badge-broken', !!problem);
+      badge.classList.toggle('calc-badge-unlinked', !!unlinked);
+      const title = problem || unlinked;
+      if (title) badge.title = title; else badge.removeAttribute('title');
+    });
+    // Les pastilles « @ » : rouges quand leur fiche n'existe plus, nom à jour (js/mention.js).
+    Mention.markChips(root);
+  }
+  // La table de la page au dernier signalement : ce qu'une bulle doit à la page (Variables.isUnlinked) change avec elle, sans que le document bouge.
+  let markedPage = null;
   function refreshVariableBadgeValidity() {
-    // Signale les bulles #Variable dont la table ou la colonne n'existe plus : une classe et un title sur le <span> rendu, jamais un attribut du nœud
-    // (cela dépend d'un état externe, pas du contenu). ProseMirror peut reconstruire ce span à tout moment : le signalement est donc rejoué à chaque
-    // déclencheur pertinent plutôt que posé une fois. Une bulle « Calcul » est cassée quand sa formule ne se lit plus ou cite une colonne qui
-    // n'existe plus (Variables.calcProblem), avec le message en info-bulle.
+    // ProseMirror peut reconstruire le <span> d'une bulle à tout moment : le signalement est rejoué à chaque déclencheur pertinent plutôt que posé une
+    // fois. Les champs texte à bulles (Objet, À, Cc, Cci, nom du PDF) y passent aussi.
     if (!editor) return;
-    const mark = (badge, brokenClass, reason) => {
-      badge.classList.toggle(brokenClass, !!reason);
-      if (reason) badge.title = reason; else badge.removeAttribute('title');
-    };
-    editor.view.dom.querySelectorAll('span.var-badge').forEach(badge => mark(badge, 'var-badge-broken', badgeProblemText(badge.dataset.table, badge.dataset.column)));
-    editor.view.dom.querySelectorAll('span.calc-badge').forEach(badge => mark(badge, 'calc-badge-broken', Variables.calcProblem(badge.getAttribute('data-formula') || '')));
+    markedPage = GristAPI.getCurrentTableId();
+    markBadgeValidity(editor.view.dom, editor);
+    FieldEditor.refreshBadgeValidity();
+  }
+  // Un lien vient de changer - une règle enregistrée ou supprimée, la table de la page - : les bulles reprennent leur couleur, et la barre de la bulle
+  // sélectionnée relit ses boutons (« Colonne… » n'y est plus une fois le lien refait). Une transaction vide suffit : chaque barre se relit à toutes.
+  function refreshLinkState() {
+    if (!editor) return;
+    refreshVariableBadgeValidity();
+    editor.view.dispatch(editor.state.tr);
+    FieldEditor.resyncBars();
   }
 
   // Âge au-delà duquel l'affichage d'un modèle relit le schéma exact même sans bulle rouge (setHTML) ; le même qu'au démarrage (js/main.js).
@@ -507,6 +781,7 @@ const Editor = (function () {
     // Sans cela, l'historique Annuler/Rétablir s'accumulerait à travers les changements de modèle : un Annuler après chargement pouvait faire
     // réapparaître le contenu d'un modèle précédent.
     editor.commands.clearHistory();
+    HistoryMarkers.reset();
     // Les modifications en attente que le document n'a jamais attribuées n'ont pas d'auteur : elles ne sont mises au nom de personne, ni à l'écran ni
     // à l'enregistrement.
     suiviMetadataCache = TrackChanges.seedMetadata(editor.state, suiviMetadataCache);
@@ -524,15 +799,49 @@ const Editor = (function () {
     clampOverflowingTables(editor);
     HeaderFooterPreview.renderPaginationOverlay();
     const imagesRegridded = HeaderFooterPreview.migrateLegacyImagePositions();
-    HeaderFooterPreview.reconcileLayerImagesWithGrid({ layoutFresh: !imagesRegridded });
+    HeaderFooterPreview.reconcileLayerImagesWithGrid({ layoutFresh: !imagesRegridded, verdictOf: html || '' });
     // Vérification immédiate (schéma en cache) puis après rafraîchissement explicite (couvre une table/colonne supprimée entretemps). La passe
     // exacte lit toutes les tables en entier (1,4 M de cases à chaque modèle affiché dans un document de 40 tables de 2 000 lignes) : quand aucune
     // bulle n'est rouge, celle d'il y a moins d'une minute suffit (js/main.js la demande de même à l'ouverture) ; une bulle rouge peut venir d'un
     // schéma périmé (une colonne ajoutée depuis), la passe repart alors comme avant.
     refreshVariableBadgeValidity();
-    const looksBroken = !!editor.view.dom.querySelector('.var-badge-broken, .calc-badge-broken');
+    const looksBroken = !!editor.view.dom.querySelector('.var-badge-broken, .var-badge-unlinked, .calc-badge-broken, .calc-badge-unlinked');
     GristAPI.refreshSchema(looksBroken ? undefined : { maxAgeMs: SCHEMA_MAX_AGE_MS }).then(refreshVariableBadgeValidity)
       .catch(e => console.warn('[Editor] refreshSchema pour la validation des #Variable a échoué', e));
+  }
+
+  // La pagination se refait à l'échelle que la feuille vient de prendre (changement de taille du panneau, de zoom, de page), puis le zoom du contenu se revérifie à l'image suivante :
+  // `--pp-content-fix` (EditorCore.settleContentZoom) se règle sur la mise en page du moment, et un moteur qui n'a pas fini de tout redessiner à la nouvelle échelle la laisserait
+  // sur l'ancienne - le contenu plus grand que la feuille, un tableau qui dépasse la page, jusqu'au prochain changement de mode. Sans écart, rien ne bouge.
+  let contentZoomFrame = 0;
+  function recheckContentZoomNextFrame() {
+    if (contentZoomFrame || typeof requestAnimationFrame !== 'function') return;
+    contentZoomFrame = requestAnimationFrame(() => {
+      contentZoomFrame = 0;
+      const tiptapEl = editor && editor.view && editor.view.dom;
+      const container = tiptapEl && tiptapEl.closest ? tiptapEl.closest('#editor-container.a4-preview') : null;
+      if (container && EditorCore.settleContentZoom(container, tiptapEl)) {
+        HeaderFooterPreview.renderPaginationOverlay();
+        GridEditor.refresh();
+      }
+    });
+  }
+  function refreshPaginationPreview() {
+    HeaderFooterPreview.renderPaginationOverlay();
+    HeaderFooterPreview.reconcileLayerImagesWithGrid({ onlyIfPending: true });
+    // Les bandeaux d'un tableau (lettres et numéros, posés par-dessus la page à partir de rectangles écran) suivent l'échelle de la feuille : le redimensionnement du panneau
+    // les place avant que le zoom ne change, et un changement d'échelle seul ne bouge la taille d'aucun élément observé.
+    GridEditor.refresh();
+    recheckContentZoomNextFrame();
+  }
+
+  function fitTablesToPage() {
+    // Colonnes automatiques gelées, puis tableau trop large ramené dans la page (Aperçu A4 seulement : sans page il n'y a pas de limite). Partagé par
+    // refreshLayout et par l'Aperçu A4 qu'on rallume (js/main.js:applyA4Preview) : un tableau posé quand la page n'existait pas y rentre aussitôt,
+    // sans attendre la frappe suivante.
+    if (!editor) return;
+    backfillAutoColumnWidths(editor);
+    clampOverflowingTables(editor);
   }
 
   function refreshLayout() {
@@ -543,8 +852,7 @@ const Editor = (function () {
     // sur la géométrie des marges précédentes. Un modèle chargé pendant que l'éditeur était masqué (Lecture, macro-modèle) n'a pu ni geler ses
     // colonnes automatiques ni ramener un tableau trop large dans la page : ces deux mesures exigent une mise en page réelle.
     if (!editor) return;
-    backfillAutoColumnWidths(editor);
-    clampOverflowingTables(editor);
+    fitTablesToPage();
     // Les images en calque d'un ancien modèle chargé masqué n'ont pas pu recevoir leur position de page (cf.
     // HeaderFooterPreview.migrateLegacyImagePositions) : mesurées ici, une fois les largeurs de colonnes réglées, avec la mise en page que l'éditeur
     // vient de retrouver.
@@ -661,13 +969,13 @@ const Editor = (function () {
   }
 
   return {
-    init, getHTML, setHTML, getHeadingNumberingStyle, insertImageAtDefaultSize,
+    init, loadLibraries, loadedLibraries, markBadgeValidity, refreshLinkState, badgeProblemText, getHTML, setHTML, getHeadingNumberingStyle, insertImageAtDefaultSize,
     getHeaderFooterData: HeaderFooterPreview.getHeaderFooterData, setHeaderFooterData: HeaderFooterPreview.setHeaderFooterData,
     exitHeaderFooterModeIfActive: HeaderFooterPreview.exitHeaderFooterModeIfActive,
     // Aperçu A4 rallumé, facteur d'ajustement changé... : la pagination est refaite, et la position des images d'un modèle chargé sans mise en page
     // se relit sur leur grille.
-    refreshPaginationPreview: () => { HeaderFooterPreview.renderPaginationOverlay(); HeaderFooterPreview.reconcileLayerImagesWithGrid({ onlyIfPending: true }); },
-    refreshLayout, openFootnoteEditorAt, isEditingHeaderFooter: HeaderFooterPreview.isEditingHeaderFooter, isTrackChangesOn, setTrackChanges,
+    refreshPaginationPreview,
+    refreshLayout, fitTablesToPage, openFootnoteEditorAt, isEditingHeaderFooter: HeaderFooterPreview.isEditingHeaderFooter, isTrackChangesOn, setTrackChanges,
     hasPendingTrackedChanges, selectedColumnsCrossMergedCell, selectedRowsCrossMergedCell, getSuiviModificationsForSave, getSuggestionAuthors,
     onSuggestionAuthorsChange,
   };

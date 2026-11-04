@@ -1,0 +1,54 @@
+/* La lecture d'un PDF (extension « lecture-pdf », extensions/lecture-pdf/pdf-view.js) : les pages l'une sous l'autre dans la Lecture, sur le gris de ses feuilles, avec leur ombre et leur zoom (`--pp-fit-zoom`,
+   js/page-zoom.js). Le blanc de la feuille est celui du papier : un PDF reste clair en thème sombre, comme la feuille de la Lecture. */
+#reader-container.pp-pdf-reading { background: var(--pp-page-gutter, #eef1f5); }
+.pp-pdf-pages { display: flex; flex-direction: column; align-items: center; gap: 14px; padding: 14px 12px; outline: none; }
+.pp-pdf-pages:focus-visible { outline: 2px solid var(--focus-ring, #1b2430); outline-offset: -2px; }
+.pp-pdf-page { position: relative; flex: none; box-sizing: border-box; background: #fff; box-shadow: 0 0 0 1px #d7dde3, 0 4px 16px rgba(20, 28, 46, .10); zoom: var(--pp-fit-zoom, 1); overflow: hidden; }
+.pp-pdf-canvas { display: block; position: absolute; top: 0; left: 0; }
+.pp-pdf-failed { position: absolute; inset: 0; margin: 0; display: flex; align-items: center; justify-content: center; padding: 16px; text-align: center; font: 13px/1.4 var(--font-ui, system-ui, sans-serif); color: #4a5563; }
+
+/* La couche de texte de pdf.js : transparente au-dessus du canvas, elle porte la sélection et la copie. Les règles viennent de ce qu'il faut à `TextLayer` (le fichier de GFS n'apporte aucune feuille de style). */
+.pp-pdf-text { position: absolute; inset: 0; overflow: clip; line-height: 1; text-align: initial; opacity: 1; forced-color-adjust: none; transform-origin: 0 0; -webkit-text-size-adjust: none; text-size-adjust: none; z-index: 0; }
+.pp-pdf-text :is(span, br) { color: transparent; position: absolute; white-space: pre; cursor: text; transform-origin: 0 0; }
+.pp-pdf-text > :not(.markedContent), .pp-pdf-text .markedContent span:not(.markedContent) { z-index: 1; }
+.pp-pdf-text ::selection { background: rgba(0, 76, 217, .30); }
+.pp-pdf-text br::selection { background: transparent; }
+.pp-pdf-text .endOfContent { display: block; position: absolute; inset: 100% 0 0; z-index: 0; cursor: default; user-select: none; }
+.pp-pdf-text.selecting .endOfContent { top: 0; }
+
+/* Les marques des commentaires (extensions/lecture-pdf/pdf-view.js, consigne GFS 045) : le passage commenté, surligné DANS la couche de texte (il suit le zoom et le défilement avec la page). L'aspect est celui des marques d'un
+   modèle (css/access-rights.css) : un fond ambre et un trait dessous, atténués et sans trait plein quand le fil est résolu. La couche est AU-DESSUS du canevas : le fond est translucide, pour que le texte du PDF reste lisible
+   dessous, et il donne à peu près l'ambre `#fff3cf` du modèle sur le blanc de la page ; le trait garde la teinte pleine. Le texte de la couche est transparent : la marque n'a rien d'autre à dire. */
+.pp-pdf-text span.pp-pdf-mark { position: static; transform: none; cursor: pointer; background: rgba(240, 195, 109, .25); border-bottom: 2px solid #f0c36d; }
+.pp-pdf-text span.pp-pdf-mark-resolved { background: transparent; border-bottom-color: var(--text-faint, #8a94a6); }
+
+/* Le bandeau des commentaires sans passage (extensions/lecture-pdf/pdf-comments.js, consigne GFS 045) : une ligne en tête des pages, sur la largeur de la colonne des pages, seulement quand un fil a perdu son passage dans ce PDF ; elle reste
+   en vue quand on défile (collée en haut du panneau) et sa liste s'ouvre dessous. Les couleurs sont celles de l'application (jetons de css/style.css : clair comme sombre), pas celles du papier. Elle ne s'imprime pas. */
+.pp-pdf-bar { position: sticky; top: 6px; z-index: 5; align-self: stretch; box-sizing: border-box; overflow: hidden; background: var(--surface, #fff); color: var(--text, #1b2430); border: 1px solid var(--border-strong, #c4ccd6); border-radius: var(--radius-md, 8px); box-shadow: 0 2px 8px rgba(20, 28, 46, .10); font: 12.5px/1.3 var(--font-ui, system-ui, sans-serif); }
+.pp-pdf-bar-button { display: flex; align-items: center; gap: 8px; width: 100%; box-sizing: border-box; min-height: 30px; padding: 4px 12px; border: 0; background: none; color: inherit; font: inherit; font-weight: 600; text-align: left; cursor: pointer; }
+.pp-pdf-bar-button:hover { background: var(--surface-sunken, #eef1f5); }
+.pp-pdf-bar-button:focus-visible, .pp-pdf-bar-row:focus-visible { outline: 2px solid var(--accent, #2f6fed); outline-offset: -2px; }
+.pp-pdf-bar-caret { flex: none; margin: -3px 2px 0 auto; width: 6px; height: 6px; border-right: 2px solid currentColor; border-bottom: 2px solid currentColor; transform: rotate(45deg); }
+.pp-pdf-bar-button[aria-expanded="true"] .pp-pdf-bar-caret { margin-top: 3px; transform: rotate(-135deg); }
+.pp-pdf-bar-panel { max-height: 150px; overflow-y: auto; border-top: 1px solid var(--border, #d7dde3); }
+.pp-pdf-bar-row { display: flex; flex-direction: column; gap: 2px; width: 100%; box-sizing: border-box; padding: 6px 12px; border: 0; border-bottom: 1px solid var(--border, #d7dde3); background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.pp-pdf-bar-row:last-child { border-bottom: 0; }
+.pp-pdf-bar-row:hover { background: var(--surface-sunken, #eef1f5); }
+.pp-pdf-bar-quote { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pp-pdf-bar-meta { font-size: 11px; color: var(--text-muted, #566170); }
+@media print { .pp-pdf-bar { display: none; } }
+
+/* La fenêtre d'un fil sans passage (la fenêtre des commentaires, css/editor-v2.css) : deux lignes de plus sous son en-tête - « Passage introuvable » et la page d'avant, puis le passage d'avant (la citation) -, pas plus : à 700x400 la
+   fenêtre doit encore montrer la saisie et ses boutons sans défiler. */
+#v2-comment-popup .pp-pdf-lost { margin: 0 0 6px; padding: 5px 8px; border-radius: var(--radius-xs, 5px); background: var(--surface-sunken, #eef1f5); color: var(--text, #1b2430); font-size: 12px; }
+#v2-comment-popup .pp-pdf-lost-title { font-weight: 700; }
+#v2-comment-popup .pp-pdf-lost-page { font-weight: 400; color: var(--text-muted, #566170); }
+#v2-comment-popup .pp-pdf-lost-quote { margin-top: 2px; padding-left: 8px; border-left: 2px solid var(--border-strong, #c4ccd6); max-height: 2.6em; overflow-y: auto; white-space: pre-wrap; word-break: break-word; color: var(--text-muted, #566170); }
+
+/* Ce que la lecture d'un PDF grise (js/main.js:applyPdfLocks) : l'édition, les modèles, l'export, les commentaires. Estompé comme ce qu'un compte en lecture seule ne peut pas (css/access-rights.css), mais la souris l'atteint
+   encore : son `title` dit la raison au survol et son clic la dit dans le coin d'état. Les enfants ne reçoivent plus la souris (l'info-bulle et le clic sont ceux du groupe), le menu au survol d'un groupe ne s'ouvre pas, et l'info-bulle
+   de l'app (`[data-tip]`), que l'estompage rendrait illisible avec le bouton, laisse la place au `title`. !important : un groupe à survol ou un bouton de la barre a ses propres règles d'opacité, plus précises. */
+.pp-pdf-locked { opacity: .35 !important; cursor: not-allowed; }
+.pp-pdf-locked > * { pointer-events: none; }
+.pp-pdf-locked .v2-hover-flyout { display: none !important; }
+.pp-pdf-locked[data-tip]::after, .pp-pdf-locked [data-tip]::after { display: none !important; }

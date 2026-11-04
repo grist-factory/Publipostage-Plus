@@ -1,8 +1,9 @@
 // Galerie de modèles (« Créer à partir d'un modèle », js/main.js wireTemplateGalleryModal) : catalogue statique versionné dans templates-gallery/,
 // servi par GitHub Pages en même origine que l'app (pas de CORS, contrairement aux images externes d'un modèle).
 const TemplateGallery = (function () {
-  // Les chemins d'un manifest.json sont relatifs à son dossier, pas à la page (fetch() résout par rapport à la page courante) : chaque chemin est
-  // préfixé de ce dossier.
+  // Les chemins d'un catalogue.json sont relatifs à son dossier, pas à la page (fetch() résout par rapport à la page courante) : chaque chemin est
+  // préfixé de ce dossier. Le fichier s'appelle catalogue.json, pas « manifest » : ce n'est pas le manifeste d'un widget Grist (url, widgetId, accessLevel), et l'audit
+  // gwaudit lit comme tel tout fichier de ce dernier nom.
   const BASE = 'templates-gallery/';
   // Catalogue séparé pour les modèles de test et de démonstration (« Test — … », « Vitrine des fonctionnalités »), utilisés par le protocole de test
   // manuel (dev-tests/PROTOCOLE_TEST_MANUEL.md). Jamais chargé sans `?dev` dans l'adresse du widget ; un déploiement qui ne le publie pas est un cas
@@ -28,7 +29,7 @@ const TemplateGallery = (function () {
   // JSON invalide servi à sa place par certains hébergeurs) ne doit pas vider la galerie des vrais modèles.
   async function loadOneManifest(base, optional) {
     try {
-      const res = await fetchNoStore(base + 'manifest.json');
+      const res = await fetchNoStore(base + 'catalogue.json');
       if (!res.ok) { if (optional) return []; throw new Error('HTTP ' + res.status); }
       const entries = await res.json();
       if (!Array.isArray(entries)) { if (optional) return []; throw new Error('manifeste mal formé'); }
@@ -61,8 +62,7 @@ const TemplateGallery = (function () {
   // Retire entièrement le badge #Variable (pas de texte de substitution) pour le mode « Modèle vierge » : un seul fichier sert aux deux modes (vide,
   // avec données). Sans table derrière, « #key » en texte ne représenterait rien.
   function stripVariableBadges(html) {
-    const root = document.createElement('template'); // le contenu d'un <template> est inerte : rien ne charge, aucun gestionnaire ne part
-    root.innerHTML = html;
+    const root = Dom.inertTemplate(html); // le contenu d'un <template> est inerte : rien ne charge, aucun gestionnaire ne part
     root.content.querySelectorAll('span.var-badge').forEach(el => el.remove());
     return root.innerHTML;
   }
@@ -100,13 +100,31 @@ const TemplateGallery = (function () {
     return parseGristSchema(text);
   }
 
+  // Le pack d'un modèle qui s'installe avec ses tables (js/template-pack.js) : son pack.json, avec le fichier de la famille de tables qu'il nomme
+  // (`family` : families/<famille>.json, dans le dossier du catalogue), validé par TemplatePack.normalize. Null pour un modèle sans pack (les anciens :
+  // une seule table de colonnes simples, cf. fetchSchema). Une erreur de lecture ou de validation est levée : l'appelant le dit à la personne.
+  async function fetchJson(url) {
+    const res = await fetchNoStore(url);
+    if (!res.ok) throw new Error('HTTP ' + res.status + ' ' + url);
+    return res.json();
+  }
+  async function fetchPack(entry) {
+    if (!entry.pack) return null;
+    const raw = await fetchJson(resolveUrl(entry.pack, entry));
+    let family = null;
+    if (raw && raw.family != null) {
+      if (!/^[a-z0-9][a-z0-9-]*$/.test(String(raw.family))) throw new Error('pack : famille de tables illisible');
+      family = await fetchJson(resolveUrl('families/' + raw.family + '.json', entry));
+    }
+    return TemplatePack.normalize(raw, family);
+  }
+
   // Les badges #Variable d'un modèle « avec données » portent le nom de table du schema.py d'écriture. La table créée par useWithData() (js/main.js)
   // peut en porter un autre (modifié dans le prompt, ou renommé par Grist en cas de collision) : sans ce réalignement, elles pointeraient vers une
   // table inexistante.
   function rebindVariableTable(html, fromTable, toTable) {
     if (!fromTable || !toTable || fromTable === toTable) return html;
-    const root = document.createElement('template');
-    root.innerHTML = html;
+    const root = Dom.inertTemplate(html);
     root.content.querySelectorAll('span.var-badge[data-table="' + fromTable + '"]').forEach(el => {
       el.setAttribute('data-table', toTable);
       const key = el.getAttribute('data-key') || '';
@@ -119,5 +137,5 @@ const TemplateGallery = (function () {
     return root.innerHTML;
   }
 
-  return { loadManifest, fetchHtml, fetchHeaderFooter, fetchSchema, stripVariableBadges, rebindVariableTable, resolveUrl };
+  return { loadManifest, fetchHtml, fetchHeaderFooter, fetchSchema, fetchPack, stripVariableBadges, rebindVariableTable, resolveUrl };
 })();

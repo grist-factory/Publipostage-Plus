@@ -4,7 +4,8 @@
 // Contraintes du protocole `mailto:` (des limites du protocole, pas de l'implémentation) :
 //   1) Le corps (`body=`) est toujours lu en texte brut par le client de messagerie (Outlook, Gmail, Apple Mail, Thunderbird...) : rien ne dit « ceci
 //      est du HTML », des balises littérales (« <b>gras</b> ») s'afficheraient telles quelles. Aucune mise en forme (gras, italique, souligné, barré,
-//      couleur, surlignage, police, taille, alignement) ne survit donc dans le corps.
+//      couleur, surlignage, police, taille, alignement) ne survit donc dans le corps. Seuls l'exposant et l'indice passent, en caractères Unicode
+//      (« m³ », « H₂O », js/script-marks.js:toUnicode) : ce sont des caractères du texte, pas une mise en forme du client.
 //   2) La longueur de l'URL est limitée (~2000 caractères, tous champs encodés compris, selon le navigateur et le client ; Outlook bureau est le plus
 //      strict), d'où SAFE_URL_LENGTH. Le dépassement est un avertissement (jauge rouge, confirmation avant d'ouvrir le lien), jamais un blocage.
 //   3) Aucune pièce jointe via un lien `mailto:` : le besoin est de préremplir un brouillon (destinataires, objet, corps texte).
@@ -13,15 +14,42 @@
 //      `_showComposeView` ; le corps n'y passe que comme texte. En rédaction HTML, ZmComposeView `_setBody1` le passe par AjxStringUtil.convertToHtml
 //      : chaque retour à la ligne devient un <br>, deux espaces de suite et un espace en tête de ligne deviennent des espaces insécables. Les lignes
 //      et les retraits du texte brut survivent donc (c'est pourquoi une sous-liste s'aligne par des espaces), rien d'autre (ni vraie puce, ni gras,
-//      ni lien cliquable). Défauts de Zimbra lus au même endroit, hors de notre portée et jamais vus sur un vrai Zimbra : un « + » devient une espace
-//      dans l'objet et le corps (replace(/\+/g, ' ') après le décodage) ; « & », « < » et « > » sont encodés en HTML (htmlEncode) dès la lecture du
-//      lien et rien ne les décode ensuite, ils pourraient s'afficher « &amp; ».
+//      ni lien cliquable). Défauts de Zimbra lus au même endroit (versions 8.8.15, 9.0.0, 10.0.0, 10.1.0 et develop, qui s'y lisent pareil), vus sur un
+//      vrai Zimbra (le 13/10 : « & » devenu « &amp; ») et qu'aucun encodage du lien ne retire, « %26 » compris, parce que Zimbra décode
+//      tout le lien avant de le lire : il coupe chaque champ au premier « & » ; il encode en HTML « & », « < » et « > » (htmlEncode) et rien ne les décode
+//      ensuite, ils s'affichent « &amp; », « &lt; », « &gt; » ; un « + » devient une espace (replace(/\+/g, ' ') après le décodage). Il relit aussi une
+//      seconde fois le premier paramètre qui suit l'adresse, décodé une fois de plus et coupé au premier « ? » ou « & » : un objet ou un corps placé en
+//      premier en sort tronqué, un « + » d'une adresse en Cc ou Cci devient une espace. Le réglage « Zimbra » (Réglages > Email, personnel) répond aux
+//      deux (buildMailtoUrl, `forZimbra`) ; hors de ce réglage le lien reste celui de tous les autres clients, à l'octet près.
+//   5) Le texte a les lignes de l'éditeur, une pour une (Zimbra, voir 4, ne garde que les lignes) : un paragraphe vide, deux de suite ou un retour à
+//      la ligne tapé sont des lignes vides du lien, et des paragraphes qui se suivent restent collés. Ce que l'éditeur d'un email permet d'écrire est
+//      borné à ce que le texte porte (js/email-plain-text.js).
 // Une vraie mise en forme demanderait un autre canal que le lien (le presse-papiers) : le choix retenu est « Texte seul », le lien reste le seul
 // canal.
 const MailtoExport = (function () {
   // Limite pratique, communément citée, d'un lien mailto: pour tous les clients (Outlook bureau surtout) : une marge sous le seuil dur plutôt que la
   // limite au plus juste.
   const SAFE_URL_LENGTH = 2000;
+
+  // La messagerie qui ouvre le lien : réglage personnel (Réglages > Email), gardé par js/person-store.js (dans ce navigateur, ou chez GFS quand elle héberge le widget). `standard` tant que rien
+  // n'est choisi : son lien est celui d'avant ce réglage, à l'octet près.
+  const MAIL_CLIENT_STORAGE = 'pp_mail_client';
+  const MAIL_CLIENTS = ['standard', 'zimbra'];
+  // Aussi gardé en mémoire : si le stockage refuse la clé, le choix vaut au moins jusqu'au rechargement.
+  let chosenClient = null;
+
+  function getMailClient() {
+    const stored = PersonStore.get(MAIL_CLIENT_STORAGE);
+    const value = MAIL_CLIENTS.indexOf(stored) !== -1 ? stored : chosenClient;
+    return MAIL_CLIENTS.indexOf(value) !== -1 ? value : 'standard';
+  }
+
+  function setMailClient(client) {
+    chosenClient = MAIL_CLIENTS.indexOf(client) !== -1 ? client : 'standard';
+    PersonStore.set(MAIL_CLIENT_STORAGE, chosenClient);
+    // Le lien, donc sa longueur, change avec la messagerie : js/main.js écoute cet évènement pour remettre la jauge à jour.
+    document.dispatchEvent(new CustomEvent('pp:mailClientChanged'));
+  }
 
   // Puces d'une liste : les mêmes signes que ceux que l'éditeur et le PDF montrent (css/editor-v2.css, `li::marker` ; js/pdf-export.js,
   // BULLET_MARKERS) : ce que la personne voit dans le modèle est ce que le destinataire lit. Les trois tiennent dans Windows-1252, comme les accents
@@ -39,7 +67,7 @@ const MailtoExport = (function () {
       if (numberStyle === 'roman') return HeadingNumbering.formatCounterValue(number, 'upper-roman').toLowerCase() + '. ';
       return number + '. ';
     }
-    return BULLET_MARKERS[listEl.getAttribute('data-bullet-style')] || BULLET_MARKERS.disc;
+    return BulletFormat.markerOf(listEl) || BULLET_MARKERS[listEl.getAttribute('data-bullet-style')] || BULLET_MARKERS.disc;
   }
 
   // Un lien : en texte brut il n'y a plus de cible cliquable, l'adresse s'écrit donc à la suite du texte, entre parenthèses (« le site
@@ -61,6 +89,10 @@ const MailtoExport = (function () {
   // de code) commence sa propre ligne.
   const isLineBlock = node => node.nodeType === Node.ELEMENT_NODE && /^(P|DIV|H[1-6]|PRE)$/.test(node.tagName);
 
+  // Le <br> que la Lecture pose dans un paragraphe vide (js/reader-mode.js:keepBlankLines, classe `pp-blank-line`) lui garde sa hauteur de ligne : ce n'est
+  // pas un retour à la ligne tapé, le paragraphe vide est déjà la ligne vide.
+  const isBlankLineFiller = el => el.classList.contains('pp-blank-line');
+
   // Une liste ou une citation dans un item, une citation ou une case : ses lignes sont écrites sur de nouvelles lignes, à la suite du texte qui les
   // précède (le retrait vient de l'appelant).
   const endLine = out => (out === '' || out.endsWith('\n') ? out : out + '\n');
@@ -68,8 +100,8 @@ const MailtoExport = (function () {
   // Les lignes d'une liste ou d'une citation (null pour tout autre élément).
   const listOrQuoteText = el => (el.tagName === 'UL' || el.tagName === 'OL' ? listLines(el).join('\n') : el.tagName === 'BLOCKQUOTE' ? quoteText(el) : null);
 
-  // Le texte d'un élément en ligne qui s'écrit autrement que son contenu : un lien (son adresse à la suite du texte), une note de bas de page, la
-  // case d'une variable Oui / Non ; null pour tout autre élément.
+  // Le texte d'un élément en ligne qui s'écrit autrement que son contenu : un lien (son adresse à la suite du texte), une note de bas de page, un
+  // exposant ou un indice, la case d'une variable Oui / Non ; null pour tout autre élément.
   function specialInlineText(child) {
     if (child.tagName === 'A') {
       const href = HtmlSanitize.safeLinkHref(child.getAttribute('href'));
@@ -79,6 +111,13 @@ const MailtoExport = (function () {
     if (child.classList && child.classList.contains('footnote-ref-marker')) {
       const text = (child.getAttribute('data-note-text') || '').trim();
       return text ? ` (${text})` : '';
+    }
+    // Exposant et indice : les caractères Unicode qui en tiennent lieu (« m³ », « H₂O »). Un groupe dont un caractère n'en a pas (« è », « q », une
+    // virgule) s'écrit tel qu'il a été tapé, jamais à moitié.
+    const script = ScriptMarks.kindOf(child);
+    if (script) {
+      const converted = ScriptMarks.toUnicode(script, inlineText(child));
+      if (converted !== null) return converted;
     }
     // Case à cocher d'une variable Oui / Non (js/reader-mode.js:checkboxNode) : « [x] » / « [ ] », comme celle d'un item de liste à cases
     // (listMarker).
@@ -92,7 +131,7 @@ const MailtoExport = (function () {
     if (child.nodeType === Node.TEXT_NODE) { acc.out += child.textContent; return; }
     if (child.nodeType !== Node.ELEMENT_NODE) return;
     if (isLineBlock(child)) { if (acc.sawLineBlock) acc.out += '\n'; acc.sawLineBlock = true; }
-    if (child.tagName === 'BR') { acc.out += '\n'; return; }
+    if (child.tagName === 'BR') { if (!isBlankLineFiller(child)) acc.out += '\n'; return; }
     const nested = listOrQuoteText(child);
     if (nested !== null) {
       if (nested) { acc.out = endLine(acc.out) + nested + '\n'; acc.sawLineBlock = false; }
@@ -135,25 +174,34 @@ const MailtoExport = (function () {
     return inner.split('\n').map(line => (line.trim() === '' ? '>' : (line.startsWith('>') ? '>' : '> ') + line)).join('\n');
   }
 
-  // Les blocs d'un conteneur, dans l'ordre, ajoutés à `blocks` : le corps du document, et l'intérieur d'un encadré (js/callout.js), qui n'a ni fond
-  // ni barre en texte brut - ses blocs s'écrivent comme ceux du corps, listes comprises.
-  function collectBlocks(container, blocks) {
+  // Ajoute à `lines` les lignes de `text` (séparées par « \n »).
+  const pushLines = (lines, text) => text.split('\n').forEach(line => lines.push(line));
+
+  // Les lignes d'un conteneur, dans l'ordre, ajoutées à `lines` : le corps du document, et l'intérieur d'un encadré (js/callout.js), qui n'a ni fond
+  // ni barre en texte brut - ses blocs s'écrivent comme ceux du corps, listes comprises. Une ligne du texte est une ligne de l'éditeur : les
+  // paragraphes y sont collés (`.tiptap p { margin: 0 }`, css/editor-v2.css), rien n'est donc ajouté entre deux blocs, et un paragraphe vide
+  // (Entrée deux fois) est une ligne vide, comme un retour à la ligne tapé (Maj+Entrée) que rien ne suit.
+  function collectBlocks(container, lines) {
     container.childNodes.forEach(node => {
       if (node.nodeType === Node.TEXT_NODE) {
         const text = node.textContent.trim();
-        if (text) blocks.push(text);
+        if (text) pushLines(lines, text);
         return;
       }
       if (node.nodeType !== Node.ELEMENT_NODE) return;
       const tag = node.tagName;
       const nested = listOrQuoteText(node);
-      if (nested !== null) { blocks.push(nested); return; }
-      if (/^H[1-6]$/.test(tag) || tag === 'P') { blocks.push(inlineText(node).trim()); return; }
+      if (nested !== null) { if (nested) pushLines(lines, nested); return; }
+      if (/^H[1-6]$/.test(tag) || tag === 'P') { pushLines(lines, inlineText(node)); return; }
       // Bloc de code : son texte tel quel, lignes et retraits gardés (seuls les retours à la ligne de tête et de queue partent, jamais
       // l'indentation de la première ligne).
-      if (tag === 'PRE') { blocks.push((node.textContent || '').replace(/^\n+|\s+$/g, '')); return; }
-      if (node.classList.contains('callout')) { collectBlocks(node, blocks); return; }
-      if (tag === 'HR') { blocks.push('---'); return; }
+      if (tag === 'PRE') {
+        const code = (node.textContent || '').replace(/^\n+|\s+$/g, '');
+        if (code) pushLines(lines, code);
+        return;
+      }
+      if (node.classList.contains('callout')) { collectBlocks(node, lines); return; }
+      if (tag === 'HR') { lines.push('---'); return; }
       if (IGNORED_TAGS.has(tag)) return;
       if (tag === 'TABLE') {
         // Dégradation minimale (le bouton Tableau est grisé en mode email, ce cas ne devrait survenir qu'après un collage) : une ligne par ligne de
@@ -161,45 +209,69 @@ const MailtoExport = (function () {
         const rows = Array.from(node.querySelectorAll('tr')).map(tr =>
           Array.from(tr.querySelectorAll('td, th')).map(cell => inlineText(cell).trim()).join(' | ')
         );
-        blocks.push(rows.join('\n'));
+        if (rows.length) pushLines(lines, rows.join('\n'));
         return;
       }
       // Repli générique (zone 2-colonnes, autre bloc non prévu ci-dessus) : le texte est extrait plutôt que perdu.
       const text = inlineText(node).trim();
-      if (text) blocks.push(text);
+      if (text) pushLines(lines, text);
     });
   }
 
   // Le HTML déjà résolu (plus aucune bulle #Variable : il est passé par la même résolution que le mode Lecture, ReaderMode.render()) en texte brut
-  // pour un corps mailto. Un sérialiseur à part, pas une extension de celui du PDF. Paragraphes et titres : une ligne, une ligne vide entre deux
-  // blocs ; listes : le signe de l'éditeur devant chaque item (puce, numéro, case), les lignes qui suivent et les sous-listes alignées sous le texte
-  // de l'item ; citation : « > » devant chaque ligne (« >> » pour une citation dans une citation) ; toute mise en forme est ignorée (voir les
-  // contraintes du protocole plus haut).
+  // pour un corps mailto. Un sérialiseur à part, pas une extension de celui du PDF. Le texte a les lignes de l'éditeur, une pour une : un paragraphe
+  // ou un titre est une ligne, sans ligne vide ajoutée entre deux blocs, et chaque paragraphe vide ou retour à la ligne tapé reste une ligne vide
+  // (c'est ce que la personne voit dans le modèle, et le lien le porte tel quel : Zimbra n'en garde que les lignes) ; listes : le signe de l'éditeur
+  // devant chaque item (puce, numéro, case), les lignes qui suivent et les sous-listes alignées sous le texte de l'item ; citation : « > » devant
+  // chaque ligne (« >> » pour une citation dans une citation) ; toute mise en forme est ignorée (voir les contraintes du protocole plus haut).
+  // Les espaces de fin de ligne, que rien ne montre dans l'éditeur et que l'encodage compte pour trois caractères chacun, et les lignes vides de fin
+  // de texte ne sont pas écrits ; ceux de début de ligne (un retrait tapé) le sont.
   function plainTextFromHtml(html) {
-    const holder = document.createElement('template'); // inerte : le HTML se lit sans que rien ne charge ni ne s'exécute
-    holder.innerHTML = html || '';
+    const holder = Dom.inertTemplate(html || ''); // inerte : le HTML se lit sans que rien ne charge ni ne s'exécute
     const root = holder.content;
-    const blocks = [];
-    collectBlocks(root, blocks);
-    return blocks.filter(b => b.length > 0).join('\n\n');
+    const lines = [];
+    collectBlocks(root, lines);
+    return lines.map(line => line.replace(/[ \t]+$/, '')).join('\n').replace(/\n+$/, '');
   }
 
   // Chaque adresse d'une liste séparée par des virgules est encodée à part, jamais la virgule : elle doit rester le séparateur littéral que les
-  // clients de messagerie attendent (Outlook bureau compris), ce qu'un encodeURIComponent sur toute la chaîne ne ferait pas.
+  // clients de messagerie attendent (Outlook bureau compris), ce qu'un encodeURIComponent sur toute la chaîne ne ferait pas. Un point-virgule entre
+  // deux adresses (celui qu'on tape, ou le séparateur réglé dans la fenêtre « Liste » d'une colonne de références, js/variable-list.js) en fait deux
+  // aussi : le lien les sépare par la virgule que tous les clients lisent, au lieu d'une seule adresse illisible (« a@b.fr%3Bc@d.fr »).
+  // Un saut de ligne en sépare aussi (une cellule à plusieurs lignes qui porte une adresse par ligne) : il ne reste jamais dans une adresse, même encodé
+  // en « %0D%0A » - le client de messagerie le décoderait, et un saut de ligne suivi d'un faux en-tête (« Bcc: … ») dans un champ du lien est la forme
+  // classique d'une injection d'en-tête (consigne GFS 046 : une valeur de cellule n'ajoute jamais un champ au lien).
   function encodeAddressList(value) {
     if (!value) return '';
-    return value.split(',').map(a => a.trim()).filter(Boolean).map(a => encodeURIComponent(a)).join(',');
+    return value.split(/[,;\r\n\u2028\u2029]/).map(address => address.trim()).filter(Boolean).map(address => encodeURIComponent(address)).join(',');
   }
 
+  // L'objet tient sur une ligne : un saut de ligne (une cellule à plusieurs lignes, ou un CR LF suivi d'un faux en-tête « Bcc: … ») devient une espace, pour le
+  // même motif que les adresses.
+  const oneLine = text => String(text).replace(/[\r\n\u2028\u2029]+/g, ' ');
+
+  // Zimbra (voir 4 plus haut) : « & », « < », « > » et « + » de l'objet et du corps ne passent par aucun encodage. Leur forme large (« ＆ » U+FF06, « ＜ »
+  // U+FF1C, « ＞ » U+FF1E, « ＋ » U+FF0B) est un autre caractère pour Zimbra, lu et affiché tel quel, et se lit presque comme l'original. Le prix : l'encodage du
+  // lien coûte 9 caractères par signe au lieu de 3 (la jauge mesure le vrai lien, elle le compte), et une adresse web contenant « & » ou une adresse email
+  // contenant « + » écrite dans le corps n'y est plus utilisable telle quelle - elle ne l'était pas non plus sans ce remplacement (« &amp; », espace).
+  // Les autres signes, accents compris, passent déjà tels quels.
+  const ZIMBRA_WIDE_FORMS = { '&': 0xFF06, '<': 0xFF1C, '>': 0xFF1E, '+': 0xFF0B };
+  const forZimbra = text => text.replace(/[&<>+]/g, sign => String.fromCharCode(ZIMBRA_WIDE_FORMS[sign]));
+
   // L'URL mailto: complète. to, cc, bcc, subject et bodyText arrivent déjà résolus (les #Variable sont substituées en amont, comme côté PDF par
-  // ReaderMode) : cette fonction n'assemble et n'encode que.
-  function buildMailtoUrl({ to, cc, bcc, subject, bodyText }) {
+  // ReaderMode) : cette fonction n'assemble et n'encode que. `client` : 'zimbra' pour Zimbra (voir 4 plus haut), sinon le lien de tous les autres clients.
+  function buildMailtoUrl({ to, cc, bcc, subject, bodyText, client }) {
+    const zimbra = client === 'zimbra';
     const params = [];
     if (cc) params.push('cc=' + encodeAddressList(cc));
     if (bcc) params.push('bcc=' + encodeAddressList(bcc));
-    if (subject) params.push('subject=' + encodeURIComponent(subject));
+    const subjectLine = subject ? oneLine(subject) : '';
+    if (subjectLine) params.push('subject=' + encodeURIComponent(zimbra ? forZimbra(subjectLine) : subjectLine));
     // CRLF requis par le protocole mailto: (RFC 6068) : Outlook bureau y est strict, un simple \n ne suffit pas toujours.
-    if (bodyText) params.push('body=' + encodeURIComponent(bodyText.replace(/\r\n/g, '\n').replace(/\n/g, '\r\n')));
+    if (bodyText) params.push('body=' + encodeURIComponent((zimbra ? forZimbra(bodyText) : bodyText).replace(/\r\n/g, '\n').replace(/\n/g, '\r\n')));
+    // Zimbra relit le premier paramètre une seconde fois, en le coupant au premier « ? » ou « & » (voir 4) : un « cc » vide en tête reçoit cette seconde
+    // lecture à la place de l'objet, du corps ou des adresses en Cc et Cci, qui ne sont alors lus qu'une fois. Un « cc » vide ne change rien au brouillon.
+    if (zimbra && params.length) params.unshift('cc=');
     const query = params.length ? '?' + params.join('&') : '';
     return 'mailto:' + encodeAddressList(to) + query;
   }
@@ -210,5 +282,5 @@ const MailtoExport = (function () {
     return { length: url.length, safe: url.length <= SAFE_URL_LENGTH, limit: SAFE_URL_LENGTH };
   }
 
-  return { plainTextFromHtml, buildMailtoUrl, checkUrlLength };
+  return { plainTextFromHtml, buildMailtoUrl, checkUrlLength, getMailClient, setMailClient };
 })();

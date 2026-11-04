@@ -1,17 +1,20 @@
 // Liste déroulante avec recherche pour un <select> existant. Le <select> reste la source de vérité : masqué, il garde sa valeur et reçoit un
 // évènement `change` à chaque choix, donc le code qui l'écoute ou lit `.value` ne change pas. Un clic (ou ↓, ou une lettre) sur le champ ouvre un
-// panneau avec une zone de recherche et la liste ; les mots tapés (accents et casse ignorés, dans n'importe quel ordre) doivent tous figurer dans le
-// libellé.
+// panneau avec une zone de recherche et la liste ; les mots tapés (séparés par une espace) doivent tous figurer dans les noms de la ligne, dans
+// n'importe quel ordre, sans compter les accents, la casse, « _ », « . » et « - » : voir « Recherche par nom » plus bas.
 // Une <option> peut porter `data-name` (le nom) et `data-hint` (affiché entre parenthèses, plus discret) ; sans eux, son texte sert de nom. Le
 // libellé complet (« nom (indice) ») reste le texte de l'<option> (ce que voit et cherche quiconque n'a pas le panneau) et la recherche porte aussi
-// sur l'indice. Une <option> désactivée (le « — Choisissez… — » de départ) n'est jamais proposée : elle n'affiche que le champ fermé.
+// sur l'indice. `data-search` ajoute d'autres noms à chercher sans les afficher (la table et le libellé Grist d'une colonne). Une <option> désactivée
+// (le « — Choisissez… — » de départ) n'est jamais proposée : elle n'affiche que le champ fermé.
 // Autres cas lus dans le <select> :
 //  - <optgroup> : son libellé devient un intitulé au-dessus de ses lignes, et disparaît avec elles quand la recherche les écarte ;
 //  - <option> sans valeur mais permise (« -- Choisir une colonne -- », « — Aucune — ») : le choix « rien », proposé en tête tant qu'on ne cherche
 //    pas, écarté dès qu'on tape, grisé dans le champ fermé ; sauf `data-placeholder="false"` : une valeur vide qui est un vrai choix (« Ordre de la
 //    table »), traitée comme les autres ;
-//  - <option data-pinned="true"> (la saisie avancée) : toujours en bas de la liste, quelle que soit la recherche.
-// SearchSelect.attach(select, opts), ou attachColumns, attachTables, attachTemplates, attachValues, attachSheets (mêmes textes pour chaque sorte de
+//  - <option data-pinned="true"> (la saisie avancée) : toujours en bas de la liste, quelle que soit la recherche ;
+//  - <option data-unavailable="raison"> (un graphique que le widget ne sait pas redessiner) : proposée mais grisée, avec la raison sous son nom, et jamais
+//    choisie (clic, Entrée) ; une recherche surligne de préférence le premier résultat qui se choisit.
+// SearchSelect.attach(select, opts), ou attachColumns, attachTables, attachTemplates, attachValues, attachSheets, attachCharts, attachTargets (mêmes textes pour chaque sorte de
 // liste) ; .destroy() à la fermeture de la fenêtre (le <select> natif réapparaît). Si attach() lève, l'appelant garde le <select> natif.
 // Options : labelledBy, searchPlaceholder, emptyText (texte ou fonction relue à chaque ouverture : la langue peut changer), placeholder ; `inline`
 // (champ d'une ligne de règle : même hauteur que ses voisins, largeur qui suit la ligne) ; `hintInTrigger: false` (l'indice reste dans la liste, pas
@@ -20,6 +23,21 @@
 // côté du rectangle de `anchor()` (relu à chaque placement), et `onClose(refocus)` prévient à la fermeture (choix, Échap, clic ailleurs) ; refocus
 // vaut vrai si la fermeture vient du clavier ou d'un choix. À l'appelant de défaire ensuite le <select> (destroy()), de préférence après la fin de
 // l'évènement en cours.
+// Descendre (une colonne Référence ouvre les colonnes de sa table, comme la flèche d'« Autres attributs ») : `expand(item)` rend les lignes où mène la
+// flèche d'une ligne, sous la forme `{ value, name, hint, search, expand }` (mêmes sens que `data-value`, `data-name`, `data-hint`, `data-search` et
+// `data-expand` plus bas), ou null quand elle ne mène nulle part. Une <option> porte `data-expand` (le nom de la destination, dit dans l'info-bulle de
+// la flèche) pour que la liste montre sa flèche sans rien demander à `expand` ; sans l'option `expand`, `data-expand` est ignoré. Un clic sur la ligne la
+// choisit, un clic sur sa flèche (ou → quand la saisie est vide ou que le curseur est à sa fin) ouvre ses lignes sous un fil d'Ariane ; ← (saisie vide),
+// Retour arrière (saisie vide) et un clic sur un niveau du fil remontent. Le choix d'une ligne de ces niveaux n'a pas d'<option> dans le <select> : la liste
+// lui en pose une (`data-dynamic`, addDynamicOption), qui ne reste dans la liste que tant qu'elle est choisie.
+// Choisir dans une fenêtre plutôt que dans la liste : `browse(context)` ajoute à droite de la zone de recherche un bouton (ou Ctrl+Entrée) qui ferme le
+// panneau sans rien choisir et appelle `browse` avec où l'on en était, `{ query (la saisie), from (la valeur de la ligne Référence d'où l'on est descendu,
+// null au premier niveau), value (le choix du <select>) }`. C'est à `browse` de poser le choix, comme le fait la liste : `select.value`, puis `change`
+// (js/condition-fields.js : la grande fenêtre des attributs, js/variable-linked-attrs.js:pickColumn).
+// Le choix dessiné comme une bulle de variable : `pill(value, name)` rend `{ prefix, head, tail }` (le caractère de la bulle, puis le nom coupé en un début et une
+// fin, comme celui d'une bulle de tableau) ou null quand ce choix n'est pas une variable ; le champ fermé le montre alors comme une bulle #Variable du document
+// (css/style.css:.var-badge), son texte reste le nom du choix. Avec `browse`, un clic sur la bulle (Ctrl+Entrée sur le champ) passe à la fenêtre, le reste du
+// champ ouvre la liste.
 const SearchSelect = (function () {
   const el = Dom.el;
 
@@ -39,12 +57,51 @@ const SearchSelect = (function () {
     return String(text == null ? '' : text).normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
   }
 
-  // Éléments de `items` (produits par readItems) dont le libellé contient tous les mots de `query`, dans l'ordre d'origine ; tout si la recherche est
+  // === Recherche par nom ===
+  // La même partout où une colonne, une table ou un modèle se cherche par son nom : les listes de ce fichier et la liste « # » (js/variables.js). Une
+  // espace sépare les mots de la saisie, qui peuvent venir dans n'importe quel ordre ; « _ », « . », « - » et le reste de la ponctuation ne comptent pas,
+  // ni dans la saisie ni dans les noms du candidat : « porteur 3 », « Porteur3 », « 3 porteur » et « projets porteur_3 » retrouvent tous Projets.Porteur_3,
+  // alors que « Porteur_3 », tapé en entier, ne retrouve pas Porteur_13 (c'est un seul mot, comme dans le nom).
+  const SEPARATORS = /[^\p{L}\p{N}]+/gu;
+  // Les noms déjà préparés : la liste « # » prépare chaque colonne du document à chaque frappe.
+  const MAX_PREPARED_NAMES = 20000;
+  const _prepared = new Map();
+  function prepareName(name) {
+    let key = _prepared.get(name);
+    if (key === undefined) {
+      key = normalize(name).replace(SEPARATORS, '');
+      if (_prepared.size >= MAX_PREPARED_NAMES) _prepared.clear();
+      _prepared.set(name, key);
+    }
+    return key;
+  }
+  // Les mots d'une saisie, sans séparateurs ; aucun quand elle ne porte ni lettre ni chiffre (la recherche est alors vide).
+  function searchWords(query) {
+    return normalize(query).split(/\s+/).map(word => word.replace(SEPARATORS, '')).filter(Boolean);
+  }
+  // Le texte où chercher un candidat : ses noms (nom affiché, indice, libellé, table...), chacun sans séparateurs, séparés par une espace pour qu'un mot ne
+  // passe pas de l'un à l'autre.
+  function searchKey(...names) {
+    return names.map(prepareName).join(' ');
+  }
+  // Vrai quand chaque mot de `words` (searchWords) se trouve dans `key` (searchKey) ; toujours vrai sans mot.
+  function foundIn(words, key) {
+    return words.every(word => key.indexOf(word) !== -1);
+  }
+  // Le test d'une saisie pour une liste qui n'est pas une liste avec recherche (le champ de recherche de « Ranger les modèles », celui de la galerie, le filtre
+  // de « Autres attributs ») : `matcher(...noms)` dit si chaque mot de `query` se trouve dans les noms ; une saisie sans lettre ni chiffre retient tout. Les
+  // mots ne sont lus qu'une fois pour toute la liste.
+  function nameMatcher(query) {
+    const words = searchWords(query);
+    return (...names) => foundIn(words, searchKey(...names));
+  }
+
+  // Éléments de `items` (produits par readItems) dont les noms contiennent tous les mots de `query`, dans l'ordre d'origine ; tout si la recherche est
   // vide. Une ligne épinglée reste toujours ; le choix « rien » (`empty`) ne se propose que sans recherche.
   function filterItems(items, query) {
-    const words = normalize(query).split(/\s+/).filter(Boolean);
+    const words = searchWords(query);
     if (!words.length) return items.slice();
-    return items.filter(item => item.pinned || (!item.empty && words.every(word => item.haystack.indexOf(word) !== -1)));
+    return items.filter(item => item.pinned || (!item.empty && foundIn(words, item.haystack)));
   }
 
   // Le choix « rien » : une option de valeur vide, sauf si elle se déclare vrai choix (data-placeholder="false").
@@ -58,19 +115,30 @@ const SearchSelect = (function () {
       if (opt.disabled) return;
       const name = opt.dataset.name || opt.textContent;
       const hint = opt.dataset.hint || '';
+      const search = opt.dataset.search || '';
       const parent = opt.parentElement;
       items.push({
-        value: opt.value, name, hint, haystack: normalize(name + ' ' + hint),
+        value: opt.value, name, hint, search, haystack: searchKey(name, hint, search),
         group: parent && parent.tagName === 'OPTGROUP' ? parent.label : '',
         pinned: opt.dataset.pinned === 'true',
         empty: isNoChoice(opt),
+        expand: opt.dataset.expand || '',
+        unavailable: opt.dataset.unavailable || '',
       });
     });
     return items;
   }
 
-  // Textes de la zone de recherche et du message « aucun résultat » : une chaîne, ou une fonction relue à chaque ouverture, pour qu'une liste posée
-  // une fois sur une fenêtre qui reste (Réglages, « Trier par ») suive un changement de langue.
+  // Une ligne d'un niveau où l'on est descendu (`entry` rendu par `expand`), faite comme celles de readItems.
+  function itemOf(entry) {
+    const name = entry.name == null ? String(entry.value) : String(entry.name);
+    const hint = entry.hint || '';
+    const search = entry.search || '';
+    return { value: String(entry.value), name, hint, search, haystack: searchKey(name, hint, search), group: '', pinned: false, empty: false, expand: entry.expand || '', unavailable: '' };
+  }
+
+  // Textes de la zone de recherche et du message « aucun résultat » : une chaîne, ou une fonction relue à chaque ouverture quand le texte dépend de l'état de
+  // la fenêtre (une liste vide ou sans résultat).
   const textOf = (value, key) => (typeof value === 'function' ? value() : value) || I18n.t(key);
 
   // Une liste, c'est un objet `s` : le <select>, les options, les éléments de la page et ce qui change à l'usage. Les fonctions qui suivent le prennent en
@@ -83,12 +151,16 @@ const SearchSelect = (function () {
       emptyText: textOf(opts.emptyText, 'searchSelect.empty'),
       items: [], visible: [], active: -1, query: '', open: false, lastX: -1, lastY: -1,
       rows: [], // les <li> des lignes de `visible`, dans le même ordre (la liste contient aussi le message et les intitulés de groupe)
+      // Les niveaux ouverts, du premier (les lignes du <select>) à celui qu'on voit : { items, from (la ligne d'où l'on est descendu), table (sa destination) }.
+      // `items` est toujours ceux du dernier.
+      levels: [],
     };
     buildTrigger(s);
     buildPanel(s);
     s.wrap.append(s.trigger, s.panel);
     s.onResize = () => place(s);
     s.onOutsideScroll = (event) => { if (!s.panel.contains(event.target)) place(s); };
+    s.offBar = null; // abonnement à la barre de GFS (js/gfs-bar.js), le temps que le panneau est ouvert : il se recale d'après la nouvelle zone
     s.onChange = () => syncTrigger(s);
     return s;
   }
@@ -101,6 +173,7 @@ const SearchSelect = (function () {
     trigger.type = 'button';
     trigger.setAttribute('aria-haspopup', 'listbox');
     trigger.setAttribute('aria-expanded', 'false');
+    if (opts.browse) trigger.setAttribute('aria-keyshortcuts', 'Control+Enter Meta+Enter');
     const valueEl = el('span', 'ss-value');
     valueEl.id = id + '-value';
     s.nameEl = el('span', 'ss-name');
@@ -135,6 +208,18 @@ const SearchSelect = (function () {
     input.autocomplete = 'off';
     input.spellcheck = false;
     searchRow.appendChild(input);
+    // Le bouton qui ouvre la fenêtre des attributs (option `browse`) : hors du clavier comme la flèche des lignes, la saisie garde le focus ; Ctrl+Entrée y mène.
+    if (s.opts.browse) {
+      const browse = s.browse = el('button', 'ss-browse');
+      browse.type = 'button';
+      browse.tabIndex = -1;
+      Dom.setMarkup(browse, Icons.svg('varLinked'));
+      searchRow.classList.add('has-browse');
+      searchRow.appendChild(browse);
+    }
+    // Le fil d'Ariane des niveaux ouverts (renderPath), caché tant qu'on n'est pas descendu.
+    const path = s.path = el('nav', 'ss-path');
+    path.hidden = true;
     const list = s.list = el('ul', 'ss-list');
     list.id = id + '-list';
     list.setAttribute('role', 'listbox');
@@ -144,24 +229,50 @@ const SearchSelect = (function () {
     const status = s.status = el('div', 'ss-status');
     status.setAttribute('role', 'status');
     status.setAttribute('aria-live', 'polite');
-    panel.append(searchRow, list, status);
+    panel.append(searchRow, path, list, status);
+  }
+
+  // Le nom du champ fermé : du texte, ou - quand l'option `pill` y voit une variable - une bulle comme celle du document (la classe `var-badge`, son début et sa
+  // fin comme dans une case de tableau : css/variable-actions.css). Le caractère de la bulle est dessiné par le CSS (data-trigger), donc absent de
+  // textContent, qui garde le nom du choix pour les lecteurs d'écran et les tests. `title` : le libellé complet, et ce que fait un clic sur la bulle.
+  function drawName(s, name, pill, title) {
+    const { nameEl, trigger } = s;
+    trigger.classList.toggle('is-pill', !!pill);
+    nameEl.classList.toggle('ss-pill', !!pill);
+    nameEl.classList.toggle('var-badge', !!pill);
+    if (!pill) {
+      nameEl.removeAttribute('data-trigger');
+      nameEl.removeAttribute('title');
+      nameEl.textContent = name;
+      return;
+    }
+    nameEl.dataset.trigger = pill.prefix || '';
+    nameEl.title = s.opts.browse ? title + ' · ' + I18n.t('searchSelect.browse') : title;
+    nameEl.replaceChildren(el('span', 'var-badge-head', pill.head));
+    if (pill.tail) {
+      const tail = el('span', 'var-badge-tail');
+      tail.appendChild(el('span', null, pill.tail));
+      nameEl.appendChild(tail);
+    }
   }
 
   // Champ fermé : le choix courant (nom + indice discret), sinon le texte de l'<option> désactivée de départ ; le choix « rien » est grisé comme un
   // texte de départ. Reprend aussi l'état grisé du <select>.
   function syncTrigger(s) {
-    const { select, trigger, nameEl, hintEl, opts } = s;
+    const { select, trigger, hintEl, opts } = s;
     const opt = select.options[select.selectedIndex];
     const chosen = opt && !opt.disabled ? opt : null;
     trigger.classList.toggle('is-placeholder', !chosen || isNoChoice(chosen));
     trigger.disabled = select.disabled;
     if (chosen) {
-      nameEl.textContent = chosen.dataset.name || chosen.textContent;
+      const name = chosen.dataset.name || chosen.textContent;
+      const pill = opts.pill && !isNoChoice(chosen) ? opts.pill(chosen.value, name) : null;
+      drawName(s, name, pill, chosen.textContent);
       hintEl.textContent = chosen.dataset.hint && opts.hintInTrigger !== false ? '(' + chosen.dataset.hint + ')' : '';
       trigger.title = chosen.textContent;
     } else {
       const placeholder = Array.prototype.find.call(select.options, o => o.disabled);
-      nameEl.textContent = opts.placeholder || (placeholder ? placeholder.textContent : '');
+      drawName(s, opts.placeholder || (placeholder ? placeholder.textContent : ''), null);
       hintEl.textContent = '';
       trigger.removeAttribute('title');
     }
@@ -192,7 +303,8 @@ const SearchSelect = (function () {
     }
   }
 
-  function render(s) {
+  // `back` : la ligne d'où l'on vient de remonter, surlignée de préférence au choix courant (voir ascend).
+  function render(s, back) {
     const { select, list, empty, status, id } = s;
     const found = filterItems(s.items, s.query);
     const current = select.value;
@@ -223,23 +335,43 @@ const SearchSelect = (function () {
         list.appendChild(header);
       }
       lastGroup = item.group;
-      const row = el('li', 'ss-option' + (item.pinned ? ' is-pinned' : '') + (item.empty ? ' is-empty' : ''));
+      const row = el('li', 'ss-option' + (item.pinned ? ' is-pinned' : '') + (item.empty ? ' is-empty' : '') + (item.unavailable ? ' is-unavailable' : ''));
       row.id = id + '-opt-' + i;
       row.setAttribute('role', 'option');
       row.setAttribute('aria-selected', item.value === current ? 'true' : 'false');
+      if (item.unavailable) row.setAttribute('aria-disabled', 'true');
       row.dataset.index = String(i);
       row.appendChild(el('span', 'ss-name', item.name));
       if (item.hint) row.appendChild(el('span', 'ss-hint', '(' + item.hint + ')'));
+      // La raison sous le nom : lue avec la ligne par les lecteurs d'écran.
+      if (item.unavailable) row.appendChild(el('span', 'ss-reason', item.unavailable));
+      // Une colonne Référence : la flèche qui ouvre les colonnes de sa table. Hors du clavier (Tab, la saisie garde le focus) : → fait la même chose.
+      if (item.expand && s.opts.expand) {
+        const label = I18n.t('searchSelect.descend', { table: item.expand, column: item.name });
+        const arrow = el('button', 'ss-descend', '›');
+        arrow.type = 'button';
+        arrow.tabIndex = -1;
+        arrow.title = label;
+        arrow.setAttribute('aria-label', label);
+        row.classList.add('has-children');
+        row.appendChild(arrow);
+      }
       list.appendChild(row);
       s.rows.push(row);
     });
     if (!moreShown) addMore();
     // Message quand la recherche ne trouve rien (ou qu'il n'y a rien à lister) ; pas pour une liste qui ne propose que « rien », sans recherche.
     empty.hidden = matches.length > 0 || (!searching && s.visible.length > 0);
-    status.textContent = !searching ? '' : (matches.length ? I18n.t('searchSelect.count', { count: matches.length }) : s.emptyText);
+    // Aux lecteurs d'écran : le nombre de résultats pendant une recherche, sinon la table dont on voit les colonnes quand on est descendu.
+    const depth = s.levels.length - 1;
+    status.textContent = searching ? (matches.length ? I18n.t('searchSelect.count', { count: matches.length }) : s.emptyText)
+      : (depth > 0 ? I18n.t('searchSelect.level', { table: s.levels[depth].table }) : '');
     // Recherche en cours : le premier résultat, pour que Entrée le prenne (jamais la ligne épinglée, pour qu'elle ne se choisisse pas par mégarde).
-    // Sinon le choix courant ; rien de surligné sans recherche ni choix, pour qu'un Entrée à vide ne choisisse pas la première colonne au hasard.
-    setActive(s, searching ? (matches.length ? s.visible.indexOf(matches[0]) : -1) : s.visible.findIndex(item => item.value === current), false);
+    // Sinon la ligne d'où l'on remonte, sinon le choix courant ; rien de surligné sans recherche ni choix, pour qu'un Entrée à vide ne choisisse pas la
+    // première colonne au hasard.
+    const wanted = back ? back.value : current;
+    const first = matches.find(item => !item.unavailable) || matches[0];
+    setActive(s, searching ? (first ? s.visible.indexOf(first) : -1) : s.visible.findIndex(item => item.value === wanted), false);
   }
 
   // Panneau en position fixe : hors de toute zone rognante (fenêtre à défilement, ancêtre overflow:hidden), sous le champ ou au-dessus si la place
@@ -248,6 +380,7 @@ const SearchSelect = (function () {
     const { trigger, panel, opts } = s;
     // Champ retiré de la page pendant que le panneau est ouvert (règles redessinées) : refermer, sinon les écouteurs de la fenêtre resteraient.
     if (!trigger.isConnected) { closePanel(s, false); return; }
+    ViewportFit.releaseBar(panel);
     const rect = opts.anchor ? opts.anchor() : trigger.getBoundingClientRect();
     const viewWidth = window.innerWidth;
     const viewHeight = window.innerHeight;
@@ -260,6 +393,8 @@ const SearchSelect = (function () {
     panel.style.maxHeight = Math.max(MIN_HEIGHT, Math.min(PREFERRED_HEIGHT, below ? spaceBelow : spaceAbove)) + 'px';
     if (below) { panel.style.top = (rect.bottom + GAP) + 'px'; panel.style.bottom = 'auto'; }
     else { panel.style.bottom = (viewHeight - rect.top + GAP) + 'px'; panel.style.top = 'auto'; }
+    // La barre de GFS (js/gfs-bar.js) : le panneau glisse hors de sa zone, ou se plafonne et défile sous une barre en bas.
+    ViewportFit.avoidBar(panel, rect);
   }
 
   function refreshTexts(s) {
@@ -269,13 +404,21 @@ const SearchSelect = (function () {
     input.placeholder = s.searchPlaceholder;
     input.setAttribute('aria-label', s.searchPlaceholder);
     s.empty.textContent = s.emptyText;
+    if (s.browse) {
+      const label = I18n.t('searchSelect.browse');
+      s.browse.title = label;
+      s.browse.setAttribute('aria-label', label);
+    }
   }
 
   function openPanel(s, seed) {
     const { select, input, panel, trigger, opts } = s;
     if (s.open || select.disabled) return;
     refreshTexts(s);
+    dropStaleDynamicOptions(select);
     s.items = readItems(select);
+    s.levels = [{ items: s.items, from: null, table: '' }];
+    renderPath(s);
     s.query = seed || '';
     input.value = s.query;
     s.open = true;
@@ -289,6 +432,7 @@ const SearchSelect = (function () {
     scrollToActive(s);
     window.addEventListener('resize', s.onResize);
     window.addEventListener('scroll', s.onOutsideScroll, true);
+    s.offBar = GfsBar.onChange(s.onResize);
     input.focus({ preventScroll: true });
     if (seed) input.setSelectionRange(s.query.length, s.query.length); else input.select();
   }
@@ -300,6 +444,7 @@ const SearchSelect = (function () {
     trigger.setAttribute('aria-expanded', 'false');
     window.removeEventListener('resize', s.onResize);
     window.removeEventListener('scroll', s.onOutsideScroll, true);
+    if (s.offBar) { s.offBar(); s.offBar = null; }
     input.value = '';
     s.query = '';
     if (refocus) trigger.focus({ preventScroll: true });
@@ -307,6 +452,14 @@ const SearchSelect = (function () {
   }
   function choose(s, item) {
     const { select } = s;
+    // Une ligne grisée reste proposée, pour dire pourquoi elle ne l'est pas : elle ne se choisit pas.
+    if (item.unavailable) return;
+    // Une ligne d'un niveau où l'on est descendu n'a pas d'<option> : elle en reçoit une, rangée après la ligne d'où l'on est parti, qui porte pour nom sa
+    // valeur (le chemin entier) et se cherche par les noms de toute la suite de colonnes.
+    if (s.levels.length > 1) {
+      const search = s.levels.slice(1).map(level => level.from.search).concat(item.search).join(' ');
+      addDynamicOption(select, { value: item.value, hint: item.hint, search }, s.levels[1].from.value);
+    }
     const changed = select.value !== item.value;
     select.value = item.value;
     syncTrigger(s);
@@ -319,6 +472,97 @@ const SearchSelect = (function () {
     setActive(s, active < 0 ? (delta > 0 ? 0 : visible.length - 1) : Math.min(visible.length - 1, Math.max(0, active + delta)));
   }
 
+  // === Descendre === Les niveaux ouverts sont dans `s.levels` ; la zone de recherche et la liste ne montrent que le dernier.
+  // Ouvre les lignes où mène la flèche de `item` ; faux quand elle ne mène nulle part.
+  function descend(s, item) {
+    if (!s.open || !s.opts.expand || !item || !item.expand) return false;
+    let entries = null;
+    try { entries = s.opts.expand(item); } catch (e) { console.warn('[SearchSelect] lignes de la flèche illisibles', e); }
+    if (!entries) return false;
+    s.levels.push({ items: entries.map(itemOf), from: item, table: item.expand });
+    showLevel(s, null);
+    return true;
+  }
+  // Revient au niveau `depth` (0 : les lignes du <select>) ; la ligne d'où l'on remonte est surlignée, pour que → y redescende aussitôt.
+  function ascend(s, depth) {
+    if (!s.open || depth < 0 || depth >= s.levels.length - 1) return false;
+    const left = s.levels[depth + 1].from;
+    s.levels.length = depth + 1;
+    showLevel(s, left);
+    return true;
+  }
+  // Montre le dernier niveau : sa recherche repart à vide, sa liste au début (jusqu'à `back`, la ligne d'où l'on remonte).
+  function showLevel(s, back) {
+    s.items = s.levels[s.levels.length - 1].items;
+    s.query = '';
+    s.input.value = '';
+    s.list.scrollTop = 0;
+    renderPath(s);
+    render(s, back);
+    scrollToActive(s);
+  }
+  // Le fil d'Ariane « Colonnes › Accompagnateur », caché au premier niveau : chaque niveau au-dessus de celui qu'on voit revient à lui au clic (wirePath),
+  // celui qu'on voit est en gras. Des boutons hors du clavier, comme la flèche des lignes : la saisie garde le focus, ← remonte d'un niveau.
+  function renderPath(s) {
+    const { path, levels } = s;
+    path.replaceChildren();
+    path.hidden = levels.length < 2;
+    if (path.hidden) return;
+    path.setAttribute('aria-label', I18n.t('searchSelect.path'));
+    levels.forEach((level, depth) => {
+      if (depth) {
+        const sep = el('span', 'ss-sep', '›');
+        sep.setAttribute('aria-hidden', 'true');
+        path.appendChild(sep);
+      }
+      const label = depth ? level.from.name : I18n.t('searchSelect.rootCrumb');
+      if (depth === levels.length - 1) {
+        const here = el('span', 'ss-crumb is-here', label);
+        here.setAttribute('aria-current', 'location');
+        path.appendChild(here);
+        return;
+      }
+      const title = depth ? I18n.t('searchSelect.upTo', { table: level.table }) : I18n.t('searchSelect.upToRoot');
+      const up = el('button', 'ss-crumb', label);
+      up.type = 'button';
+      up.tabIndex = -1;
+      up.dataset.depth = String(depth);
+      up.title = title;
+      up.setAttribute('aria-label', title);
+      path.appendChild(up);
+    });
+  }
+
+  // La ligne d'un choix fait en descendant (`entry` : { value, name, hint, search }, le nom étant par défaut la valeur) : le <select> reste la source de
+  // la valeur, il lui faut donc une <option>. Elle se range juste après la ligne `rootValue` d'où l'on est parti (celle de la colonne Référence), à
+  // défaut en fin de liste avant la ligne épinglée ; marquée `data-dynamic`, elle ne reste dans la liste que tant qu'elle est choisie
+  // (dropStaleDynamicOptions). Exportée : une règle enregistrée avec un tel chemin reçoit sa ligne à sa construction (js/condition-fields.js).
+  function addDynamicOption(select, entry, rootValue) {
+    const existing = Array.prototype.find.call(select.options, option => option.value === entry.value);
+    if (existing) return existing;
+    const name = entry.name == null ? String(entry.value) : String(entry.name);
+    const option = document.createElement('option');
+    option.value = entry.value;
+    option.textContent = entry.hint ? name + ' (' + entry.hint + ')' : name;
+    option.dataset.name = name;
+    if (entry.hint) option.dataset.hint = entry.hint;
+    if (entry.search) option.dataset.search = entry.search;
+    option.dataset.dynamic = 'true';
+    const root = rootValue == null ? null : Array.prototype.find.call(select.options, o => o.value === rootValue);
+    if (root) {
+      root.after(option);
+    } else {
+      const pinned = Array.prototype.find.call(select.options, o => o.dataset.pinned === 'true');
+      select.insertBefore(option, pinned && pinned.parentNode === select ? pinned : null);
+    }
+    return option;
+  }
+  // Retire les lignes posées par addDynamicOption qui ne sont plus le choix : à l'ouverture du panneau, quand le choix est réglé (une colonne refusée
+  // par la fenêtre de la clé laisse la sienne jusque-là, pour que le choix d'avant se remette).
+  function dropStaleDynamicOptions(select) {
+    Array.prototype.slice.call(select.options).forEach(option => { if (option.dataset.dynamic === 'true' && !option.selected) option.remove(); });
+  }
+
   // Champ fermé : un clic (ou Entrée / Espace, qui déclenchent le même clic) ouvre ou referme ; ↓/↑ ouvrent ; une lettre ouvre avec elle comme
   // début de recherche (preventDefault : sinon elle serait tapée deux fois dans la zone qui prend le focus). Échap et Tab restent à la fenêtre.
   function wireTrigger(s) {
@@ -328,13 +572,24 @@ const SearchSelect = (function () {
       // aussitôt dans les navigateurs qui ne donnent pas le focus aux boutons).
       if (s.open) event.preventDefault();
     });
-    trigger.addEventListener('click', () => { if (s.open) closePanel(s, true); else openPanel(s); });
+    trigger.addEventListener('click', (event) => {
+      // Un clic sur la bulle du choix (option `pill`) ouvre la fenêtre (option `browse`), un clic ailleurs dans le champ la liste. Entrée et Espace, qui
+      // déclenchent aussi ce clic, visent le bouton lui-même : la liste.
+      if (!s.open && s.opts.browse && event.target.closest && event.target.closest('.ss-pill')) { browseFromField(s); return; }
+      if (s.open) closePanel(s, true); else openPanel(s);
+    });
     trigger.addEventListener('keydown', (event) => {
+      // Ctrl+Entrée : la fenêtre, comme depuis la liste ouverte.
+      if (!event.isComposing && event.key === 'Enter' && (event.ctrlKey || event.metaKey) && !event.altKey && s.opts.browse) { event.preventDefault(); browseFromField(s); return; }
       if (event.isComposing || event.ctrlKey || event.metaKey || event.altKey) return;
       if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); openPanel(s); }
       else if (event.key.length === 1 && event.key !== ' ') { event.preventDefault(); openPanel(s, event.key); }
     });
   }
+
+  // Une touche seule : Maj, Ctrl, Alt et Cmd gardent leur sens dans le texte (sélection, saut de mot).
+  const plainKey = event => !(event.shiftKey || event.ctrlKey || event.altKey || event.metaKey);
+  const caretAtEnd = input => input.selectionStart === input.value.length && input.selectionEnd === input.value.length;
 
   function wireInput(s) {
     const { input, panel, trigger } = s;
@@ -346,7 +601,20 @@ const SearchSelect = (function () {
         case 'ArrowUp': event.preventDefault(); move(s, -1); break;
         case 'PageDown': event.preventDefault(); move(s, PAGE); break;
         case 'PageUp': event.preventDefault(); move(s, -PAGE); break;
-        case 'Enter': event.preventDefault(); if (s.visible[s.active]) choose(s, s.visible[s.active]); break;
+        // → ouvre les colonnes de la ligne surlignée quand le curseur est à la fin de la saisie (ailleurs, il se déplace dans le texte) ; ← et Retour
+        // arrière remontent d'un niveau quand la saisie est vide.
+        case 'ArrowRight':
+          if (plainKey(event) && caretAtEnd(input) && descend(s, s.visible[s.active])) event.preventDefault();
+          break;
+        case 'ArrowLeft':
+        case 'Backspace':
+          if (plainKey(event) && input.value === '' && ascend(s, s.levels.length - 2)) event.preventDefault();
+          break;
+        case 'Enter':
+          event.preventDefault();
+          if ((event.ctrlKey || event.metaKey) && s.opts.browse) browseOut(s);
+          else if (s.visible[s.active]) choose(s, s.visible[s.active]);
+          break;
         // Échap ferme le panneau seul : la fenêtre qui le contient (js/modal-base.js) se fermerait sinon avec lui.
         case 'Escape': event.preventDefault(); event.stopPropagation(); closePanel(s, true); break;
         // Le focus revient au champ avant l'action par défaut de Tab, qui part donc de lui : champ suivant (Maj+Tab : précédent).
@@ -366,7 +634,10 @@ const SearchSelect = (function () {
     panel.addEventListener('mousedown', (event) => { if (event.target !== input) event.preventDefault(); });
     list.addEventListener('click', (event) => {
       const row = event.target.closest('.ss-option');
-      if (row && s.visible[Number(row.dataset.index)]) choose(s, s.visible[Number(row.dataset.index)]);
+      const item = row && s.visible[Number(row.dataset.index)];
+      if (!item) return;
+      // La flèche d'une colonne Référence ouvre ses colonnes ; le reste de la ligne la choisit.
+      if (event.target.closest('.ss-descend')) descend(s, item); else choose(s, item);
     });
     // Surbrillance à la souris seulement quand elle bouge : la liste change sous un pointeur immobile à chaque frappe, et le mousemove alors envoyé
     // volerait la ligne active (Entrée ne prendrait plus le premier résultat).
@@ -377,6 +648,32 @@ const SearchSelect = (function () {
       const row = event.target.closest('.ss-option');
       if (row && Number(row.dataset.index) !== s.active) setActive(s, Number(row.dataset.index), false);
     });
+  }
+
+  // Le fil d'Ariane : un clic sur un niveau au-dessus de celui qu'on voit y revient.
+  function wirePath(s) {
+    s.path.addEventListener('click', (event) => {
+      const up = event.target.closest('.ss-crumb[data-depth]');
+      if (up) ascend(s, Number(up.dataset.depth));
+    });
+  }
+
+  // Passe à la fenêtre (option `browse`) : le panneau se ferme sans rien choisir, la saisie et le niveau où l'on est descendu sont donnés à `browse`, qui reprend
+  // le choix ; le focus n'est pas rendu au champ, la fenêtre prend le sien.
+  function browseOut(s) {
+    if (!s.open || !s.opts.browse) return;
+    const level = s.levels[s.levels.length - 1];
+    const context = { query: s.query, from: level && level.from ? level.from.value : null, value: s.select.value };
+    closePanel(s, false);
+    s.opts.browse(context);
+  }
+  // Le même passage depuis le champ fermé (clic sur la bulle, Ctrl+Entrée) : rien n'est ouvert, il n'y a ni saisie ni niveau où l'on est descendu.
+  function browseFromField(s) {
+    if (s.open || !s.opts.browse || s.select.disabled) return;
+    s.opts.browse({ query: '', from: null, value: s.select.value });
+  }
+  function wireBrowse(s) {
+    if (s.browse) s.browse.addEventListener('click', () => browseOut(s));
   }
 
   // Ce que la liste rend à l'appelant : le champ fermé, ouvrir / fermer, le focus, la mise à jour par programme, et destroy() qui rend le <select>.
@@ -409,6 +706,8 @@ const SearchSelect = (function () {
     wireTrigger(s);
     wireInput(s);
     wireList(s);
+    wirePath(s);
+    wireBrowse(s);
     syncTrigger(s);
     // D'abord l'insertion, seule étape qui peut lever (<select> hors de la page) : si elle échoue, le <select> n'a encore rien reçu.
     select.parentNode.insertBefore(s.wrap, select.nextSibling);
@@ -437,6 +736,10 @@ const SearchSelect = (function () {
   function attachValues(select, opts) { return attachKind(select, opts, 'searchSelect.searchValues', 'searchSelect.noValueMatch'); }
   // Liste de feuilles d'un classeur Excel (import d'une grille : js/grid-xlsx-import.js).
   function attachSheets(select, opts) { return attachKind(select, opts, 'searchSelect.searchSheets', 'searchSelect.noSheetMatch'); }
+  // Liste des graphiques de la page (extensions/graphique/chart-block.js), les groupes étant les pages de Grist.
+  function attachCharts(select, opts) { return attachKind(select, opts, 'searchSelect.searchCharts', 'searchSelect.noChartMatch'); }
+  // Liste des titres et des signets du document, les groupes étant « Titres » et « Signets » (fenêtre « Lien… », js/link-dialog.js).
+  function attachTargets(select, opts) { return attachKind(select, opts, 'searchSelect.searchTargets', 'searchSelect.noTargetMatch'); }
   // Remet à jour le champ visible d'un <select> déjà attaché après un changement par programme de sa valeur, de ses options ou de son état grisé ;
   // sans effet sur un <select> que le composant n'a pas pris (liste native de repli). Pour le code qui ne garde pas le contrôleur (grisage d'un champ
   // Valeur).
@@ -445,5 +748,5 @@ const SearchSelect = (function () {
     if (controller) controller.sync();
   }
 
-  return { attach, attachColumns, attachTables, attachTemplates, attachValues, attachSheets, sync, filterItems, readItems, normalize };
+  return { attach, attachColumns, attachTables, attachTemplates, attachValues, attachSheets, attachCharts, attachTargets, sync, filterItems, readItems, addDynamicOption, normalize, searchWords, searchKey, foundIn, nameMatcher };
 })();

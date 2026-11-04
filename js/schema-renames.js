@@ -20,8 +20,9 @@
 //  - Une colonne sans nom de table (condition d'une bulle, règle d'un macro-modèle) est une colonne de la table de la page : celle de ce widget. Un
 //    modèle qui ne nomme, ailleurs, que d'autres tables n'est pas lu comme celui de cette page, et une colonne nue dont une autre table porte encore
 //    le nom n'est pas réécrite non plus (le modèle peut servir sur l'autre page, où elle se lit). Dans le filtre et le tri d'une boucle, c'est une
-//    colonne de la table parcourue, sans ambiguïté. La colonne source d'une clé de correspondance suit la même règle : la clé sert à toutes les
-//    pages. Sans table de page connue, la passe attend l'ouverture suivante.
+//    colonne de la table parcourue, sans ambiguïté. La colonne source d'une clé de correspondance réglée pour une table de la page se lit dans cette
+//    table, sans ambiguïté non plus ; celle de la clé commune à toutes les tables (d'avant les clés par table) suit la règle de la colonne nue : elle
+//    sert à toutes les pages. Sans table de page connue, la passe attend l'ouverture suivante.
 //  - Rien ne s'écrit en lecture seule, ni quand la personne a déjà commencé à modifier le modèle affiché (la passe est reprise à l'ouverture
 //    suivante), et l'instantané n'avance qu'une fois tout réécrit : une passe interrompue se rejoue sans risque, puisque ce qui est déjà réécrit se
 //    lit et n'est plus touché.
@@ -129,15 +130,15 @@ const SchemaRenames = (function () {
   // from, to }], any }.
   function diff(saved, current) {
     const o = indexOf(saved);
-    const c = indexOf(current);
+    const currentIndex = indexOf(current);
     const tables = [];
     const columns = [];
     Object.keys(o.tableName).forEach(tRow => {
-      if (c.tableName[tRow] !== undefined && c.tableName[tRow] !== o.tableName[tRow]) tables.push({ from: o.tableName[tRow], to: c.tableName[tRow] });
+      if (currentIndex.tableName[tRow] !== undefined && currentIndex.tableName[tRow] !== o.tableName[tRow]) tables.push({ from: o.tableName[tRow], to: currentIndex.tableName[tRow] });
     });
     Object.keys(o.colName).forEach(cRow => {
-      if (c.colName[cRow] !== undefined && c.colTable[cRow] === o.colTable[cRow] && c.colName[cRow] !== o.colName[cRow]) {
-        columns.push({ table: c.tableName[c.colTable[cRow]], from: o.colName[cRow], to: c.colName[cRow] });
+      if (currentIndex.colName[cRow] !== undefined && currentIndex.colTable[cRow] === o.colTable[cRow] && currentIndex.colName[cRow] !== o.colName[cRow]) {
+        columns.push({ table: currentIndex.tableName[currentIndex.colTable[cRow]], from: o.colName[cRow], to: currentIndex.colName[cRow] });
       }
     });
     return { tables, columns, any: tables.length + columns.length > 0 };
@@ -187,16 +188,16 @@ const SchemaRenames = (function () {
   // encore lisible telle qu'elle est écrite, nom inconnu de l'instantané, table ou colonne supprimée.
   function createMapper(saved, current, refs) {
     const o = indexOf(saved);
-    const c = indexOf(current);
-    const refTargetRow = cRow => (refs[cRow] === undefined ? undefined : c.tableRow[refs[cRow]]);
+    const currentIndex = indexOf(current);
+    const refTargetRow = cRow => (refs[cRow] === undefined ? undefined : currentIndex.tableRow[refs[cRow]]);
 
     // La référence se lit-elle aujourd'hui, telle qu'elle est écrite ? Le chemin se descend de colonne Référence en colonne Référence.
     function validNow(table, path) {
-      let tRow = c.tableRow[table];
+      let tRow = currentIndex.tableRow[table];
       if (tRow === undefined) return false;
       const hops = String(path).split('.');
       for (let i = 0; i < hops.length; i++) {
-        const cRow = (c.colRow[tRow] || {})[hops[i]];
+        const cRow = (currentIndex.colRow[tRow] || {})[hops[i]];
         if (cRow === undefined) return false;
         if (i < hops.length - 1) {
           tRow = refTargetRow(cRow);
@@ -213,8 +214,8 @@ const SchemaRenames = (function () {
       const names = [];
       for (let i = 0; i < hops.length; i++) {
         const cRow = (o.colRow[tRow] || {})[hops[i]];
-        if (cRow === undefined || c.colTable[cRow] !== tRow) return null;
-        names.push(c.colName[cRow]);
+        if (cRow === undefined || currentIndex.colTable[cRow] !== tRow) return null;
+        names.push(currentIndex.colName[cRow]);
         if (i < hops.length - 1) {
           tRow = refTargetRow(cRow);
           if (tRow === undefined) return null;
@@ -227,24 +228,24 @@ const SchemaRenames = (function () {
     function mapQualified(table, path) {
       if (!table || !path || validNow(table, path)) return null;
       const tRow = o.tableRow[table];
-      if (tRow === undefined || c.tableName[tRow] === undefined) return null;
+      if (tRow === undefined || currentIndex.tableName[tRow] === undefined) return null;
       const column = walk(tRow, path);
-      if (column === null || (c.tableName[tRow] === table && column === path)) return null;
-      return { table: c.tableName[tRow], column };
+      if (column === null || (currentIndex.tableName[tRow] === table && column === path)) return null;
+      return { table: currentIndex.tableName[tRow], column };
     }
 
     // Un nom de table seul (table parcourue par une boucle, colonne Référence de la page, clé de correspondance).
     function mapTable(table) {
-      if (!table || c.tableRow[table] !== undefined) return null;
+      if (!table || currentIndex.tableRow[table] !== undefined) return null;
       const tRow = o.tableRow[table];
-      const name = tRow === undefined ? undefined : c.tableName[tRow];
+      const name = tRow === undefined ? undefined : currentIndex.tableName[tRow];
       return name === undefined || name === table ? null : name;
     }
 
     // La table où se lit une colonne sans nom de table : { oldRow, oldName, newName } - la table d'aujourd'hui portant ce nom, qui existait déjà dans
     // l'instantané. Null sinon.
     function tableContext(nowName) {
-      const tRow = nowName ? c.tableRow[nowName] : undefined;
+      const tRow = nowName ? currentIndex.tableRow[nowName] : undefined;
       return tRow === undefined || o.tableName[tRow] === undefined ? null : { oldRow: tRow, oldName: o.tableName[tRow], newName: nowName };
     }
 
@@ -257,7 +258,7 @@ const SchemaRenames = (function () {
 
     // Une autre table que `ctx` a-t-elle aujourd'hui une colonne de ce nom ?
     function otherTableHasColumn(name, ctx) {
-      return Object.keys(c.colRow).some(tRow => tRow !== ctx.oldRow && c.colRow[tRow][name] !== undefined);
+      return Object.keys(currentIndex.colRow).some(tRow => tRow !== ctx.oldRow && currentIndex.colRow[tRow][name] !== undefined);
     }
 
     return { mapQualified, mapTable, tableContext, mapBare, otherTableHasColumn, matchTextKey: createTextMatcher(o, refTargetRow) };
@@ -281,23 +282,37 @@ const SchemaRenames = (function () {
     return next ? next.table + '.' + next.column : null;
   }
 
-  // { mode, rules: [{ column, operator, value }] } - rend la condition elle-même quand rien ne change.
+  // { mode, rules: [{ column, operator, value }] } - rend la condition elle-même quand rien ne change. Une règle qui compare à une autre colonne
+  // (`valueColumn`, js/condition-rules.js) la cite comme `column` : les deux suivent un renommage, chacune pour son compte. Un élément de `rules` peut
+  // être un groupe { mode, rules } (les « parenthèses » d'une condition) : ses règles se réécrivent comme les autres, à toute profondeur.
   function rewriteCondition(condition, m, ctx, ambiguous) {
     if (!condition || !Array.isArray(condition.rules)) return { condition, count: 0 };
     let count = 0;
     const rules = condition.rules.map(rule => {
-      if (!rule || typeof rule.column !== 'string' || !rule.column) return rule;
-      const next = mapRuleColumn(rule.column, m, ctx, ambiguous);
-      if (next === null) return rule;
-      count++;
-      return Object.assign({}, rule, { column: next });
+      if (!rule) return rule;
+      if (Array.isArray(rule.rules)) {
+        const inner = rewriteCondition(rule, m, ctx, ambiguous);
+        count += inner.count;
+        return inner.condition;
+      }
+      let next = rule;
+      for (const key of ['column', 'valueColumn']) {
+        if (typeof next[key] !== 'string' || !next[key]) continue;
+        const renamed = mapRuleColumn(next[key], m, ctx, ambiguous);
+        if (renamed === null) continue;
+        count++;
+        next = Object.assign({}, next, { [key]: renamed });
+      }
+      return next;
     });
     return count ? { condition: Object.assign({}, condition, { rules }), count } : { condition, count: 0 };
   }
 
-  // { repeat, table, via: { table, column }, filter, sort: { column, direction }, … } (js/loop-rules.js). Le filtre et le tri parlent de la table
-  // parcourue.
-  function rewriteLoop(loop, m) {
+  // { repeat, table, via: { table, column }, within, by, filter, sort: { column, direction }, emptyText, … } (js/loop-rules.js). Le filtre, le tri et `by` (la
+  // colonne qui rattache à `within`) parlent de la table parcourue. `emptyText` (« Si aucune ligne ») est un champ à variables, comme le sinon d'une valeur :
+  // du texte brut dont les clés « #Table.Colonne » se réécrivent comme dans le nom du PDF, ou du HTML dont les bulles se réécrivent comme celles du corps ;
+  // il se lit dans la ligne de la page, pas dans la table parcourue. `reading` : { page, trigger } comme le `ctx` de `rewriteHtml` (sans lui, seules les bulles se lisent).
+  function rewriteLoop(loop, m, reading) {
     if (!loop || typeof loop !== 'object' || !loop.table) return { loop, count: 0 };
     const next = Object.assign({}, loop);
     const table = m.mapTable(loop.table);
@@ -308,6 +323,18 @@ const SchemaRenames = (function () {
       const via = loop.via && loop.via.table && loop.via.column ? m.mapQualified(loop.via.table, loop.via.column) : null;
       if (!via) return 0;
       next.via = Object.assign({}, loop.via, { table: via.table, column: via.column });
+      return 1;
+    };
+    const rewriteWithin = () => {
+      const within = typeof loop.within === 'string' && loop.within ? m.mapTable(loop.within) : null;
+      if (!within) return 0;
+      next.within = within;
+      return 1;
+    };
+    const rewriteBy = () => {
+      const by = typeof loop.by === 'string' && loop.by ? mapRuleColumn(loop.by, m, ctx, false) : null;
+      if (by === null) return 0;
+      next.by = by;
       return 1;
     };
     const rewriteFilter = () => {
@@ -321,7 +348,17 @@ const SchemaRenames = (function () {
       next.sort = Object.assign({}, loop.sort, { column });
       return 1;
     };
-    const count = (table ? 1 : 0) + rewriteVia() + rewriteFilter() + rewriteSort();
+    const rewriteEmptyText = () => {
+      if (typeof loop.emptyText !== 'string' || !loop.emptyText) return 0;
+      const trigger = reading && reading.trigger;
+      const written = FieldCodec.isRich(loop.emptyText)
+        ? rewriteHtml(loop.emptyText, m, { page: reading && reading.page, trigger })
+        : rewriteText(loop.emptyText, m, trigger);
+      if (!written.count) return 0;
+      next.emptyText = written.html != null ? written.html : written.text;
+      return written.count;
+    };
+    const count = (table ? 1 : 0) + rewriteVia() + rewriteWithin() + rewriteBy() + rewriteFilter() + rewriteSort() + rewriteEmptyText();
     return count ? { loop: next, count } : { loop, count: 0 };
   }
 
@@ -358,54 +395,95 @@ const SchemaRenames = (function () {
     return { text: count ? out : src, count };
   }
 
+  // Les attributs qui nomment la table, la colonne et la clé d'une variable : ceux d'une bulle, d'une image liée, et ceux du sinon d'une bulle
+  // (js/variable-otherwise.js).
+  const REFERENCE_ATTRS = {
+    badge: { table: 'data-table', column: 'data-column', key: 'data-key' },
+    image: { table: 'data-var-table', column: 'data-var-column', key: 'data-var-key' },
+    otherwise: { table: 'data-otherwise-table', column: 'data-otherwise-column', key: 'data-otherwise-key' },
+    // La fiche d'une pastille « @ » (js/mention.js) : sa table et sa colonne, sans clé ni texte à réécrire.
+    mention: { table: 'data-mention-table', column: 'data-mention-column', key: 'data-mention-key' },
+  };
+
+  // Les nœuds dont le sinon est un champ à variables, dans l'attribut `data-otherwise` : le bloc et la valeur conditionnels (js/conditional-text.js) et la bulle de variable
+  // (js/variable-otherwise.js).
+  const TYPED_OTHERWISE = '.conditional-text, .conditional-value, .var-badge';
+
+  // Les tables que cite le sinon d'un bloc, d'une valeur ou d'une bulle (js/conditional-text.js) : celles de ses bulles quand il est écrit en HTML, celles de ses
+  // clés « #Table.Colonne » quand c'est du texte brut. Les clés se lisent avec les noms d'hier (`m.matchTextKey`), pas avec le schéma d'aujourd'hui : après un
+  // renommage, la clé enregistrée ne s'y trouve plus.
+  function otherwiseTablesOf(value, m, trigger) {
+    const tables = [];
+    if (FieldCodec.isRich(value)) {
+      Dom.inertTemplate(value).content.querySelectorAll('.var-badge').forEach(badge => {
+        [badge.getAttribute('data-table'), badge.getAttribute(REFERENCE_ATTRS.otherwise.table)].forEach(table => { if (table) tables.push(table); });
+      });
+      return tables;
+    }
+    for (let at = trigger ? value.indexOf(trigger) : -1; at !== -1; at = value.indexOf(trigger, at + 1)) {
+      const hit = m.matchTextKey(value.slice(at + 1));
+      if (hit) tables.push(hit.table);
+    }
+    return tables;
+  }
+
   // Les tables que le contenu nomme en toutes lettres : bulles, images liées, formules, boucles, règles « Table.Colonne ».
-  function explicitTablesOf(elements) {
+  function explicitTablesOf(elements, m, trigger) {
     const tables = new Set();
     const addRules = condition => {
       for (const rule of (condition && Array.isArray(condition.rules) ? condition.rules : [])) {
-        const dot = rule && typeof rule.column === 'string' ? rule.column.indexOf('.') : -1;
-        if (dot > 0) tables.add(rule.column.slice(0, dot));
+        if (rule && Array.isArray(rule.rules)) { addRules(rule); continue; } // un groupe de la condition
+        for (const key of ['column', 'valueColumn']) {
+          const dot = rule && typeof rule[key] === 'string' ? rule[key].indexOf('.') : -1;
+          if (dot > 0) tables.add(rule[key].slice(0, dot));
+        }
       }
     };
     elements.forEach(el => {
       const table = el.getAttribute('data-table') || el.getAttribute('data-var-table');
       if (table) tables.add(table);
+      const otherwise = el.getAttribute(REFERENCE_ATTRS.otherwise.table);
+      if (otherwise) tables.add(otherwise);
+      // Les variables du sinon d'un bloc, d'une valeur ou d'une bulle nomment aussi leurs tables.
+      const typed = el.matches(TYPED_OTHERWISE) ? el.getAttribute('data-otherwise') : null;
+      if (typed) otherwiseTablesOf(typed, m, trigger).forEach(table => tables.add(table));
       for (const found of (el.getAttribute('data-formula') || '').matchAll(/\{([A-Za-z_][A-Za-z0-9_]*)\./g)) tables.add(found[1]);
       addRules(parseJson(el.getAttribute('data-condition')));
       const loop = parseJson(el.getAttribute('data-loop'));
       if (loop && loop.table) {
         tables.add(loop.table);
         if (loop.via && loop.via.table) tables.add(loop.via.table);
+        if (loop.within) tables.add(loop.within);
         addRules(loop.filter);
+        // Les variables du texte « Si aucune ligne » nomment aussi leurs tables.
+        if (typeof loop.emptyText === 'string' && loop.emptyText) otherwiseTablesOf(loop.emptyText, m, trigger).forEach(name => tables.add(name));
       }
     });
     return tables;
   }
 
-  // La table et la colonne que nomme une bulle ou une image liée (data-table / data-column, ou data-var-table / data-var-column pour l'image) : 1
-  // quand la référence est réécrite, 0 sinon.
-  function rewriteReference(el, m) {
-    const isImage = el.tagName === 'IMG';
-    const tableAttr = isImage ? 'data-var-table' : 'data-table';
-    const columnAttr = isImage ? 'data-var-column' : 'data-column';
-    const keyAttr = isImage ? 'data-var-key' : 'data-key';
-    const table = el.getAttribute(tableAttr);
-    const column = el.getAttribute(columnAttr);
+  // La table et la colonne que nomment les attributs `names` d'une bulle, d'une image liée ou d'un sinon : 1 quand la référence est réécrite, 0 sinon.
+  function rewriteReference(el, m, names) {
+    const table = el.getAttribute(names.table);
+    const column = el.getAttribute(names.column);
     const next = table && column ? m.mapQualified(table, column) : null;
     if (!next) return 0;
-    const oldKey = el.getAttribute(keyAttr);
+    const oldKey = el.getAttribute(names.key);
     const newKey = next.table + '.' + next.column;
-    el.setAttribute(tableAttr, next.table);
-    el.setAttribute(columnAttr, next.column);
-    if (oldKey === table + '.' + column) el.setAttribute(keyAttr, newKey);
-    // Le texte de la bulle (touche de déclenchement + clé) : régénéré au chargement dans l'éditeur, mais gardé juste dans le HTML enregistré.
-    if (!isImage && oldKey && el.textContent.endsWith(oldKey)) el.textContent = el.textContent.slice(0, el.textContent.length - oldKey.length) + newKey;
+    el.setAttribute(names.table, next.table);
+    el.setAttribute(names.column, next.column);
+    if (oldKey === table + '.' + column) el.setAttribute(names.key, newKey);
+    // Le texte de la bulle (touche de déclenchement + clé) : régénéré au chargement dans l'éditeur, mais gardé juste dans le HTML enregistré. Celui du
+    // sinon n'est écrit nulle part : l'éditeur le dessine d'après sa clé.
+    if (names === REFERENCE_ATTRS.badge && oldKey && el.textContent.endsWith(oldKey)) el.textContent = el.textContent.slice(0, el.textContent.length - oldKey.length) + newKey;
     return 1;
   }
 
-  // Un élément du modèle (bulle, bulle de calcul, image liée ou QR code, bloc, valeur ou case conditionnels) : le nombre de références réécrites.
+  // Un élément du modèle (bulle et son sinon, bulle de calcul, image liée ou QR code, bloc, valeur ou case conditionnels) : le nombre de références
+  // réécrites.
   function rewriteElement(el, m, page, trigger) {
-    let count = rewriteReference(el, m);
+    let count = rewriteReference(el, m, el.tagName === 'IMG' ? REFERENCE_ATTRS.image : REFERENCE_ATTRS.badge) + rewriteReference(el, m, REFERENCE_ATTRS.otherwise)
+      + rewriteReference(el, m, REFERENCE_ATTRS.mention);
     const formula = el.getAttribute('data-formula');
     if (formula) {
       const next = rewriteFormula(formula, m);
@@ -422,6 +500,13 @@ const SchemaRenames = (function () {
       const next = rewriteText(qr, m, trigger);
       if (next.count) { el.setAttribute('data-qr-text', next.text); count += next.count; }
     }
+    // Le sinon d'un bloc, d'une valeur (js/conditional-text.js) ou d'une bulle (js/variable-otherwise.js) : un champ à variables, comme l'objet d'un e-mail. Du texte
+    // brut, où une clé « #Table.Colonne » se réécrit comme dans le nom du PDF, ou du HTML, dont les bulles se réécrivent comme celles du corps.
+    const rawOtherwise = el.matches(TYPED_OTHERWISE) ? el.getAttribute('data-otherwise') : null;
+    if (rawOtherwise) {
+      const next = FieldCodec.isRich(rawOtherwise) ? rewriteHtml(rawOtherwise, m, { page, trigger }) : rewriteText(rawOtherwise, m, trigger);
+      if (next.count) { el.setAttribute('data-otherwise', next.html != null ? next.html : next.text); count += next.count; }
+    }
     const rawCondition = el.getAttribute('data-condition');
     if (rawCondition) {
       const next = rewriteCondition(parseJson(rawCondition), m, page, true);
@@ -429,7 +514,7 @@ const SchemaRenames = (function () {
     }
     const rawLoop = el.getAttribute('data-loop');
     if (rawLoop) {
-      const next = rewriteLoop(parseJson(rawLoop), m);
+      const next = rewriteLoop(parseJson(rawLoop), m, { page, trigger });
       if (next.count) { el.setAttribute('data-loop', JSON.stringify(next.loop)); count += next.count; }
     }
     return count;
@@ -439,16 +524,15 @@ const SchemaRenames = (function () {
   function rewriteHtml(html, m, ctx) {
     const src = String(html == null ? '' : html);
     if (src.indexOf('data-') === -1) return { html: src, count: 0 };
-    const tpl = document.createElement('template');
-    tpl.innerHTML = src;
+    const tpl = Dom.inertTemplate(src);
     const root = tpl.content;
     // Tout ce que le widget range dans un modèle et qui nomme une table ou une colonne : comme BOUND_SELECTOR de js/loop-rules.js, mais sans
     // restreindre les images.
-    const ELEMENT_SELECTOR = '.var-badge, .calc-badge, img.editor-image, .conditional-text, .conditional-value, .conditional-checkbox';
+    const ELEMENT_SELECTOR = '.var-badge, .calc-badge, .mention-chip, img.editor-image, .conditional-text, .conditional-value, .conditional-checkbox';
     // Un modèle qui nomme d'autres tables que celle de la page, et jamais celle-ci, n'est pas lu comme un modèle de cette page : ses colonnes sans
     // nom de table restent.
     const elements = root.querySelectorAll(ELEMENT_SELECTOR);
-    const explicit = explicitTablesOf(elements);
+    const explicit = explicitTablesOf(elements, m, ctx.trigger);
     const page = ctx.page && (!explicit.size || explicit.has(ctx.page.oldName) || explicit.has(ctx.page.newName)) ? ctx.page : null;
     let count = 0;
     elements.forEach(el => { count += rewriteElement(el, m, page, ctx.trigger); });
@@ -457,11 +541,11 @@ const SchemaRenames = (function () {
 
   // HeaderFooter : { enabled, differentFirstPage, header: { default, first }, footer: { default, first } } - du HTML dans chaque case.
   function rewriteHeaderFooter(json, m, ctx) {
-    const data = parseJson(json);
-    if (!data || typeof data !== 'object') return { text: json, count: 0 };
+    const parsed = parseJson(json);
+    if (!parsed || typeof parsed !== 'object') return { text: json, count: 0 };
     let count = 0;
     ['header', 'footer'].forEach(part => {
-      const zone = data[part];
+      const zone = parsed[part];
       if (!zone || typeof zone !== 'object') return;
       ['default', 'first'].forEach(which => {
         if (typeof zone[which] !== 'string') return;
@@ -469,15 +553,15 @@ const SchemaRenames = (function () {
         if (next.count) { zone[which] = next.html; count += next.count; }
       });
     });
-    return count ? { text: JSON.stringify(data), count } : { text: json, count: 0 };
+    return count ? { text: JSON.stringify(parsed), count } : { text: json, count: 0 };
   }
 
   // Macro-modèle : { slots: [{ type: 'conditional', rules: [{ column, operator, value, modeleId }], … }] } - les colonnes des règles.
   function rewriteMacro(json, m, page) {
-    const data = parseJson(json);
-    if (!data || !Array.isArray(data.slots)) return { text: json, count: 0 };
+    const parsed = parseJson(json);
+    if (!parsed || !Array.isArray(parsed.slots)) return { text: json, count: 0 };
     let count = 0;
-    data.slots.forEach(slot => {
+    parsed.slots.forEach(slot => {
       if (!slot || !Array.isArray(slot.rules)) return;
       slot.rules.forEach(rule => {
         if (!rule || typeof rule.column !== 'string' || !rule.column) return;
@@ -485,12 +569,15 @@ const SchemaRenames = (function () {
         if (next !== null) { rule.column = next; count++; }
       });
     });
-    return count ? { text: JSON.stringify(data), count } : { text: json, count: 0 };
+    return count ? { text: JSON.stringify(parsed), count } : { text: json, count: 0 };
   }
 
   // Un modèle lu tel que Grist le range ({ id, Contenu, HeaderFooter, … } en texte brut) : ce qu'il faut écrire pour qu'il suive les renommages, ou
   // null.
   function planTemplate(row, m, ctx) {
+    // Un modèle d'un type que le widget ne connaît pas (js/templates.js, isKnownType) n'est jamais réécrit : son contenu n'est pas du HTML de ce widget. Une présentation est réécrite, même quand
+    // GFS a éteint son extension : son contenu est celui d'un document, et ses variables doivent suivre la colonne renommée.
+    if (!Templates.isKnownType(row.TypeModele)) return null;
     const TEXT_COLUMNS = ['NomFichierPDF', 'Destinataires', 'Cc', 'Cci', 'Objet'];
     const fields = {};
     let count = 0;
@@ -504,37 +591,55 @@ const SchemaRenames = (function () {
       const headers = rewriteHeaderFooter(row.HeaderFooter, m, ctx);
       keep('HeaderFooter', headers.text, headers.count);
     }
+    // Un champ dont une bulle porte un réglage est enregistré en HTML (js/field-codec.js) et se lit comme le corps d'un modèle ; les autres restent du
+    // texte brut.
+    const rewriteField = value => {
+      if (!FieldCodec.isRich(value)) return rewriteText(value, m, ctx.trigger);
+      const next = rewriteHtml(value, m, ctx);
+      return { text: next.html, count: next.count };
+    };
     TEXT_COLUMNS.forEach(column => {
-      const next = rewriteText(row[column], m, ctx.trigger);
+      const next = rewriteField(row[column]);
       keep(column, next.text, next.count);
     });
     return count ? { id: row.id, fields, count } : null;
   }
 
-  // Les clés de correspondance entre tables : { tableCible, mode, colonneCible, colonneSource } -> ce qui change, ou null. La colonne cible est une
-  // colonne de la table cible ; la colonne source une colonne de la table de la page, que le texte « id » désigne par son identifiant de ligne.
+  // Les clés de correspondance entre tables : { tableCible, tableSource, mode, colonneCible, colonneSource } -> ce qui change, ou null. La colonne cible est
+  // une colonne de la table cible ; la colonne source une colonne de la table de la page, que le texte « id » désigne par son identifiant de ligne. Une clé
+  // réglée pour une table de la page nomme cette table (`tableSource`) : sa colonne source se lit dans celle-là, sans doute possible, et la table peut elle
+  // aussi avoir changé de nom. La clé commune à toutes les tables (`tableSource` vide, d'avant les clés par table) ne dit pas dans quelle table se lit sa
+  // colonne source : c'est celle de la page de ce widget, avec la prudence d'une colonne nue.
   function planLink(rule, m, page) {
-    const next = { tableCible: rule.tableCible, mode: rule.mode, colonneCible: rule.colonneCible, colonneSource: rule.colonneSource };
+    const next = { tableCible: rule.tableCible, tableSource: rule.tableSource, mode: rule.mode, colonneCible: rule.colonneCible, colonneSource: rule.colonneSource };
     const table = m.mapTable(rule.tableCible);
-    // La table renommée a déjà sa clé (la personne l'a reposée à la main) : elle reste, l'ancienne n'est pas recopiée par-dessus.
-    if (table && GristAPI.getLinkRule(table)) return null;
+    const sourceTable = rule.tableSource ? m.mapTable(rule.tableSource) : null;
+    // Le couple renommé a déjà sa clé (la personne l'a reposée à la main) : elle reste, l'ancienne n'est pas recopiée par-dessus.
+    if ((table || sourceTable) && GristAPI.findLinkRule(table || rule.tableCible, sourceTable || rule.tableSource)) return null;
     if (table) next.tableCible = table;
+    if (sourceTable) next.tableSource = sourceTable;
     const mapTarget = () => (rule.mode === 'match' && rule.colonneCible && rule.colonneCible !== 'id' ? m.mapQualified(rule.tableCible, rule.colonneCible) : null);
-    const mapSource = () => (rule.mode === 'match' && rule.colonneSource && rule.colonneSource !== 'id' && page && !m.otherTableHasColumn(rule.colonneSource, page) ? m.mapBare(rule.colonneSource, page) : null);
+    // { table, column } pour une clé de table de la page, { column } pour la clé commune ; null quand rien ne change.
+    const mapSource = () => {
+      if (rule.mode !== 'match' || !rule.colonneSource || rule.colonneSource === 'id') return null;
+      if (rule.tableSource) return m.mapQualified(rule.tableSource, rule.colonneSource);
+      const column = page && !m.otherTableHasColumn(rule.colonneSource, page) ? m.mapBare(rule.colonneSource, page) : null;
+      return column === null ? null : { column };
+    };
     const target = mapTarget();
     if (target) { next.colonneCible = target.column; if (!table) next.tableCible = target.table; }
     const source = mapSource();
-    if (source !== null) next.colonneSource = source;
-    const count = (table ? 1 : 0) + (target ? 1 : 0) + (source !== null ? 1 : 0);
-    return count ? { from: rule.tableCible, rule: next, count } : null;
+    if (source) { next.colonneSource = source.column; if (source.table && !sourceTable) next.tableSource = source.table; }
+    const count = (table ? 1 : 0) + (sourceTable ? 1 : 0) + (target ? 1 : 0) + (source ? 1 : 0);
+    return count ? { from: { tableCible: rule.tableCible, tableSource: rule.tableSource }, rule: next, count } : null;
   }
 
   async function fetchTemplateRows() {
     const TEMPLATE_COLUMNS = ['Nom', 'TypeModele', 'Contenu', 'HeaderFooter', 'NomFichierPDF', 'Destinataires', 'Cc', 'Cci', 'Objet'];
-    const data = await grist.docApi.fetchTable(Templates.TABLE_NAME);
-    return (data.id || []).map((id, i) => {
+    const tableData = await grist.docApi.fetchTable(Templates.TABLE_NAME);
+    return (tableData.id || []).map((id, i) => {
       const row = { id };
-      TEMPLATE_COLUMNS.forEach(column => { row[column] = data[column] ? data[column][i] : undefined; });
+      TEMPLATE_COLUMNS.forEach(column => { row[column] = tableData[column] ? tableData[column][i] : undefined; });
       return row;
     });
   }
@@ -568,13 +673,13 @@ const SchemaRenames = (function () {
   }
 
   // Lecture, réécriture et écriture à la suite, sans rien d'autre entre : un modèle enregistré par quelqu'un d'autre ne peut être écrasé que dans un
-  // intervalle de quelques millisecondes. La clé de la nouvelle table d'abord, l'ancienne retirée ensuite : une panne entre les deux laisse une clé de
+  // intervalle de quelques millisecondes. La clé du nouveau couple d'abord, l'ancienne retirée ensuite : une panne entre les deux laisse une clé de
   // trop, jamais une clé perdue.
   async function writeRewrites(templates, links) {
     if (templates.length) await grist.docApi.applyUserActions(templates.map(t => ['UpdateRecord', Templates.TABLE_NAME, t.id, t.fields]));
     for (const link of links) {
       await GristAPI.saveLinkRule(link.rule.tableCible, link.rule);
-      if (link.from !== link.rule.tableCible) await GristAPI.deleteLinkRule(link.from);
+      if (link.from.tableCible !== link.rule.tableCible || link.from.tableSource !== link.rule.tableSource) await GristAPI.deleteLinkRule(link.from.tableCible, link.from.tableSource);
     }
     await Templates.loadAll();
   }

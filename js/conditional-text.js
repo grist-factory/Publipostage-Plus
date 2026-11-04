@@ -6,17 +6,61 @@
 //
 // Résolution : js/reader-mode.js la fait une fois, après le déroulé des zones répétées et avant celle des bulles : le HTML rendu à la Lecture, au
 // PDF, au Word, à l'e-mail et aux en-têtes/pieds est donc déjà sans bloc. Condition remplie : le cadre disparaît, son contenu reste. Sinon : le bloc
-// et son contenu disparaissent, sans ligne vide. Pas de condition : toujours affiché. Condition illisible : masqué, comme une bulle.
+// et son contenu disparaissent, sans ligne vide - ou, quand le bloc a un sinon, ce texte s'écrit à sa place. Pas de condition : toujours affiché. Condition illisible :
+// masqué, comme une bulle.
+//
+// Le sinon (suite de celui de la valeur conditionnelle, js/conditional-value.js) est un second texte, écrit à la place du bloc quand sa condition n'est pas
+// remplie : l'attribut `otherwise` du nœud, `data-otherwise` dans le HTML, réglé par la ligne « Sinon afficher » de la fenêtre de condition
+// (js/variable-condition.js). C'est un champ à variables, le même que l'objet d'un e-mail (js/field-codec.js, js/field-editor.js) : du texte et des
+// variables tapées avec « # », une ligne par paragraphe. Enregistré en texte brut, une ligne par ligne, tant qu'aucune variable n'a de réglage - c'est ainsi
+// qu'étaient enregistrés les sinon d'avant les variables, qui se relisent à l'identique -, sinon en HTML, un `<p class="pp-field">` par ligne. Chaque ligne
+// non vide fait un paragraphe, sans les espaces de ses deux bouts ; rien, ou que des espaces et des lignes vides, n'est pas un sinon (le bloc disparaît
+// comme avant). Les fonctions qui le lisent (`otherwiseText`, `otherwiseItems`, `otherwiseLines`) servent aussi à la valeur conditionnelle.
 const ConditionalText = (function () {
   const TYPE = 'conditionalText';
   const SELECTOR = 'div.conditional-text';
+  // Les caractères qu'un sinon de bloc peut porter dans sa fenêtre (quelques lignes : au-delà, c'est un second bloc, aux conditions opposées).
+  const OTHERWISE_MAX = 1000;
 
-  // Défait chaque bloc de `root` dont la condition est remplie (le cadre disparaît, son contenu reste), retire les autres. Un bloc extérieur retiré
-  // emporte les blocs qu'il contient, un bloc extérieur défait laisse les siens à leur verdict.
+  // Le sinon d'un bloc ou d'une valeur tel qu'il est enregistré (attribut `data-otherwise`, ou celui du nœud) : le champ lui-même, texte brut ou HTML (js/field-codec.js),
+  // ou null - rien, ou que des espaces et des retours à la ligne, n'est pas un sinon.
+  function otherwiseText(raw) {
+    return typeof raw === 'string' && FieldCodec.linesOf(raw).some(FieldCodec.hasContent) ? raw : null;
+  }
+  // Ses lignes non vides, sans les espaces de leurs deux bouts, chacune une suite d'éléments - du texte, des bulles de variable, des puces (FieldCodec.itemsOf) : un
+  // paragraphe chacune à la place d'un bloc.
+  function otherwiseItems(raw) {
+    const text = otherwiseText(raw);
+    return text ? FieldCodec.cleanLines(FieldCodec.linesOf(text)) : [];
+  }
+  // Les mêmes lignes en texte, une variable s'y écrit « #Clé » : ce que l'aperçu et l'info-bulle en citent.
+  function otherwiseLines(raw) {
+    return otherwiseItems(raw).map(FieldCodec.serializePlain);
+  }
+  // Le sinon d'une valeur dans la phrase : une seule ligne, écrite telle qu'elle est tapée, espaces des deux bouts comprises (comme l'« Avant » / « Après » d'une
+  // bulle). Les éléments de cette ligne, ou null sans sinon ; `otherwiseLine` la même en texte (« #Clé » pour une variable), '' sans sinon.
+  function otherwiseValueItems(raw) {
+    const text = otherwiseText(raw);
+    return text ? FieldCodec.itemsOf(text) : null;
+  }
+  const otherwiseLine = raw => { const items = otherwiseValueItems(raw); return items ? FieldCodec.serializePlain(items) : ''; };
+
+  // Défait chaque bloc de `root` dont la condition est remplie (le cadre disparaît, son contenu reste), retire les autres - ou les remplace par leur sinon, un
+  // paragraphe par ligne. Un bloc extérieur retiré emporte les blocs qu'il contient (son sinon seul s'écrit), un bloc extérieur défait laisse les siens à leur
+  // verdict. Les variables du sinon sont des bulles ordinaires, lues ensuite avec le reste du document (js/reader-mode.js) : elles prennent la ligne du tour du bloc
+  // (LoopRules.inheritBinding), les zones répétées étant déjà déroulées.
   function resolve(root, tableId, record) {
     return ConditionRules.resolveElements(root, SELECTOR, tableId, record, true, (block, holds) => {
-      if (holds) block.replaceWith(...Array.from(block.childNodes));
-      else LoopRules.removeAndPrune(block);
+      if (holds) { block.replaceWith(...Array.from(block.childNodes)); return; }
+      const lines = otherwiseItems(block.getAttribute('data-otherwise'));
+      if (!lines.length) { LoopRules.removeAndPrune(block); return; }
+      const paragraphs = lines.map(items => {
+        const paragraph = block.ownerDocument.createElement('p');
+        Dom.setMarkup(paragraph, FieldCodec.itemsHtml(items));
+        return paragraph;
+      });
+      LoopRules.inheritBinding(block, paragraphs);
+      block.replaceWith(...paragraphs);
     });
   }
 
@@ -121,8 +165,8 @@ const ConditionalText = (function () {
   // en remontant. Rend la position du bloc, ou -1.
   function insertAfterAncestor(tr, $pos, type, block) {
     let at = -1;
-    for (let d = $pos.depth; d >= 1 && at < 0; d--) {
-      if ($pos.node(d - 1).canReplaceWith($pos.index(d - 1) + 1, $pos.index(d - 1) + 1, type)) { at = $pos.after(d); tr.insert(at, block); }
+    for (let depth = $pos.depth; depth >= 1 && at < 0; depth--) {
+      if ($pos.node(depth - 1).canReplaceWith($pos.index(depth - 1) + 1, $pos.index(depth - 1) + 1, type)) { at = $pos.after(depth); tr.insert(at, block); }
     }
     return at;
   }
@@ -186,7 +230,56 @@ const ConditionalText = (function () {
     return true;
   }
 
+  // Un bloc qui finit son conteneur (case de tableau, colonne, élément de liste, citation, bloc emboîté) n'a rien derrière lui, et un bloc qui l'ouvre n'a rien devant lui : aucune place où
+  // poser le curseur - la flèche passe à la case voisine, un clic au-dessus, dessous ou à côté retombe dans le texte du bloc, et seule Entrée deux fois, dans un bloc qui a du texte, en sort
+  // par derrière. Au bas du document, c'est le paragraphe de fin de TipTap qui sert. Un clic dans la place libre du conteneur pose donc un paragraphe vide à côté du bloc, le curseur dedans,
+  // pour écrire la suite dans le même conteneur comme à côté d'une variable : derrière lui pour un clic sous le cadre ou à sa droite, à sa hauteur - le cadre n'a que la largeur de son
+  // texte - (`addParagraphAfter`), devant lui pour un clic au-dessus du cadre (`addParagraphBefore`) ; une seule étape d'annulation. `container` est le nœud cliqué et `containerPos` sa
+  // position (`handleClickOn` de js/editor-nodes.js:createConditionalTextNode). Faux, sans rien changer, quand le clic tombe ailleurs : dans le bloc, sur la poignée de largeur d'une
+  // colonne, du côté où le bloc n'est pas au bord du conteneur, ou quand quelque chose est déjà de ce côté du bloc.
+
+  // Le cadre du bloc qui touche le bord du conteneur (le premier enfant au début, le dernier à la fin) quand le clic est tombé sur le conteneur lui-même - pas sur un de ses enfants : le
+  // cadre du bloc, la poignée de largeur d'une colonne de tableau - et que le conteneur accepte un paragraphe à cet endroit ; `null` sinon, éditeur en lecture seule, Alt, Ctrl ou ⌘ compris.
+  function edgeFrameOfFreeClick(view, container, containerPos, event, atStart) {
+    const block = atStart ? container.firstChild : container.lastChild;
+    if (!view.editable || !block || block.type.name !== TYPE || event.altKey || event.ctrlKey || event.metaKey) return null;
+    const index = atStart ? 0 : container.childCount;
+    if (!container.canReplaceWith(index, index, view.state.schema.nodes.paragraph)) return null;
+    if (event.target !== view.domAtPos(containerPos + 1).node) return null;
+    const frame = view.nodeDOM(atStart ? containerPos + 1 : containerPos + container.nodeSize - 1 - block.nodeSize);
+    return frame instanceof Element ? frame.getBoundingClientRect() : null;
+  }
+
+  // Un paragraphe vide à `at`, le curseur dedans, en une seule transaction (une seule étape d'annulation).
+  function insertParagraphAt(view, at) {
+    const TextSelection = EditorCore.getTextSelectionClass();
+    const tr = view.state.tr.insert(at, view.state.schema.nodes.paragraph.create());
+    tr.setSelection(TextSelection.create(tr.doc, at + 1));
+    view.dispatch(tr.scrollIntoView());
+    // Suivi des modifications allumé, la bibliothèque rapporte la sélection au bout du texte inséré, hors de la case : le curseur est reposé dans le paragraphe neuf.
+    const inside = TextSelection.create(view.state.doc, at + 1);
+    if (view.state.doc.resolve(at + 1).parent.isTextblock && !view.state.selection.eq(inside)) view.dispatch(view.state.tr.setSelection(inside));
+    view.focus();
+    return true;
+  }
+
+  // Derrière le bloc qui finit le conteneur : un clic sous son cadre, ou à sa droite à sa hauteur.
+  function addParagraphAfter(view, container, containerPos, event) {
+    const box = edgeFrameOfFreeClick(view, container, containerPos, event, false);
+    if (!box || !(event.clientY > box.bottom || (event.clientX > box.right && event.clientY >= box.top))) return false;
+    return insertParagraphAt(view, containerPos + container.nodeSize - 1);
+  }
+
+  // Devant le bloc qui ouvre le conteneur : un clic au-dessus de son cadre.
+  function addParagraphBefore(view, container, containerPos, event) {
+    const box = edgeFrameOfFreeClick(view, container, containerPos, event, true);
+    if (!box || !(event.clientY < box.top)) return false;
+    return insertParagraphAt(view, containerPos + 1);
+  }
+
   // `takePending` sert aussi à la valeur conditionnelle (js/conditional-value.js) : le texte retenu par le bouton « Insérer une variable » peut être
   // entouré d'un bloc ou, dans un seul paragraphe, d'une valeur.
-  return { resolve, startFromSelection, hasPending, cancelPending, takePending, insertFromPanel, unwrap };
+  return {
+    OTHERWISE_MAX, otherwiseText, otherwiseItems, otherwiseLines, otherwiseValueItems, otherwiseLine, resolve, startFromSelection, hasPending, cancelPending, takePending, insertFromPanel, unwrap, addParagraphAfter, addParagraphBefore,
+  };
 })();

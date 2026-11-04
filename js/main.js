@@ -11,8 +11,11 @@
   // Le macro-modèle d'où le modèle à l'écran a été ouvert par le stylo de son résumé, et ce modèle : { macroId, templateId }, null sinon (cf.
   // openTemplateFromMacro).
   let macroOrigin = null;
+  // Le document d'où le modèle Grille à l'écran a été ouvert par « Ouvrir le modèle » (menu du lien d'un tableau lié, js/linked-table.js), et ce qu'il faut pour y revenir : { templateId,
+  // modelId, place (la case du curseur dans le tableau), macroOrigin (celui du document, rendu au retour) }, null sinon (cf. openLinkedModel).
+  let linkedOrigin = null;
   // Valeurs brutes (gabarits #Variable) des quatre champs, capturées juste avant de passer en Lecture : la Lecture affiche les valeurs résolues dans
-  // les mêmes <input>, sans zone en double. Non nul seulement pendant la Lecture (cf. updateEmailFieldsDisplay).
+  // les mêmes champs, sans zone en double. Non nul seulement pendant la Lecture (cf. updateEmailFieldsDisplay).
   let emailFieldsRawCache = null;
 
   const statusMsg = document.getElementById('status-msg');
@@ -28,6 +31,7 @@
   const conflictBanner = document.getElementById('autosave-conflict-banner');
   const conflictReloadBtn = document.getElementById('autosave-conflict-reload');
   const macroReturnBar = document.getElementById('macro-return-bar');
+  const linkedReturnBar = document.getElementById('linked-return-bar');
   const emailFieldsRow = document.getElementById('v2-email-fields-row');
   const emailSubjectInput = document.getElementById('v2-email-subject');
   const emailToInput = document.getElementById('v2-email-to');
@@ -49,12 +53,13 @@
     return { objet, destinataires, cc, cci };
   }
 
-  // Les quatre champs de l'email : leur clé, la même dans les réglages du modèle et dans les valeurs résolues, et leur <input>.
+  // Les quatre champs de l'email : leur clé, la même dans les réglages du modèle et dans les valeurs résolues, et leur champ (un champ texte à bulles,
+  // js/field-editor.js : l'élément se lit et s'écrit comme un <input>).
   const EMAIL_FIELDS = [['objet', emailSubjectInput], ['destinataires', emailToInput], ['cc', emailCcInput], ['cci', emailCciInput]];
   const eachEmailInput = fn => EMAIL_FIELDS.forEach(([key, input]) => { if (input) fn(input, key); });
 
   function getEmailFieldsFromInputs() {
-    // En Lecture, les <input> montrent des valeurs résolues, jamais ce qu'il faut enregistrer (Ctrl+S et l'enregistrement automatique ne regardent
+    // En Lecture, les champs montrent des valeurs résolues, jamais ce qu'il faut enregistrer (Ctrl+S et l'enregistrement automatique ne regardent
     // pas le mode) : le cache tient les gabarits bruts, dans la même forme, tant qu'il n'est pas nul.
     if (emailFieldsRawCache) return emailFieldsRawCache;
     return Object.fromEntries(EMAIL_FIELDS.map(([key, input]) => [key, input ? input.value.trim() : '']));
@@ -67,6 +72,13 @@
       emailCciToggle.classList.toggle('is-active', !emailCciInput.hidden);
       if (!emailCciInput.hidden) emailCciInput.focus();
     });
+  }
+
+  // Les cinq champs texte à bulles (nom du fichier PDF, Objet, À, Cc, Cci) : des éditeurs d'une ligne montés dans leurs éléments (js/field-editor.js),
+  // après celui du document - la barre d'une bulle réutilise ses réglages.
+  function attachFieldEditors(libs) {
+    FieldEditor.attach(pdfFilenameInput, libs);
+    eachEmailInput(input => FieldEditor.attach(input, libs));
   }
 
   function setStatus(msg, isError) {
@@ -87,7 +99,10 @@
 
   // `preloaded` : la lecture des modèles déjà lancée (init() la démarre en même temps que Grist et l'éditeur) ; sans elle, la liste est relue.
   async function refreshTemplateList(preloaded) {
-    const templates = await (preloaded || Templates.loadAll());
+    renderTemplateOptions(await (preloaded || Templates.loadAll()));
+    adoptTableName();
+  }
+  function renderTemplateOptions(templates) {
     templateSelect.innerHTML = '';
     const emptyOpt = document.createElement('option');
     emptyOpt.value = '';
@@ -96,9 +111,19 @@
     templates.forEach(t => {
       const opt = document.createElement('option');
       opt.value = t.id;
-      opt.textContent = t.estParDefaut ? (t.nom + ' ★') : t.nom;
+      // Un modèle d'un type que le widget ne sait pas ouvrir (js/templates.js, isOpenableType) reste dans la liste, grisé, sans ★ : la liste d'arbre le montre avec sa raison.
+      const unavailable = !Templates.isOpenableType(t.typeModele);
+      opt.textContent = t.estParDefaut && !unavailable ? (t.nom + ' ★') : t.nom;
+      if (unavailable) { opt.disabled = true; opt.title = Templates.unavailableText(t.typeModele); }
       templateSelect.appendChild(opt);
     });
+  }
+
+  // Un modèle d'un type que le widget ne sait pas ouvrir ne se charge jamais : la liste revient sur le modèle ouvert, qui reste à l'écran, et le coin d'état dit pourquoi l'autre ne s'ouvre pas.
+  function keepOpenTemplate(tpl) {
+    const openId = Templates.getCurrentId();
+    templateSelect.value = openId == null ? '' : openId;
+    setStatus(I18n.t('status.templateUnavailable', { name: tpl.nom, reason: Templates.unavailableText(tpl.typeModele) }), true);
   }
 
   // Reflète si le modèle chargé est le modèle par défaut. Rappelée après chaque changement de modèle et après le clic sur le bouton, jamais mise à
@@ -109,32 +134,92 @@
     const currentId = Templates.getCurrentId();
     const isDefault = Templates.isDefault(currentId);
     btn.classList.toggle('is-default', isDefault);
-    // Un modèle email ou macro ne devient jamais le modèle par défaut (planning/feature-macro-modeles.md) : l'email est une action ponctuelle sur une
-    // ligne et le macro-modèle un mode spécialisé, pas des états où le widget doit démarrer. Le bouton est grisé (même traitement que « aucun modèle
-    // chargé »), jamais masqué.
-    btn.disabled = currentId == null || !Templates.canOpenAtStart(currentTypeModele);
+    // Un modèle email ou macro ne devient jamais le ★ du document (planning/feature-macro-modeles.md) : l'email est une action ponctuelle sur une ligne
+    // et le macro-modèle un mode spécialisé, pas des états où le widget doit démarrer dans toutes les vues. Pour UNE vue, ils le peuvent (Réglages > Vue,
+    // js/view-template.js). Le bouton est grisé (même traitement que « aucun modèle chargé »), jamais masqué.
+    btn.disabled = currentId == null || !Templates.canBeDocumentDefault(currentTypeModele);
+    // Grisé, il dit pourquoi en info-bulle (cause « state » de js/lock-reasons.js : un bouton `disabled` ne reçoit pas le clic).
+    LockReasons.set(btn, 'state', btn.disabled ? I18n.t(currentId == null ? 'lock.defaultNone' : 'lock.defaultType') : '');
+  }
+
+  // Le ★ du document, posé sur le modèle `id` ou retiré s'il le porte déjà. Trois endroits y mènent : le bouton de la barre (le modèle ouvert), une ligne de
+  // la liste des modèles et une ligne d'« Organiser mes modèles » (le modèle de la ligne, ouvert ou non). Un seul à la fois (Templates.setDefault) ; un email
+  // et un macro-modèle ne le portent jamais. Le cache est à jour quand setDefault rend la main : la liste se redessine sans relire la table. Un clic pendant
+  // une écriture est ignoré : le second lot partirait d'un cache qui ne porte pas encore le premier et laisserait deux modèles marqués dans Grist.
+  let defaultTemplateWriting = false;
+  // Ce que l'écran montre quand la bibliothèque a changé sans que le modèle ouvert change : la liste redessinée (`preloaded` : la lecture déjà faite ; sans elle, la table est relue), le modèle ouvert toujours choisi (un modèle pas encore enregistré n'a pas d'identifiant : l'option « Nouveau modèle »), le bouton de la barre.
+  async function showTemplateList(preloaded) {
+    await refreshTemplateList(preloaded);
+    const openId = Templates.getCurrentId();
+    templateSelect.value = openId == null ? '' : openId;
+    syncDefaultTemplateButton();
+  }
+  // Une fois le ★ écrit, le cache est à jour : rien à relire.
+  const showDefaultTemplate = () => showTemplateList(Templates.getCached());
+
+  // Le ★ du document a passé de `from` à `to` (null : aucun modèle) : l'action de l'historique d'Annuler / Rétablir (js/action-history.js). Défaire le rend à `from`, rétablir le pose de nouveau sur `to`. Si le ★ n'est plus
+  // sur ce que l'action avait laissé - une autre personne l'a changé depuis -, rien n'est écrit : le geste de l'autre n'est pas écrasé.
+  function defaultTemplateAction(from, to) {
+    const same = (a, b) => (a == null ? b == null : b != null && String(a) === String(b));
+    async function put(target, expected) {
+      while (defaultTemplateWriting) await new Promise(resolve => setTimeout(resolve, 30));
+      if (isReadOnly()) throw new Error('lecture seule');
+      if (!same(Templates.getDefaultId(), expected)) throw ActionHistory.conflict(I18n.t('history.defaultChanged'));
+      const named = Templates.byId(target == null ? expected : target);
+      if (!named) throw ActionHistory.conflict(I18n.t('history.templateGone'));
+      defaultTemplateWriting = true;
+      try {
+        await Templates.setDefault(target);
+        await showDefaultTemplate();
+      } finally {
+        defaultTemplateWriting = false;
+      }
+      return I18n.t(target == null ? 'status.defaultTemplateCleared' : 'status.defaultTemplateSet', { name: named.nom });
+    }
+    return { undo: () => put(from, to), redo: () => put(to, from) };
+  }
+
+  async function toggleDefaultTemplate(id) {
+    const tpl = Templates.byId(id);
+    if (!tpl || isReadOnly() || defaultTemplateWriting || !Templates.canBeDocumentDefault(tpl.typeModele)) return;
+    defaultTemplateWriting = true;
+    try {
+      const wasDefault = Templates.isDefault(id);
+      const before = Templates.getDefaultId();
+      await Templates.setDefault(wasDefault ? null : id);
+      await showDefaultTemplate();
+      setStatus(I18n.t(wasDefault ? 'status.defaultTemplateCleared' : 'status.defaultTemplateSet', { name: tpl.nom }));
+      ActionHistory.add(defaultTemplateAction(before, wasDefault ? null : id));
+    } catch (e) {
+      console.error('[main] modèle par défaut non enregistré', e);
+      setStatus(I18n.t('status.defaultTemplateError'), true);
+    } finally {
+      defaultTemplateWriting = false;
+    }
   }
 
   function wireDefaultTemplateButton() {
     const btn = document.getElementById('btn-set-default-template');
     if (!btn) return;
-    btn.addEventListener('click', async () => {
-      const currentId = Templates.getCurrentId();
-      if (!currentId || isReadOnly()) return;
-      const wasDefault = Templates.isDefault(currentId);
-      await Templates.setDefault(wasDefault ? null : currentId);
-      await refreshTemplateList();
-      templateSelect.value = currentId;
-      syncDefaultTemplateButton();
-      setStatus(wasDefault ? I18n.t('status.defaultTemplateCleared') : I18n.t('status.defaultTemplateSet'));
-    });
+    btn.addEventListener('click', () => toggleDefaultTemplate(Templates.getCurrentId()));
     syncDefaultTemplateButton();
+  }
+
+  // Le texte de l'option vide (« — Nouveau modèle — ») : « Renommer » y écrit le nom validé d'un modèle pas encore enregistré, que le titre montre
+  // (js/template-tree-select.js:syncTriggerLabel). Chaque modèle chargé, vierge compris, repart de l'invite : le nom d'un modèle abandonné ne s'affiche
+  // pas sur le suivant.
+  function resetNewOptionText() {
+    const blank = templateSelect ? templateSelect.querySelector('option[value=""]') : null;
+    const invite = I18n.t('template.newOption');
+    if (blank && blank.textContent !== invite) blank.textContent = invite;
   }
 
   // Le nom du modèle et son nom de fichier PDF. Ce dernier est toujours replié au chargement, même quand un nom est déjà réglé : l'interface de base
   // reste épurée, le crayon (wirePdfFilenameToggle) le déplie à la demande, et la valeur n'est jamais perdue.
   function showTemplateNames(tpl) {
+    resetNewOptionText();
     if (templateNameInput) templateNameInput.value = tpl ? tpl.nom : '';
+    titleNameBase = tpl && tpl.nom != null ? String(tpl.nom).trim() : null;
     if (pdfFilenameInput) {
       pdfFilenameInput.value = tpl ? (tpl.nomFichierPDF || '') : '';
       pdfFilenameInput.hidden = true;
@@ -158,7 +243,9 @@
     emailFieldsRawCache = null;
     eachEmailInput(input => { input.value = ''; input.readOnly = false; });
     MainToolbar.setEmailMode(false);
+    EmailPlainText.setActive(false);
     MainToolbar.setMacroMode(true);
+    Settings.setMacroMode(true);
     MainToolbar.setGridMode(false);
     syncExportRowsForModelType();
     HeaderFooterPreview.setEmailMode(false);
@@ -167,6 +254,7 @@
     MainToolbar.syncToolbarState();
     if (btnCreateEmail) btnCreateEmail.hidden = true;
     Templates.setCurrentId(tpl ? tpl.id : null);
+    LiveEntry.changed(); // la ligne « Écriture en direct » du menu suit le modèle ouvert (js/live-entry.js)
     Comments.loadForTemplate(tpl ? tpl.id : null, tpl).catch(e => console.error('[main] chargement des commentaires impossible', e));
     MacroEditor.showSummary(tpl);
     syncEditorVisibilityForMode();
@@ -191,6 +279,15 @@
     accessGuideContainer.style.display = shown ? 'block' : 'none';
   }
 
+  // Une remise en ordre de la mise en page (colonnes gelées, tableau ramené dans la page) n'est pas une modification de la personne : l'état « à
+  // enregistrer » reste celui d'avant, sinon un simple retour au Mode édition ou un Aperçu A4 rallumé réécrirait le modèle à la passe
+  // d'enregistrement suivante (loadTemplateIntoEditor remet cet état à zéro en dernier, pour la même raison).
+  function withoutMarkingDirty(action) {
+    const wasDirty = autosaveDirty;
+    action();
+    if (!wasDirty && autosaveDirty) { autosaveDirty = false; autosaveSettingsDirty = false; updateSaveStatus(); }
+  }
+
   // Affiche l'éditeur, le résumé du macro-modèle, la carte de l'accès ou la Lecture selon le mode, l'accès du widget et le type du modèle chargé.
   // Partagé par switchMode et les deux chargeurs : un changement de modèle en pleine édition ne repasse pas par switchMode.
   function syncEditorVisibilityForMode() {
@@ -208,25 +305,34 @@
     // Le panneau Rechercher / Remplacer (js/find-replace.js) cherche dans l'éditeur : masqué, il se ferme sans lui rendre le clavier.
     if (!showEditor) { EditorCore.hideFloatingContextToolbars(); FindReplace.close({ focus: false }); }
     // Un modèle chargé pendant que l'éditeur était masqué n'a pas pu être mesuré : ses colonnes sont ajustées maintenant qu'il a une mise en page,
-    // sinon un tableau trop large pour la page ne rentrerait qu'à la prochaine frappe. Ce n'est pas une modification de la personne : l'état « à
-    // enregistrer » reste celui d'avant, sinon un simple retour au Mode édition réécrirait le modèle à la passe d'enregistrement suivante
-    // (loadTemplateIntoEditor remet cet état à zéro en dernier, pour la même raison).
+    // sinon un tableau trop large pour la page ne rentrerait qu'à la prochaine frappe.
     if (showEditor) {
-      const wasDirty = autosaveDirty;
-      Editor.refreshLayout();
-      if (!wasDirty && autosaveDirty) { autosaveDirty = false; updateSaveStatus(); }
+      withoutMarkingDirty(Editor.refreshLayout);
       // Orientation changée pendant que l'éditeur était masqué : la grille page des images en calque est recapturée maintenant qu'il a une mise en
       // page.
       recaptureStaleLayerGrids();
     }
+    // La bande des diapositives suit l'éditeur : montrée à gauche d'une présentation en Édition, cachée sinon (js/slides-entry.js).
+    SlidesEntry.changed();
   }
 
   // forcedTypeModele : seulement pour tpl = null (nouveau modèle vide, cf. startNewTemplate) ; un modèle existant porte son propre type, jamais
   // réécrit ici.
   function loadTemplateIntoEditor(tpl, forcedTypeModele) {
+    // Le point de passage de toute ouverture (liste, modèle de la vue, règle de ligne, retours, restauration...) : un modèle d'un type que le widget ne sait pas ouvrir n'entre jamais
+    // dans l'éditeur, quel que soit le chemin (garde « type inconnu », js/templates.js:isOpenableType). Avant tout le reste : rien de l'écran ne change.
+    if (tpl && !Templates.isOpenableType(tpl.typeModele)) { keepOpenTemplate(tpl); return; }
+    // Un PDF à l'écran (js/pdf-reading.js) se ferme dès qu'un modèle s'ouvre, quel que soit le chemin : le mode d'avant la lecture revient (onPdfReadingChange).
+    PdfReading.close();
+    // L'écriture en direct est celle du texte d'UN modèle : elle s'arrête avant que l'éditeur change de texte, quel que soit le chemin d'ouverture (js/live-entry.js).
+    LiveEntry.releaseEditor();
     forgetMacroOriginUnless(tpl);
+    forgetLinkedOriginUnless(tpl);
     // Le niveau de zoom gardé pour ce modèle (macro-modèle compris), avant tout calcul du facteur d'ajustement de la page (js/page-zoom.js).
     PageZoom.useTemplate(tpl);
+    // Les réglages d'export gardés pour ce modèle (type d'export, qualité du PDF, lignes exportées) : les menus se redessinent plus bas, avec son type
+    // (syncExportRowsForModelType).
+    ExportChoices.useTemplate(tpl);
     if (tpl && tpl.typeModele === 'macro') { loadMacroIntoEditor(tpl); return; }
     closeTemplateRenameEditor();
     // Sans cette sortie, changer de modèle pendant l'édition d'un en-tête ou d'un pied de page laisserait leur contenu à la place du document
@@ -241,7 +347,9 @@
     currentTypeModele = typeModele;
     loadEmailFields(tpl);
     MainToolbar.setEmailMode(currentTypeModele === 'email');
+    EmailPlainText.setActive(currentTypeModele === 'email');
     MainToolbar.setMacroMode(false);
+    Settings.setMacroMode(false);
     MainToolbar.setGridMode(GridEditor.isGridType(currentTypeModele));
     syncExportRowsForModelType();
     HeaderFooterPreview.setEmailMode(currentTypeModele === 'email');
@@ -272,6 +380,22 @@
     // En dernier, pas avant : setHTML et setHeaderFooterData déclenchent leurs propres transactions, donc `editor.on('update')` ; sans cette remise à
     // zéro, charger un modèle le marquerait « modifié » pour l'enregistrement automatique.
     resetAutosaveState(tpl);
+    // Après la remise à zéro : ce que la synchro dit sur la ligne d'état n'est pas effacé par elle, et son tableau remplacé ne rend pas le document « à enregistrer ».
+    followLinkedModels(true);
+  }
+
+  // Les tableaux liés du document ouvert suivent leur modèle (js/linked-table.js:syncOpen), d'après les modèles du cache : à l'ouverture (`loading` : les désaccords déjà dits se redisent) et
+  // à chaque lecture de l'enregistrement automatique. En Lecture, la feuille se redessine quand un tableau a changé.
+  function followLinkedModels(loading) {
+    const editor = EditorCore.getEditor();
+    const synced = loading ? LinkedTable.syncOnLoad(editor) : LinkedTable.syncOpen(editor);
+    // Les diapositives liées d'une présentation suivent leur source de même (js/slide-links.js:follow), et les copies en texte d'une diapositive, dans un document (js/slide-copies.js:follow), et les
+    // diapositives d'une page de document, dans une présentation (js/page-copies.js:follow).
+    const slides = SlideLinks.follow(editor, loading);
+    const copies = SlideCopies.follow(editor);
+    const pages = PageCopies.follow(editor);
+    if (((synced && synced.pulled.length) || (slides && slides.pulled.length) || (copies && copies.pulled.length) || (pages && pages.pulled.length)) && currentMode === 'read') renderReader();
+    return synced;
   }
 
   function typeModeleOf(tpl, forcedTypeModele) {
@@ -282,8 +406,9 @@
   // Le contenu du modèle dans l'éditeur : marges, grille des images, texte avec son suivi des modifications, en-tête et pied.
   function loadContentIntoEditor(tpl, typeModele) {
     // Marges posées avant setHTML : les zones à deux colonnes en mm calculent --layout-left dès leur première construction, à partir de
-    // PageLayout.getContentWidthMm() ; posées après, une première passe se ferait avec les marges du modèle précédent.
-    PageLayout.setMarginsMm(tpl ? tpl.marginsMm : null);
+    // PageLayout.getContentWidthMm() ; posées après, une première passe se ferait avec les marges du modèle précédent. Une présentation vierge, ou sans format à elle, prend la page
+    // d'une diapositive (js/slides-entry.js).
+    PageLayout.setMarginsMm(SlidesEntry.pageFor(typeModele, tpl ? tpl.marginsMm : null));
     layerGridsStale = false;  // les grilles d'un modèle chargé sont celles de sa propre orientation
     // Une grille n'a pas de feuille A4, mais la classe `a4-preview` ne sort des conteneurs que plus bas (syncA4PreviewForModelType), après le
     // chargement : venant d'un document, `setHTML` rognerait le tableau à la largeur d'une page (clampOverflowingTables ne mesure que sous cette
@@ -310,10 +435,15 @@
   // Le modèle devient le modèle courant ; ses commentaires se chargent en arrière-plan.
   function setCurrentTemplate(tpl) {
     Templates.setCurrentId(tpl ? tpl.id : null);
+    LiveEntry.changed(); // la ligne « Écriture en direct » du menu suit le modèle ouvert (js/live-entry.js)
     Comments.loadForTemplate(tpl ? tpl.id : null, tpl).catch(e => console.error('[main] chargement des commentaires impossible', e));
   }
 
   let nameBeforeEdit = null; // le nom du modèle quand le crayon a ouvert le champ ; null hors saisie
+  let nameSession = null; // le geste de renommage que le crayon a ouvert : son repère d'Annuler se pose à la validation (HistoryMarkers, domaine « name ») ; null hors saisie
+  // Le nom que le titre tient de la table pour le modèle ouvert : celui qu'il y a lu à l'ouverture, ou que ce widget y a écrit depuis (saveScreenAs) ; null pour un modèle pas encore enregistré. La personne a changé
+  // le nom ici quand le champ n'est plus celui-là. GFS renomme un fichier en n'écrivant que la colonne Nom de sa ligne (consigne GFS 029) : le nom d'un titre ouvert avant ne doit jamais repartir dans un lot.
+  let titleNameBase = null;
   // La liste choisit et affiche le modèle courant, le crayon fait apparaître le champ du nom à sa place : `hidden` sur le <select> réel suffit,
   // js/template-tree-select.js masque alors son déclencheur (sinon le champ s'ouvrirait à côté de la liste). Le renommage ne touche que l'affichage ;
   // il s'enregistre au prochain clic sur Enregistrer ou à l'enregistrement automatique, qui lit la saisie.
@@ -322,6 +452,14 @@
     templateNameInput.hidden = true;
     templateSelect.hidden = false;
     nameBeforeEdit = null;
+    nameSession = null;
+  }
+
+  // Le nom que la liste montre pour le modèle ouvert, tant qu'il n'est pas enregistré (même libellé que refreshTemplateList : l'étoile du modèle par défaut reste). Un modèle neuf sans nom reprend l'invite.
+  function showNameInList(name) {
+    if (!name) { resetNewOptionText(); return; }
+    const opt = templateSelect.options[templateSelect.selectedIndex];
+    if (opt) opt.textContent = Templates.isDefault(opt.value) ? name + ' ★' : name;
   }
 
   // Le nom sous lequel le modèle vient d'être enregistré : celui de la galerie, ou « nom (2) » s'il existait déjà (les messages de la galerie disent
@@ -343,7 +481,7 @@
     const id = Templates.getCurrentId();
     const stored = Templates.byId(id);
     // Pas encore enregistré (id nul : nouveau modèle, copie, galerie) : le nom est toujours vérifié.
-    const previous = id == null ? null : (nameBeforeEdit != null ? nameBeforeEdit : (stored ? stored.nom : null));
+    const previous = id == null ? null : (nameBeforeEdit != null ? nameBeforeEdit : (titleNameBase !== null ? titleNameBase : (stored ? stored.nom : null)));
     if (previous != null && Templates.sameName(typed, previous)) return typed;
     const unique = Templates.uniqueName(typed, id);
     if (unique !== typed) {
@@ -356,6 +494,21 @@
     return unique;
   }
 
+  // Le titre prend le nom que la table porte pour le modèle ouvert quand la personne n'a pas changé le sien et qu'un autre l'a renommé depuis (l'explorateur de GFS, consigne 029). Appelée quand le cache des modèles vient
+  // d'être relu : à chaque passage de l'enregistrement automatique qui lit la table, et à chaque rafraîchissement de la liste. Jamais pendant la saisie du crayon, ni sur un nom que la personne a tapé : c'est le sien
+  // qui part alors à l'enregistrement.
+  function adoptTableName() {
+    if (!templateNameInput || !templateSelect || titleNameBase === null || nameBeforeEdit !== null) return;
+    const id = Templates.getCurrentId();
+    const stored = id == null ? null : Templates.byId(id);
+    const name = stored && stored.nom != null ? String(stored.nom).trim() : '';
+    if (!name || name === titleNameBase || templateNameInput.value.trim() !== titleNameBase) return;
+    templateNameInput.value = name;
+    titleNameBase = name;
+    const option = templateSelect.options[templateSelect.selectedIndex];
+    if (option && option.value !== '' && String(option.value) === String(id)) option.textContent = Templates.isDefault(id) ? name + ' ★' : name;
+  }
+
   function wireTemplateRename() {
     const renameBtn = document.getElementById('btn-rename-template');
     if (!renameBtn || !templateNameInput || !templateSelect) return;
@@ -365,25 +518,58 @@
       const shown = document.querySelector('#v2-title-cluster .tts-wrap');
       if (shown && shown.offsetWidth) templateNameInput.style.width = Math.max(120, shown.offsetWidth) + 'px';
       nameBeforeEdit = templateNameInput.value.trim();
+      nameSession = HistoryMarkers.begin('name');
       templateNameInput.hidden = false;
       templateSelect.hidden = true;
       templateNameInput.focus();
       templateNameInput.select();
     }
+    // Le nom d'avant l'ouverture du crayon revient dans le champ. Un passage de l'enregistrement automatique a pu écrire en route un nom tapé à moitié
+    // (cf. settleTemplateName) : le suivant réécrit celui-ci.
+    function restoreNameBeforeEdit() {
+      templateNameInput.value = nameBeforeEdit;
+      markAutosaveDirty();
+    }
     function commitAndClose() {
-      if (nameBeforeEdit !== null) settleTemplateName(); // seulement une saisie ouverte par le crayon, pas un blur parasite
-      const opt = templateSelect.options[templateSelect.selectedIndex];
-      if (opt && templateNameInput.value.trim()) {
-        // Même libellé que refreshTemplateList : l'étoile du modèle par défaut reste, la liste le montre avec le nouveau nom jusqu'à
-        // l'enregistrement.
-        const isDefault = Templates.isDefault(opt.value);
-        opt.textContent = isDefault ? (templateNameInput.value.trim() + ' ★') : templateNameInput.value.trim();
+      if (nameBeforeEdit !== null) { // seulement une saisie ouverte par le crayon, pas un blur parasite
+        if (!templateNameInput.value.trim() && nameBeforeEdit) {
+          // Un nom effacé n'est pas un nom : le titre garderait l'ancien au-dessus d'un champ vide, et ni l'enregistrement automatique ni Enregistrer
+          // n'écrivent un modèle sans nom - plus rien ne serait gardé, sans un mot. Le champ reprend le nom d'avant et le coin d'état le dit, comme
+          // pour un nom déjà pris : seulement quand l'enregistrement automatique est actif (coupé, « Modifications non enregistrées. » protège ce
+          // qui n'est écrit nulle part). Un modèle neuf jamais nommé n'a rien à reprendre.
+          restoreNameBeforeEdit();
+          if (isAutosaveEnabled()) setStatus(I18n.t('status.nameKept', { name: nameBeforeEdit }));
+        } else settleTemplateName();
       }
+      // La liste montre le modèle avec le nouveau nom jusqu'à l'enregistrement.
+      if (templateNameInput.value.trim()) showNameInList(templateNameInput.value.trim());
+      // Le renommage fini laisse son repère dans l'historique d'Annuler (rien si le nom n'a pas changé : Échap, un nom vide repris).
+      if (nameSession) nameSession.commit({ alone: true });
       closeTemplateRenameEditor();
     }
+    // Annuler et Rétablir (js/history-markers.js) rendent le nom d'avant ou d'après la validation. Si le modèle a été renommé depuis (l'explorateur de GFS, « Enregistrer sous » sous un autre nom), le champ ne montre plus
+    // celui que le geste avait laissé : rien n'est changé, le coin d'état le dit.
+    HistoryMarkers.define('name', {
+      read: () => ({ name: templateNameInput.value.trim() }),
+      write(next, prev) {
+        if (templateNameInput.value.trim() !== prev.name) { setStatus(I18n.t('history.nameChanged'), true); return; }
+        templateNameInput.value = next.name;
+        showNameInList(next.name);
+        markAutosaveDirty();
+      },
+    });
     renameBtn.addEventListener('click', () => { templateNameInput.hidden ? openEditor() : commitAndClose(); });
     templateNameInput.addEventListener('blur', commitAndClose);
-    templateNameInput.addEventListener('keydown', e => { if (e.key === 'Enter') templateNameInput.blur(); });
+    templateNameInput.addEventListener('keydown', e => {
+      if (e.key === 'Enter') templateNameInput.blur();
+      // Échap abandonne la frappe : le nom d'avant revient et le champ se referme. Pas pendant une composition de texte (accent mort, saisie asiatique) :
+      // Échap n'y annule que la composition.
+      else if (e.key === 'Escape' && !e.isComposing && nameBeforeEdit !== null) {
+        e.preventDefault();
+        if (templateNameInput.value.trim() !== nameBeforeEdit) restoreNameBeforeEdit();
+        templateNameInput.blur();
+      }
+    });
   }
 
   // Quitter le modèle courant avec des modifications en attente
@@ -405,15 +591,22 @@
     const name = templateNameInput ? templateNameInput.value.trim() : '';
     const choices = [{ value: 'discard', label: I18n.t('dialog.unsaved.discard') }];
     if (name) choices.push({ value: 'save', label: I18n.t('common.save'), primary: true });
-    leavePromptOpen = true;
+    leavePromptCount++; // plusieurs demandes peuvent se chevaucher (un deuxième clic pendant l'attente ci-dessous) : le drapeau ne retombe qu'avec la dernière
+    leavePromptOpen = true; // plus aucun passage de l'enregistrement automatique ne part
     let choice;
     try {
+      // Un passage déjà parti finit d'écrire pendant la question, que le drapeau ci-dessus n'arrête pas (il n'est regardé qu'au départ d'un passage) : « Abandonner » ne laisserait rien à
+      // abandonner. Il est donc attendu d'abord ; s'il a tout enregistré, il n'y a plus rien à demander.
+      if (autosaveTickPending) {
+        await whenAutosaveTickDone(LEAVE_PROMPT_TICK_WAIT_MS);
+        if (!hasEditsToConfirmBeforeLeaving()) return true;
+      }
       choice = await Dialogs.choose({
         title: I18n.t('dialog.unsaved.title'),
         message: name ? I18n.t('dialog.unsaved.message', { name }) : I18n.t('dialog.unsaved.messageNoName'),
         choices,
       });
-    } finally { leavePromptOpen = false; }
+    } finally { if (--leavePromptCount === 0) leavePromptOpen = false; }
     if (choice === 'discard') return true;
     if (choice === 'save') {
       await onSave();
@@ -422,6 +615,35 @@
     // Annuler : la personne reprend où elle en était.
     refocusEditorIfLost();
     return false;
+  }
+
+  // GFS laisse la place à une autre app ou au fichier d'une autre app (appel `fermer { raison }`, consigne GFS 047), ou donne à l'app un autre de ses fichiers (appel `ouvrir`) : ce qui attend d'être enregistré l'est AVANT de partir,
+  // sans question quand l'enregistrement automatique est allumé - la personne a dit, en l'allumant, qu'elle veut que l'app enregistre (« j'enregistre et je pars »). La question « Enregistrer / Abandonner / Annuler »
+  // (askBeforeLeaving) ne reste que pour ce que l'app ne peut pas décider seule : l'enregistrement automatique coupé, un modèle sans nom (il ne peut pas être enregistré), un modèle changé ailleurs (l'enregistrer serait
+  // trancher à la place de la personne : seul son « Enregistrer » le fait) et une écriture qui échoue. Les sorties de l'app elle-même (changer de modèle dans la liste, « Nouveau »...) gardent leur question, enregistrement
+  // automatique allumé ou non : ce choix est le leur. Rien n'est dit « fini » pendant qu'une écriture court : le passage de l'enregistrement automatique en route, un enregistrement fait à la main et une restauration de version
+  // finissent d'abord, et aucun nouveau passage ne part pendant ce temps (leavePromptOpen, comme pendant la question).
+  // Contrairement à la question de départ (LEAVE_PROMPT_TICK_WAIT_MS : la personne attend une fenêtre), l'attente va jusqu'au garde-fou d'un passage : GFS a sa propre fenêtre « ne répond pas » au bout de 10 secondes, et un
+  // Grist lent (la première écriture d'un document crée des tables) ne doit pas faire écrire deux fois en même temps.
+  async function saveBeforeGfsLeaves() {
+    leavePromptCount++;
+    leavePromptOpen = true;
+    try {
+      const giveUpAt = Date.now() + AUTOSAVE_TICK_WATCHDOG_MS;
+      await whenAutosaveTickDone();
+      while (restoringVersion && Date.now() < giveUpAt) await new Promise(resolve => setTimeout(resolve, 40));
+      while (saveIsRunning() || saveWaiting) await (saveWaiting || whenSaveFinished());
+      if (!hasEditsToConfirmBeforeLeaving()) return;
+      const named = !!(templateNameInput && templateNameInput.value.trim());
+      if (isAutosaveEnabled() && named && !autosaveConflictActive && !restoringVersion) await onSave();
+    } finally { if (--leavePromptCount === 0) leavePromptOpen = false; }
+  }
+
+  // L'appel `fermer` de GFS (js/gfs-open.js) : vrai, l'app peut laisser la place - rien n'attendait, tout est enregistré, ou la personne a répondu « Abandonner » ; faux, la personne reste (« Annuler », Échap, un enregistrement
+  // refusé : tout reste en place). GFS ne détruit le cadre qu'après le vrai.
+  async function leaveForGfs() {
+    await saveBeforeGfsLeaves();
+    return !hasEditsToConfirmBeforeLeaving() || askBeforeLeaving();
   }
 
   // Une fenêtre ou une liste abandonnée (« Annuler », la liste des feuilles d'un Excel) : la personne reprend où elle en était. Ouverte depuis une
@@ -435,6 +657,9 @@
 
   async function onTemplateSelectChange() {
     const id = templateSelect.value;
+    // Avant la question « Enregistrer / Abandonner / Annuler » : un modèle qui ne s'ouvrira pas ne doit pas faire quitter celui qui est à l'écran.
+    const chosen = id ? Templates.byId(id) : null;
+    if (chosen && !Templates.isOpenableType(chosen.typeModele)) { keepOpenTemplate(chosen); return; }
     if (hasEditsToConfirmBeforeLeaving()) {
       // La liste referme son menu et rend le focus à son bouton juste après cet évènement : la question vient après, sinon ce focus passerait
       // derrière la fenêtre.
@@ -456,7 +681,7 @@
   // question « Enregistrer / Abandonner / Annuler » quand des modifications attendent. true : ce modèle est ouvert ; false : il ne l'est pas
   // (introuvable, ou « Annuler » : la personne garde le sien).
   async function openTemplateForRow(id) {
-    if (!Templates.byId(id) || Templates.isCurrent(id)) return false;
+    if (!Templates.openableById(id) || Templates.isCurrent(id)) return false;
     templateSelect.value = String(id);
     await onTemplateSelectChange();
     return Templates.isCurrent(id);
@@ -472,14 +697,70 @@
     loadTemplateIntoEditor(null, typeModele);
   }
 
+  // true : le modèle vierge est à l'écran ; false : rien n'a changé (lecture seule, ou « Annuler » à la question d'enregistrement). Les boutons ne lisent pas la valeur, GFS oui (openBlankOfType).
   async function startNewTemplate(typeModele) {
-    if (isReadOnly()) return;
-    if (hasEditsToConfirmBeforeLeaving() && !(await askBeforeLeaving())) return;
+    if (isReadOnly()) return false;
+    if (hasEditsToConfirmBeforeLeaving() && !(await askBeforeLeaving())) return false;
     startBlankDocument(typeModele);
+    return true;
   }
   const onNew = () => startNewTemplate();
   const onNewEmail = () => startNewTemplate('email');
   const onNewGrid = () => startNewTemplate(GridEditor.TYPE);
+  // « Nouvelle présentation » : sans l'extension « diapositives » de GFS, la ligne est grisée et son clic explique (js/slides-entry.js).
+  const onNewPresentation = () => SlidesEntry.startNew();
+
+  // « Nouveau » demandé par GFS (js/gfs-open.js, consigne GFS 014) : un modèle vierge du type demandé, par le chemin du bouton « Nouveau » du même type - donc avec sa question « Enregistrer / Abandonner / Annuler »
+  // quand des modifications attendent. true : il est à l'écran à la fin (macro-modèle : son écran de composition, vide, est ouvert) ; false : la personne a annulé, le document est en lecture seule, ou ce type ne
+  // s'ouvre pas ici.
+  async function openBlankOfType(type) {
+    switch (type) {
+      case 'document': return onNew();
+      case 'email': return onNewEmail();
+      case GridEditor.TYPE: return onNewGrid();
+      case 'macro': return onNewMacro();
+      case SlidesEntry.TYPE: return onNewPresentation();
+      default: return false;
+    }
+  }
+
+  // « Nouveau > Importer » demandé par GFS (js/gfs-open.js, consigne GFS 035) : GFS a ouvert le sélecteur de fichier lui-même (le cadre isolé de l'app n'a pas le geste de la personne) et donne le fichier choisi, que
+  // `valeur` nomme : `excel` (une grille), `markdown` (un document), `powerpoint` (une présentation, l'extension « diapositives » étant active). Il est lu par le chemin de la ligne du même nom du menu « + » - mêmes
+  // lectures, mêmes refus et mêmes phrases du coin d'état, même question d'enregistrement après une lecture réussie, même résultat : un modèle sans nom et pas encore enregistré, rien d'écrit avant son premier
+  // « Enregistrer » - sans le sélecteur. true : le modèle importé est à l'écran ; false : le document est en lecture seule, la valeur est inconnue, le fichier est refusé, ou la personne a annulé.
+  async function importFileFromGfs(kind, file) {
+    if (isReadOnly()) return false;
+    switch (kind) {
+      case 'excel': return importXlsxFile(file);
+      case 'markdown': return importMdFile(file);
+      case 'powerpoint': return importPptxFile(file);
+      default: return false;
+    }
+  }
+
+  // « Lire » un PDF demandé par GFS (js/gfs-open.js, consigne GFS 040 ; js/pdf-reading.js, extension « lecture-pdf ») : GFS donne le PDF qu'il garde et la Lecture le montre. Le PDF est lu d'abord (un PDF illisible ne coûte rien) ;
+  // ensuite il quitte le modèle ouvert par le chemin d'un autre modèle - « Enregistrer / Abandonner / Annuler » s'il est modifié, puis un document vierge en dessous (rien d'écrit, comme « Nouveau ») - et le mode d'avant la
+  // lecture est gardé pour être rendu quand un modèle s'ouvre. Un compte en lecture seule lit un PDF comme il lit un modèle. true : on peut continuer ; false : la personne reste (« Annuler »).
+  let pdfReturnMode = null;
+  async function leaveForPdf() {
+    if (hasEditsToConfirmBeforeLeaving() && !(await askBeforeLeaving())) return false;
+    pdfReturnMode = currentMode;
+    startBlankDocument();
+    return true;
+  }
+  // Le PDF arrive ou part : grisés, feuille de la Lecture, et à son départ le mode d'avant (l'édition) revient AVANT que le modèle qui le ferme se pose (loadTemplateIntoEditor appelle PdfReading.close en tête) : ce modèle
+  // se charge dans l'éditeur montré, et ne se dessine pas deux fois dans la Lecture. Resté en Lecture avant le PDF, on y reste : le modèle posé s'y dessine (la fin de loadTemplateIntoEditor).
+  function onPdfReadingChange(active) {
+    applyPdfLocks();
+    applyFormattingBarLock();
+    ReaderMode.lend(active);
+    const toggle = document.getElementById('v2-toggle-a4-preview');
+    readerContainer.classList.toggle('a4-preview', active || (!!toggle && toggle.checked && !GridEditor.isGridType(currentTypeModele)));
+    if (active) { refreshPageFitZoom(); return; }
+    const back = pdfReturnMode;
+    pdfReturnMode = null;
+    if (back === 'edit' && currentMode === 'read') switchMode('edit');
+  }
 
   // Import d'un classeur Excel (js/grid-xlsx-import.js). Le sélecteur de fichier doit s'ouvrir dans le clic ; le classeur est lu ensuite et, s'il a
   // plusieurs feuilles visibles, une liste avec recherche demande laquelle devient la grille. On ne demande de quitter le modèle courant (s'il a des
@@ -488,13 +769,18 @@
   const XLSX_IMPORT_ERRORS = { oldFormat: 'status.xlsxImportOldFormat', unreadable: 'status.xlsxImportUnreadable', empty: 'status.xlsxImportEmpty', tooBig: 'status.xlsxImportTooBig' };
   function onImportXlsx() {
     if (isReadOnly()) return;
-    GridXlsxImport.chooseFile(async (file) => {
-      setStatus(I18n.t('status.xlsxImporting'));
-      const imported = await readXlsxForImport(file);
-      if (!imported) return;
-      if (hasEditsToConfirmBeforeLeaving() && !(await askBeforeLeaving())) { updateSaveStatus(); return; }
-      openImportedGrid(imported);
-    });
+    GridXlsxImport.chooseFile(importXlsxFile);
+  }
+
+  // Le classeur choisi, par le sélecteur du menu « + » ou donné par GFS (importFileFromGfs). true : la grille importée est à l'écran ; false : le classeur est refusé (l'erreur est dite dans le coin d'état), la liste
+  // des feuilles a été fermée ou la personne a répondu « Annuler » à la question d'enregistrement : rien n'a changé.
+  async function importXlsxFile(file) {
+    setStatus(I18n.t('status.xlsxImporting'));
+    const imported = await readXlsxForImport(file);
+    if (!imported) return false;
+    if (hasEditsToConfirmBeforeLeaving() && !(await askBeforeLeaving())) { updateSaveStatus(); return false; }
+    openImportedGrid(imported);
+    return true;
   }
 
   // Lit le classeur et construit la grille. null : la liste des feuilles a été fermée sans choix, ou le classeur est refusé (l'erreur est dite
@@ -537,11 +823,136 @@
       : I18n.t('status.xlsxImported', counts));
   }
 
-  // Un nouveau macro-modèle n'a rien à charger avant d'avoir été composé et enregistré : contrairement aux autres types, il ne vide pas l'éditeur, il
-  // ouvre l'écran de composition, vide.
-  function onNewMacro() {
+  // Import d'un fichier Markdown (js/markdown-import.js), « Importer un Markdown… » du menu « + », sur le modèle de l'import d'un classeur : le sélecteur s'ouvre dans
+  // le clic, le fichier est lu et converti ensuite, et ce n'est qu'après (un fichier refusé ne coûte rien) qu'on demande de quitter le modèle courant s'il a des
+  // modifications non enregistrées. Le résultat est un nouveau document, sans nom et pas encore enregistré, comme « Nouveau document » ; l'en-tête et le pied de page
+  // que le fichier porte (ceux que l'export Markdown écrit) deviennent ceux du document.
+  const MD_IMPORT_ACCEPT = '.md,.markdown,.mdown,.mkd,.txt,text/markdown,text/plain';
+  const MD_IMPORT_ERRORS = { unreadable: 'status.mdImportUnreadable', empty: 'status.mdImportEmpty', tooBig: 'status.mdImportTooBig', library: 'status.mdImportLibrary' };
+  function onImportMd() {
     if (isReadOnly()) return;
+    GridXlsxImport.chooseFile(importMdFile, MD_IMPORT_ACCEPT);
+  }
+
+  // Le fichier Markdown choisi, par le sélecteur du menu « + » ou donné par GFS (importFileFromGfs). true : le document importé est à l'écran ; false : le fichier est refusé (l'erreur est dite dans le coin d'état) ou la
+  // personne a répondu « Annuler » à la question d'enregistrement : rien n'a changé.
+  async function importMdFile(file) {
+    setStatus(I18n.t('status.mdImporting'));
+    const imported = await readMdForImport(file);
+    if (!imported) return false;
+    if (hasEditsToConfirmBeforeLeaving()) {
+      updateSaveStatus(); // la lecture est finie : « Lecture… » serait faux pendant la question
+      if (!(await askBeforeLeaving())) return false;
+    }
+    openImportedDocument(imported);
+    return true;
+  }
+
+  // Lit le fichier et construit le document. null : le fichier est refusé (l'erreur est dite dans le coin d'état) ; rien d'autre ne se passe.
+  async function readMdForImport(file) {
+    try {
+      return await MarkdownImport.fromFile(file);
+    } catch (e) {
+      reportMdImportError(e);
+      return null;
+    }
+  }
+
+  function reportMdImportError(e) {
+    console.warn('[main] import Markdown impossible', e); // une erreur de la personne (mauvais fichier) ou du réseau, pas du widget
+    const megabytes = bytes => (Math.ceil(bytes / 104857.6) / 10).toLocaleString(I18n.getLang()); // vers le haut : « 10,1 Mo (au plus 10 Mo) », jamais « 10 Mo (au plus 10 Mo) »
+    const key = MD_IMPORT_ERRORS[e && e.code] || MD_IMPORT_ERRORS.unreadable;
+    setStatus(I18n.t(key, { size: e && e.size ? megabytes(e.size) : '', max: e && e.max ? megabytes(e.max) : '' }), true);
+  }
+
+  function openImportedDocument(imported) {
+    // Un nouveau document, sans nom et pas encore enregistré, comme « Nouveau document ».
+    templateSelect.value = '';
+    loadTemplateIntoEditor({ id: null, nom: '', contenu: imported.html, typeModele: 'document', marginsMm: null, suiviModifications: null, headerFooter: imported.headerFooter }, 'document');
+    markAutosaveDirty();
+    setStatus(mdImportedStatus(imported));
+  }
+
+  // Ce que le coin d'état dit d'un Markdown importé : les images locales qui n'ont pas été reprises et les {{Table.Colonne}} qui ne sont pas des variables de ce document
+  // (laissées en texte), en une phrase quand il y a les deux (le coin d'état coupe ce qui dépasse, à droite).
+  function mdImportedStatus(imported) {
+    const images = imported.skippedImages || 0;
+    const variables = imported.unknownVariables || 0;
+    if (images && variables) return I18n.t('status.mdImportedImagesVariables', { images, variables });
+    if (variables) return I18n.t('status.mdImportedVariables', { n: variables });
+    return images ? I18n.t('status.mdImportedImages', { n: images }) : I18n.t('status.mdImported');
+  }
+
+  // Import d'un fichier PowerPoint (js/pptx-import.js), « Importer un PowerPoint… » du menu « + », sur le modèle des deux imports d'au-dessus : le sélecteur s'ouvre dans le clic, le fichier est lu ensuite, et ce n'est
+  // qu'après (un fichier refusé ne coûte rien) qu'on demande de quitter le modèle courant s'il a des modifications non enregistrées. Le résultat est une nouvelle présentation, sans nom et pas encore enregistrée, comme
+  // « Nouvelle présentation », avec la page des diapositives du fichier ; ce que l'éditeur n'a pas pu reprendre tel quel est dit dans une fenêtre. Une présentation est l'extension « diapositives » : sans elle, la ligne est
+  // grisée et son clic explique, comme celui de « Nouvelle présentation ».
+  const PPTX_IMPORT_ACCEPT = '.pptx,.ppsx,.potx,application/vnd.openxmlformats-officedocument.presentationml.presentation';
+  const PPTX_IMPORT_ERRORS = { unreadable: 'status.pptxImportUnreadable', legacy: 'status.pptxImportLegacy', empty: 'status.pptxImportEmpty', tooBig: 'status.pptxImportTooBig', library: 'status.pptxImportLibrary' };
+  function onImportPptx() {
+    if (isReadOnly()) return;
+    if (!SlidesEntry.isAvailable()) { SlidesEntry.ensureFor(SlidesEntry.TYPE); return; }
+    GridXlsxImport.chooseFile(importPptxFile, PPTX_IMPORT_ACCEPT);
+  }
+
+  // Le fichier PowerPoint choisi, par le sélecteur du menu « + » ou donné par GFS (importFileFromGfs). true : la présentation importée est à l'écran (et le rapport de ce qui n'a pas été repris, s'il y en a un, a été
+  // lu) ; false : l'extension « diapositives » manque ou ne se charge pas (la fenêtre qui l'explique s'est ouverte, comme au clic de la ligne grisée), le fichier est refusé (l'erreur est dite dans le coin d'état) ou la
+  // personne a répondu « Annuler » à la question d'enregistrement : rien n'a changé.
+  async function importPptxFile(file) {
+    // Le code de l'extension (la bande des diapositives) arrive avant que la présentation s'ouvre : un échec le dit, et rien n'a changé.
+    if (!(await SlidesEntry.ensureFor(SlidesEntry.TYPE))) return false;
+    setStatus(I18n.t('status.pptxImporting'));
+    const imported = await readPptxForImport(file);
+    if (!imported) return false;
+    if (hasEditsToConfirmBeforeLeaving()) {
+      updateSaveStatus(); // la lecture est finie : « Lecture… » serait faux pendant la question
+      if (!(await askBeforeLeaving())) return false;
+    }
+    openImportedPresentation(imported);
+    await tellPptxImportReport(imported.report);
+    return true;
+  }
+
+  // Lit le fichier et construit la présentation. null : le fichier est refusé (l'erreur est dite dans le coin d'état) ; rien d'autre ne se passe.
+  async function readPptxForImport(file) {
+    try {
+      await ExportEngines.ensure('pptxImport').catch((e) => { throw Object.assign(new Error('moteur d’import indisponible'), { code: 'library', cause: e }); });
+      return await PptxImport.fromFile(file);
+    } catch (e) {
+      reportPptxImportError(e);
+      return null;
+    }
+  }
+
+  function reportPptxImportError(e) {
+    console.warn('[main] import PowerPoint impossible', e); // une erreur de la personne (mauvais fichier) ou du réseau, pas du widget
+    const megabytes = bytes => (Math.ceil(bytes / 104857.6) / 10).toLocaleString(I18n.getLang()); // vers le haut : « 150,1 Mo (au plus 150 Mo) », jamais « 150 Mo (au plus 150 Mo) »
+    const key = PPTX_IMPORT_ERRORS[e && e.code] || PPTX_IMPORT_ERRORS.unreadable;
+    setStatus(I18n.t(key, { size: e && e.size ? megabytes(e.size) : '', max: e && e.max ? megabytes(e.max) : '' }), true);
+  }
+
+  function openImportedPresentation(imported) {
+    // Une nouvelle présentation, sans nom et pas encore enregistrée, comme « Nouvelle présentation » ; sa page est celle des diapositives du fichier (taille, sens, marges).
+    templateSelect.value = '';
+    loadTemplateIntoEditor({ id: null, nom: '', contenu: imported.html, typeModele: SlidesEntry.TYPE, marginsMm: imported.page, suiviModifications: null, headerFooter: null }, SlidesEntry.TYPE);
+    markAutosaveDirty();
+    setStatus(I18n.t('status.pptxImported', { n: imported.slideCount }));
+  }
+
+  // Ce que l'import n'a pas repris tel quel, une ligne par genre d'objet ; rien à dire quand tout est arrivé.
+  async function tellPptxImportReport(report) {
+    if (!report || !report.length) return;
+    const lines = report.map(item => '• ' + I18n.t('pptx.import.report.' + item.key, { n: item.n, max: PptxImport.MAX_SLIDES }));
+    await Dialogs.notice({ title: I18n.t('pptx.import.reportTitle'), message: I18n.t('pptx.import.reportIntro') + '\n' + lines.join('\n') });
+    refocusEditorIfLost();
+  }
+
+  // Un nouveau macro-modèle n'a rien à charger avant d'avoir été composé et enregistré : contrairement aux autres types, il ne vide pas l'éditeur, il
+  // ouvre l'écran de composition, vide. true : cet écran est ouvert (GFS le demande, openBlankOfType) ; false : le document est en lecture seule.
+  function onNewMacro() {
+    if (isReadOnly()) return false;
     MacroEditor.openModal(null);
+    return true;
   }
 
   // Rappel de MacroEditor après « Enregistrer » dans sa fenêtre (nouveau macro-modèle ou modification) : comme la fin d'onSave, il relit la liste,
@@ -564,6 +975,8 @@
   // coin d'état le dit, dans la langue de l'interface.
   function onMacroModelVisibility({ name, hidden, ok }) {
     if (!ok) { setStatus(I18n.t('status.saveError'), true); return; }
+    // Annuler ou Rétablir peut rendre une composition où plusieurs œils changent à la fois : aucun nom à dire.
+    if (name == null) return;
     setStatus(I18n.t(hidden ? 'status.macroModelHidden' : 'status.macroModelShown', { name }));
   }
 
@@ -573,14 +986,19 @@
   // templateId } est remis à null dès qu'un autre modèle se charge (liste, « + », galerie, suppression : forgetMacroOriginUnless, en tête de
   // loadTemplateIntoEditor), jamais quand le même est rechargé (conflit d'enregistrement automatique).
 
+  // Un bandeau « Revenir à… » (macro-modèle ou document) : montré tant que le modèle d'origine existe, avec son nom dans la phrase. Le nom d'un modèle long est coupé par « … » : la phrase se lit en
+  // entier au survol.
+  function showReturnBar(bar, textId, textKey, origin) {
+    bar.hidden = !origin;
+    const text = document.getElementById(textId);
+    if (!text) return;
+    text.textContent = origin ? I18n.t(textKey, { name: origin.nom }) : '';
+    text.title = text.textContent;
+  }
+
   function syncMacroReturnBar() {
     if (!macroReturnBar) return;
-    const macro = macroOrigin && Templates.byId(macroOrigin.macroId);
-    macroReturnBar.hidden = !macro;
-    const text = document.getElementById('macro-return-text');
-    if (!text) return;
-    text.textContent = macro ? I18n.t('macro.return.text', { name: macro.nom }) : '';
-    text.title = text.textContent; // le nom d'un macro-modèle long est coupé par « … » : la phrase se lit en entier au survol
+    showReturnBar(macroReturnBar, 'macro-return-text', 'macro.return.text', macroOrigin && Templates.byId(macroOrigin.macroId));
   }
 
   function forgetMacroOriginUnless(tpl) {
@@ -601,7 +1019,7 @@
     // Un autre modèle s'est chargé pendant la relecture (deux clics de suite) : celui-là gagne. Modèle disparu : le macro-modèle reste, la liste le
     // montre de nouveau.
     if (!Templates.isCurrent(macroId)) return;
-    if (!tpl || tpl.typeModele === 'macro') { templateSelect.value = macroId; return; }
+    if (!tpl || tpl.typeModele === 'macro' || !Templates.isOpenableType(tpl.typeModele)) { templateSelect.value = macroId; return; }
     templateSelect.value = tpl.id;
     loadTemplateIntoEditor(tpl);
     macroOrigin = { macroId, templateId: tpl.id };
@@ -629,7 +1047,64 @@
   function wireMacroReturn() {
     const button = document.getElementById('btn-macro-return');
     if (button) button.addEventListener('click', returnToMacro);
-    I18n.onChange(syncMacroReturnBar); // le nom du macro-modèle est dans la phrase du bandeau
+  }
+
+  // Ouvrir le modèle d'un tableau lié, et revenir au document
+  // « Ouvrir le modèle » du menu du lien d'un tableau lié (js/linked-table.js:open) ouvre ce modèle Grille dans l'éditeur comme un choix de la liste ; tant qu'il est à l'écran, le bandeau
+  // « Revenir au document » (#linked-return-bar) ramène au document d'origine, le curseur dans la même case du tableau. linkedOrigin est remis à null dès qu'un autre modèle se charge
+  // (liste, « + », galerie, suppression, copie : forgetLinkedOriginUnless), jamais quand le même est rechargé (conflit d'enregistrement automatique).
+
+  function syncLinkedReturnBar() {
+    if (!linkedReturnBar) return;
+    showReturnBar(linkedReturnBar, 'linked-return-text', 'linkedTable.return.text', linkedOrigin && Templates.byId(linkedOrigin.templateId));
+  }
+
+  function forgetLinkedOriginUnless(tpl) {
+    if (!linkedOrigin || (tpl && Templates.isCurrent(tpl.id))) return;
+    linkedOrigin = null;
+    syncLinkedReturnBar();
+  }
+
+  // Le même chemin qu'un choix du modèle dans la liste : la question « Modifications non enregistrées » est posée au document qui en a (« Annuler » le garde à l'écran, tel quel). La
+  // liste et le cache des modèles sont relus d'abord, comme pour un modèle d'un macro-modèle : un modèle créé ailleurs depuis le dernier passage n'a pas encore sa ligne dans le <select>.
+  // Un document jamais enregistré, abandonné à la question, n'a plus où revenir : pas de bandeau.
+  async function openLinkedModel({ id, name, place }) {
+    if (hasEditsToConfirmBeforeLeaving() && !(await askBeforeLeaving())) return;
+    const templateId = Templates.getCurrentId();
+    const macro = macroOrigin;
+    const epoch = autosaveEpoch;
+    try { await refreshTemplateList(); } catch (e) { console.warn('[main] relecture des modèles impossible', e); }
+    // Un autre modèle s'est chargé pendant la relecture (un choix dans la liste) : celui-là gagne.
+    if (epoch !== autosaveEpoch) return;
+    const model = Templates.byId(id);
+    if (!model || model.typeModele !== GridEditor.TYPE) { setStatus(I18n.t('linkedTable.gone', { name }), true); return; }
+    templateSelect.value = model.id;
+    loadTemplateIntoEditor(model);
+    linkedOrigin = templateId == null ? null : { templateId, modelId: model.id, place, macroOrigin: macro };
+    syncLinkedReturnBar();
+  }
+
+  // Même chemin que la liste aussi pour le retour : la question « Modifications non enregistrées » est posée si le modèle en a (« Annuler » le garde, et le bandeau aussi). Le cache des
+  // modèles est relu d'abord : ce que le modèle vient de recevoir est ce que le document lit. Le document revient avec son bandeau de macro-modèle s'il en avait un, le curseur dans la
+  // case du tableau qu'on avait quittée. Le document suit son modèle à son ouverture (followLinkedModels) : un tableau qui diffère encore du modèle - modifié ici, ou des deux côtés - le dit sur la ligne d'état.
+  async function returnFromLinkedModel() {
+    const origin = linkedOrigin;
+    if (!origin) return;
+    try { await Templates.loadAll(); } catch (e) { console.error('[main] relecture des modèles impossible', e); }
+    // Document supprimé depuis (par quelqu'un d'autre) : le modèle reste à l'écran, le bandeau s'efface.
+    if (!Templates.byId(origin.templateId)) { syncLinkedReturnBar(); return; }
+    templateSelect.value = origin.templateId;
+    await onTemplateSelectChange();
+    if (!Templates.isCurrent(origin.templateId)) return;
+    if (origin.macroOrigin && Templates.byId(origin.macroOrigin.macroId)) { macroOrigin = origin.macroOrigin; syncMacroReturnBar(); }
+    if (currentMode !== 'edit') return;
+    const shown = LinkedTable.reveal(EditorCore.getEditor(), origin.modelId, origin.place);
+    if (shown && shown.differs) setStatus(I18n.t('linkedTable.differs', { name: shown.name }));
+  }
+
+  function wireLinkedReturn() {
+    const button = document.getElementById('btn-linked-return');
+    if (button) button.addEventListener('click', returnFromLinkedModel);
   }
 
   // Un seul enregistrement manuel à la fois. Avec Grist lent, un deuxième clic sur Enregistrer (ou Ctrl+S) pendant la première écriture partait
@@ -661,10 +1136,37 @@
   }
 
   // Écrit dans Grist le modèle tel que l'écran le montre : `html` (celui de l'éditeur par défaut), ses en-têtes, sa page, son type et ses champs
-  // email.
-  function saveScreenAs(id, nom, suiviModifications, html = Editor.getHTML()) {
-    return Templates.save(id, nom, html, getPdfFilenameTemplate(), Editor.getHeaderFooterData(), PageLayout.getMarginsMm(), currentTypeModele, getEmailFieldsFromInputs(), suiviModifications);
+  // email. `alsoWrite` : les modèles Grille que les tableaux liés du document ont changé, écrits dans le même lot (js/linked-table.js:prepareSend).
+  // Le nom ne part que pour un modèle neuf et quand la personne l'a changé ici (le crayon, « Enregistrer sous… », la galerie) : celui du titre, tel qu'il a été lu dans la table à l'ouverture, ne repart pas, et la table garde
+  // le nom que GFS ou une autre personne lui a donné depuis (consigne GFS 029). Ce qui part devient le nom que le titre tient de la table.
+  function saveScreenAs(id, nom, suiviModifications, html = Editor.getHTML(), alsoWrite = null) {
+    const written = id != null && titleNameBase !== null && nom === titleNameBase ? null : nom;
+    const epoch = autosaveEpoch;
+    return Templates.save(id, written, html, getPdfFilenameTemplate(), Editor.getHeaderFooterData(), PageLayout.getMarginsMm(), currentTypeModele, getEmailFieldsFromInputs(), suiviModifications, alsoWrite).then(saved => {
+      if (written !== null && epoch === autosaveEpoch) titleNameBase = written; // un autre modèle ouvert pendant l'écriture a pris le sien (showTemplateNames)
+      return saved;
+    });
   }
+
+  // Les tableaux liés que le document a changé et pas leur modèle partent avec son enregistrement (js/linked-table.js:prepareSend, lot 6c-2b) : null quand rien ne part (un macro-modèle n'a rien
+  // dans l'éditeur), sinon le HTML à écrire avec la base d'après et ce qui s'écrit dans les modèles. À prendre dans le même bloc synchrone que la lecture du document, après le dernier `await`.
+  // Les diapositives liées d'une présentation que seule elle a changées partent de même vers leur source (js/slide-links.js:prepareSend), dans le même lot.
+  function linkedSendFor(isMacro) {
+    if (isMacro) return null;
+    const editor = EditorCore.getEditor();
+    const tables = LinkedTable.prepareSend(editor);
+    const slides = SlideLinks.prepareSend(editor, tables ? tables.doc : null);
+    if (!tables || !slides) return tables || slides;
+    return {
+      html: slides.html,
+      writes: tables.writes.concat(slides.writes),
+      commit() { tables.commit(); slides.commit(); },
+      announce() { tables.announce(); slides.announce(); },
+    };
+  }
+  // Ce que ce widget vient de lire ou d'écrire du modèle `id` (le cache, à jour après une écriture) : une présentation ouverte ailleurs dont seules des diapositives à repère changent prend
+  // l'envoi sans bandeau de conflit (js/slide-links.js:adopt).
+  function noteKnownState(id) { SlideLinks.noteKnown(id == null ? null : Templates.byId(id)); }
 
   // Un macro-modèle s'édite uniquement dans sa fenêtre (MacroEditor) : Editor.getHTML() est toujours vide pour ce type et, par le chemin normal,
   // écraserait sa composition par un contenu vide. « Enregistrer » rouvre donc la fenêtre au lieu d'enregistrer.
@@ -679,7 +1181,7 @@
     const typedName = templateNameInput ? templateNameInput.value.trim() : '';
     const nom = settleTemplateName(); // nom déjà pris : « nom (2) »... (la saisie du crayon, une copie, un modèle de la galerie passent tous par ici)
     if (!nom) { setStatus(I18n.t('status.templateNameRequired'), true); return; }
-    let savedId, dateModif;
+    let savedId, dateModif, send = null, synced = null;
     const epoch = autosaveEpoch;
     try {
       const suiviModifications = await Editor.getSuiviModificationsForSave();
@@ -687,8 +1189,20 @@
       // Grist est lent) a pu laisser choisir un autre modèle : l'éditeur montre alors celui-là, et l'écrire sous l'identifiant de ce modèle-ci le
       // remplacerait. Le choisir en répondant « Abandonner » renonce à cet enregistrement.
       if (epoch !== autosaveEpoch) return;
+      // Un tableau lié est à envoyer à son modèle : les modèles sont relus d'abord (un passage de l'enregistrement automatique vient de le faire, pas un Enregistrer à la main, surtout quand le passage est coupé),
+      // sans quoi un modèle changé ailleurs depuis serait écrasé sans que personne ne le voie. Une relecture qui échoue renonce à l'envoi, pas à l'enregistrement du document.
+      let modelsFresh = true;
+      if (LinkedTable.hasPending(EditorCore.getEditor()) || SlideLinks.hasPending(EditorCore.getEditor())) {
+        modelsFresh = await LinkedTable.refreshModels();
+        if (epoch !== autosaveEpoch) return;
+        // Les modèles sont frais : les tableaux suivent les leurs comme à un passage de l'enregistrement automatique (un modèle changé ailleurs en même temps que le tableau : l'écart se dit, rien ne part).
+        if (modelsFresh) synced = followLinkedModels();
+      }
       const editVersion = autosaveEditVersion;
-      ({ id: savedId, dateModif } = await saveScreenAs(id, nom, suiviModifications));
+      send = modelsFresh ? linkedSendFor(false) : null;
+      const token = LiveEntry.saveToken(); // l'état du texte juste avant qu'il soit lu (écriture en direct)
+      ({ id: savedId, dateModif } = await saveScreenAs(id, nom, suiviModifications, send ? send.html : undefined, send ? send.writes : null));
+      LiveEntry.published(token, dateModif);
       // La date écrite est notée tout de suite, avant la relecture de la liste plus bas (une lecture de Grist de plus, des secondes quand il est
       // lent) : un passage de l'enregistrement automatique entre les deux verrait cette date sans la connaître et conclurait « modifié ailleurs »
       // (cf. autosaveTick). Un modèle chargé pendant l'écriture (autosaveEpoch) garde son propre état. Un enregistrement manuel tranche tout conflit
@@ -697,6 +1211,8 @@
         autosaveLastKnownDateModif = dateModif;
         noteSaved(editVersion);
         hideConflictBanner();
+        if (send) send.commit(); // Grist a écrit le document et les modèles ensemble : les tableaux partis prennent leur base
+        noteKnownState(savedId);
       }
     } catch (e) {
       // La personne a refusé de créer les tables du widget : rien n'est enregistré, et le coin d'état le dit (ni échec ni journal d'erreur : elle a
@@ -708,7 +1224,7 @@
       setStatus(I18n.t('status.saveError'), true);
       return;
     }
-    if (epoch === autosaveEpoch) Templates.setCurrentId(savedId);
+    if (epoch === autosaveEpoch) { Templates.setCurrentId(savedId); ExportChoices.adopt(savedId); LiveEntry.changed(); } // un modèle neuf enregistré peut s'écrire en direct
     await refreshTemplateList();
     // L'écriture et la relecture de la liste durent des secondes quand Grist est lent : un autre modèle a pu être choisi entre-temps (autosaveEpoch).
     // L'écran, la liste et le modèle courant sont alors les siens : ce geste ne les remet pas sur le modèle qu'il vient d'écrire (l'enregistrement
@@ -724,8 +1240,10 @@
     if (sameTemplate && String(id) !== String(savedId)) {
       Comments.loadForTemplate(savedId).catch(e => console.error('[main] chargement des commentaires impossible après création du modèle', e));
       forgetMacroOriginUnless(null); // une copie n'est pas un modèle du macro-modèle d'où l'on venait : le bandeau n'a plus de sens
+      forgetLinkedOriginUnless(null); // ni le modèle que le tableau du document désigne : le retour n'a plus de sens non plus
     }
     updateSaveStatus();
+    if (sameTemplate) LinkedTable.tell(synced, send);
     // à la place de « Enregistré à… » : le nom a changé, c'est ce qu'il faut lire
     if (sameTemplate && nom !== typedName) setStatus(I18n.t('status.nameExists', { name: nom }));
   }
@@ -739,6 +1257,9 @@
     if (!asked) return;
     const nom = asked.trim();
     if (!nom) return;
+    // Le modèle qu'on copie : la copie, une fois faite, entre dans l'historique d'Annuler / Rétablir (copiedTemplateAction). Un document pas encore enregistré n'a pas de modèle d'origine : son « Enregistrer sous… » est son
+    // premier enregistrement, que « Enregistrer » ne range pas non plus.
+    const from = Templates.getCurrentId();
     // Un macro-modèle se copie par sa composition (mêmes emplacements, nouvel identifiant) : passer par onSave rouvrirait sa fenêtre au lieu de
     // dupliquer.
     if (currentTypeModele === 'macro') {
@@ -749,12 +1270,15 @@
         const copyName = Templates.uniqueName(nom);
         const { id: newId } = await Templates.save(null, copyName, JSON.stringify(macroSlots), kept.nomFichierPDF, kept.headerFooter, kept.marginsMm, 'macro', null);
         await onMacroSaved(newId, copyName !== nom ? copyName : null);
+        if (from != null) ActionHistory.add(copiedTemplateAction(newId, from, false));
       } catch (e) {
         console.error('[main] échec de la copie du macro-modèle', e);
         setStatus(I18n.t('status.saveError'), true);
       }
       return;
     }
+    // Une copie est un autre modèle : l'écriture en direct, qui est celle du texte de celui-ci, s'arrête d'abord (js/live-entry.js).
+    await LiveEntry.stop();
     // Un enregistrement encore en cours (Grist lent) rendrait, à sa fin, son identifiant au modèle courant (cf. runSave) : la copie, qui part d'un
     // modèle sans identifiant, attend qu'il soit fini, celui d'un deuxième clic compris.
     const epoch = autosaveEpoch;
@@ -762,18 +1286,216 @@
     if (epoch !== autosaveEpoch) return; // un autre modèle a été choisi pendant l'attente : la copie n'a plus d'objet
     if (templateNameInput) templateNameInput.value = nom;
     Templates.setCurrentId(null);
+    ExportChoices.detach();
+    if (from == null) await onSave();
+    else await saveAsNewTemplate(from, false);
+  }
+
+  // Enregistre l'écran comme un modèle NEUF - une copie (« Enregistrer sous… »), un modèle de la galerie - puis range l'action dans l'historique d'Annuler / Rétablir. `from` : le modèle que l'écran montrait avant (null : aucun) ;
+  // `withTables` : la galerie a créé des tables avec lui. Rien n'est rangé quand l'enregistrement n'a créé aucun modèle (nom manquant, refus, erreur : le coin d'état le dit) ni quand un autre modèle a été choisi pendant qu'il
+  // durait (l'identifiant courant est alors le sien).
+  async function saveAsNewTemplate(from, withTables) {
+    const epoch = autosaveEpoch;
     await onSave();
+    if (epoch !== autosaveEpoch) return;
+    const id = Templates.getCurrentId();
+    if (id != null && Templates.byId(id)) ActionHistory.add(copiedTemplateAction(id, from, !!withTables));
+  }
+
+  // Historique des versions (js/versions-store.js garde les versions à chaque enregistrement ; la fenêtre, js/versions-history.js, ne se charge qu'ici, au premier clic). Le modèle ouvert
+  // doit déjà être enregistré : un modèle neuf n'a pas de version.
+  async function openVersionHistory() {
+    if (isReadOnly()) return;
+    const id = Templates.getCurrentId();
+    const tpl = Templates.byId(id);
+    if (!id || !tpl) { setStatus(I18n.t('status.versionsNeedSavedTemplate'), true); return; }
+    try {
+      await VersionsStore.loadWindow();
+      VersionsHistory.open({ id, name: tpl.nom, restore: (snapshot, when) => restoreVersionOnScreen(id, snapshot, when), nameVersion: (target, label) => nameVersionOnScreen(id, target, label) });
+    } catch (e) {
+      console.error('[main] fenêtre de l’historique des versions impossible', e);
+      setStatus(I18n.t('status.versionsUnavailable'), true);
+    }
+  }
+
+  // Une erreur que la fenêtre de l'historique dit sous son titre (la clé du texte).
+  function versionError(key) { return Object.assign(new Error(I18n.t(key)), { versionsKey: key }); }
+
+  // Attend la fin du passage de l'enregistrement automatique en cours (aucun autre ne part tant que restoringVersion ou leavePromptOpen est vrai) : il écrirait sinon l'ancien écran après la
+  // restauration, ou le texte que la question de départ demande d'abandonner. `limitMs` : la question de départ n'attend pas plus que cela un Grist qui ne répond pas.
+  async function whenAutosaveTickDone(limitMs = AUTOSAVE_TICK_WATCHDOG_MS) {
+    const giveUpAt = Date.now() + limitMs;
+    while (autosaveTickPending && Date.now() - autosaveTickStartedAt < AUTOSAVE_TICK_WATCHDOG_MS && Date.now() < giveUpAt) await new Promise(resolve => setTimeout(resolve, 40));
+  }
+
+  // Donne (ou retire, avec '') un nom à une version de l'historique ; refusé en lecture seule, comme une restauration. `target` : { rowId } (une version gardée) ou { state, at, author } (l'état enregistré que
+  // « Version actuelle » montre : il est gardé sous ce nom, et la ligne ajoutée est rendue : { rowId }).
+  async function nameVersionOnScreen(id, target, label) {
+    if (isReadOnly()) throw versionError('versions.nameError');
+    try {
+      if (target.rowId != null) { await VersionsStore.renameVersion(target.rowId, label); return {}; }
+      return await VersionsStore.keepNamed({ modelRowId: id, state: target.state, at: target.at, author: target.author, name: label, tokenFor: () => Templates.ensureToken(id) });
+    } catch (e) {
+      if (e && e.versionsKey) throw e;
+      throw versionError('versions.nameError');
+    }
+  }
+
+  // Remet dans le modèle ouvert l'état d'une de ses versions. Ce que l'écran montre et n'est pas encore enregistré part d'abord, comme un Enregistrer (il devient l'état que la restauration
+  // remplace) ; l'état remplacé est gardé dans une version (Templates.restoreVersion), puis l'éditeur repart de l'état restauré, comme après « Recharger » du bandeau de conflit.
+  async function restoreVersionOnScreen(id, snapshot, when) {
+    if (isReadOnly()) throw versionError('versions.restoreError');
+    // Une version remplacerait le texte que les autres personnes écrivent en ce moment : l'écriture en direct s'arrête d'abord, de la main de la personne.
+    if (LiveEntry.isLive()) throw versionError('versions.restoreLive');
+    restoringVersion = true;
+    try {
+      await whenAutosaveTickDone();
+      while (saveIsRunning() || saveWaiting) await (saveWaiting || whenSaveFinished());
+      if (String(Templates.getCurrentId()) !== String(id)) throw versionError('versions.restoreError');
+      // Un macro-modèle n'a rien dans l'éditeur : son Enregistrer rouvre sa fenêtre.
+      if (autosaveDirty && currentTypeModele !== 'macro') {
+        await onSave();
+        if (autosaveDirty) throw versionError('versions.restoreNeedsSave');
+      }
+      await Templates.whenIdle();
+      await Templates.restoreVersion(id, snapshot);
+      await refreshTemplateList();
+      const restored = Templates.byId(id);
+      if (restored) {
+        loadTemplateIntoEditor(restored);
+        templateSelect.value = id;
+        syncDefaultTemplateButton();
+      }
+      setStatus(I18n.t('status.versionRestored', { when }));
+    } catch (e) {
+      if (e && e.versionsKey) throw e;
+      throw versionError('versions.restoreError');
+    } finally {
+      restoringVersion = false;
+    }
+  }
+
+  // Le modèle dont `kept` est la ligne (Templates.snapshotRow, lue avant la suppression) vient d'être supprimé : l'action de l'historique d'Annuler / Rétablir (js/action-history.js). Défaire rend la ligne à la table sous son
+  // numéro et son jeton (Templates.restoreRow : ses commentaires, son rangement, ses versions et les tableaux qui le placent le retrouvent) et, si l'écran montre encore le document vierge que la suppression a laissé, rouvre le
+  // modèle ; sinon il revient dans la liste et l'écran n'est pas touché. Rétablir le supprime de nouveau, tel qu'il est alors (le modèle rouvert, lui, retrouve un Rétablir quand rien d'autre ne se rétablissait). Un modèle
+  // déjà revenu, ou parti sans nous, n'est pas touché une seconde fois.
+  function deletedTemplateAction(kept) {
+    let row = kept;
+    let rowId = kept.id;
+    // L'écran est resté le document vierge que la suppression a laissé : rien n'y a été tapé, ou ce qui l'a été est défait (texte vide, aucun réglage de page touché). Sinon la personne perdrait ce qu'elle a devant elle.
+    const screenLeftBlank = () => !autosaveDirty || (!autosaveSettingsDirty && EditorCore.getEditor().isEmpty);
+    async function restore() {
+      if (isReadOnly()) throw new Error('lecture seule');
+      const back = await Templates.restoreRow(row);
+      if (back.present) throw ActionHistory.conflict(I18n.t('history.templateBack'));
+      rowId = back.id;
+      await showTemplateList();
+      if (Templates.getCurrentId() == null && screenLeftBlank() && Templates.openableById(rowId)) {
+        // Charger le modèle vide l'historique, et Ctrl + Y n'aurait plus rien à rétablir : quand le repère de cette suppression est tout ce qui se rétablissait, l'historique d'avant est remis (HistoryMarkers.keep) et Ctrl + Y supprime de nouveau.
+        const history = HistoryMarkers.keep();
+        templateSelect.value = String(rowId);
+        loadTemplateIntoEditor(Templates.byId(rowId));
+        if (HistoryMarkers.redoDepth(history) === 1) HistoryMarkers.resume(history);
+      }
+      return I18n.t(back.renamed ? 'status.templateRestoredAs' : 'status.templateRestored', { name: back.nom });
+    }
+    async function remove() {
+      if (isReadOnly()) throw new Error('lecture seule');
+      const now = await Templates.snapshotRow(rowId);
+      if (!now) throw ActionHistory.conflict(I18n.t('history.templateGone'));
+      await Templates.remove(rowId);
+      row = now;
+      await showTemplateList();
+      if (Templates.isCurrent(rowId)) startBlankDocument();
+      return I18n.t('status.templateDeleted');
+    }
+    return { undo: restore, redo: remove };
   }
 
   async function onDelete() {
     if (isReadOnly()) return;
     const id = Templates.getCurrentId();
     if (!id) { setStatus(I18n.t('status.noTemplateSelected'), true); return; }
-    if (!(await Dialogs.confirm({ title: I18n.t('confirm.deleteTemplate'), confirmLabel: I18n.t('common.delete'), danger: true }))) return;
+    // Un modèle Grille posé comme tableau lié dans d'autres modèles : la question le dit, ces tableaux gardent leurs cases et perdent leur lien (js/linked-table.js:usedBy).
+    const used = LinkedTable.usedBy(id).length;
+    const message = used ? I18n.t('linkedTable.deleteUsed', { n: used }) : '';
+    if (!(await Dialogs.confirm({ title: I18n.t('confirm.deleteTemplate'), message, confirmLabel: I18n.t('common.delete'), danger: true }))) return;
+    // La ligne telle que Grist la garde, lue avant de la supprimer : Annuler la rend. Une lecture qui échoue ne retient pas la suppression, que la personne a confirmée : seul Annuler n'en saura rien.
+    let kept = null;
+    try { kept = await Templates.snapshotRow(id); } catch (e) { console.warn('[main] ligne du modèle non gardée pour Annuler', e); }
     await Templates.remove(id);
     await refreshTemplateList();
     startBlankDocument();
     setStatus(I18n.t('status.templateDeleted'));
+    if (kept) ActionHistory.add(deletedTemplateAction(kept));
+  }
+
+  // Le modèle `id` vient d'être créé comme copie de ce que l'écran montrait - « Enregistrer sous… » (`from` : le modèle qu'on copiait) ou un modèle de la galerie (`from` : celui qu'on quittait, null si l'écran n'en avait pas) :
+  // l'action de l'historique d'Annuler / Rétablir (js/action-history.js). Défaire RETIRE la copie, après une question (« Retirer … ? ») : elle a pu être travaillée depuis, et un Ctrl + Z de trop ne doit pas la perdre en silence ;
+  // « Annuler » à la question la garde. Si l'écran la montrait encore, `from` se rouvre tel que la table le garde (un document vierge quand il n'existe plus ou qu'il n'y en avait pas). Rétablir rend la ligne sous son numéro et son
+  // jeton (Templates.restoreRow, comme une suppression défaite) et, si l'écran est resté tel que Annuler l'a laissé, la rouvre. Les tables qu'un modèle de la galerie a créées avec lui (`withTables`) ne sont jamais touchées : un autre
+  // modèle peut déjà s'en servir.
+  function copiedTemplateAction(id, from, withTables) {
+    let row = null; // la ligne telle que Grist la gardait quand la copie a été retirée
+    let rowId = id;
+    let reopened = false; // la copie était à l'écran quand elle a été retirée : l'écran a changé avec elle
+    // L'écran est resté ce que Annuler a laissé : le modèle d'où venait la copie sans rien de tapé depuis, ou le document vierge.
+    const screenLeftAsUndone = () => (Templates.getCurrentId() == null
+      ? (!autosaveDirty || (!autosaveSettingsDirty && EditorCore.getEditor().isEmpty))
+      : Templates.isCurrent(from) && !autosaveDirty);
+    async function remove(entryId) {
+      if (isReadOnly()) throw new Error('lecture seule');
+      const named = Templates.byId(rowId);
+      if (!named) throw ActionHistory.conflict(I18n.t('history.templateGone'));
+      // Pas d'écriture automatique ni de texte qui en remplace un autre tant que la question est posée et que l'écran change (comme la question de départ, askBeforeLeaving).
+      leavePromptCount++;
+      leavePromptOpen = true;
+      try {
+        const sure = await Dialogs.confirm({ title: I18n.t('history.removeCopyTitle', { name: named.nom }), message: I18n.t(withTables ? 'history.removeCopyTables' : 'history.removeCopyMessage'), confirmLabel: I18n.t('history.removeCopyConfirm'), danger: true });
+        if (!sure) throw ActionHistory.conflict(I18n.t('history.copyKept', { name: named.nom }));
+        // Un passage de l'enregistrement automatique, ou un enregistrement, encore en route finit d'écrire la copie avant qu'elle parte.
+        await whenAutosaveTickDone();
+        while (saveIsRunning() || saveWaiting) await (saveWaiting || whenSaveFinished());
+        const now = await Templates.snapshotRow(rowId);
+        if (!now) throw ActionHistory.conflict(I18n.t('history.templateGone'));
+        const shown = Templates.isCurrent(rowId);
+        await Templates.remove(rowId);
+        row = now;
+        reopened = shown;
+        await showTemplateList();
+        if (shown) {
+          const back = from == null ? undefined : Templates.openableById(from);
+          if (back) {
+            templateSelect.value = String(back.id);
+            loadTemplateIntoEditor(back);
+            syncDefaultTemplateButton();
+          } else {
+            startBlankDocument();
+          }
+          // Charger un modèle vide l'historique, et Ctrl + Y n'aurait plus rien à rétablir : le repère de cette copie, défaite, est reposé dans l'historique neuf. L'historique d'avant ne se remet pas (HistoryMarkers.resume) :
+          // il garde les positions du texte de la copie, qui ne sont pas celles du modèle rouvert.
+          HistoryMarkers.recordUndoneAction(entryId);
+        }
+        return I18n.t('status.templateRemoved', { name: String(now.values.Nom || named.nom) });
+      } finally {
+        if (--leavePromptCount === 0) leavePromptOpen = false;
+      }
+    }
+    async function bringBack() {
+      if (isReadOnly()) throw new Error('lecture seule');
+      const back = await Templates.restoreRow(row);
+      if (back.present) throw ActionHistory.conflict(I18n.t('history.templateBack'));
+      rowId = back.id;
+      await showTemplateList();
+      const open = reopened && screenLeftAsUndone() && Templates.openableById(rowId);
+      reopened = false;
+      if (open) {
+        templateSelect.value = String(rowId);
+        loadTemplateIntoEditor(Templates.byId(rowId));
+      }
+      return I18n.t(back.renamed ? 'status.templateRestoredAs' : 'status.templateRestored', { name: back.nom });
+    }
+    return { undo: remove, redo: bringBack };
   }
 
   // Droits par personne (js/access-rights.js)
@@ -785,9 +1507,14 @@
   // droit).
   const READ_ONLY_LOCKED_IDS = ['v2-new-template-group', 'btn-organize-templates', 'v2-save-group', 'btn-delete', 'btn-link-rules',
     'btn-mode-edit', 'btn-rename-template', 'btn-set-default-template', 'v2-pdf-filename-cluster', 'v2-page-group'];
-  // Le droit d'export couvre PDF (une ligne, ZIP, PDF unique), Word et la création d'email : #v2-quality-group porte aussi les deux exports DOCX.
+  // Le droit d'export couvre PDF (une ligne, ZIP, PDF unique), Word, Excel et la création d'email : #v2-quality-group (le type d'export) et
+  // #v2-export-pdf-group (le bouton Exporter et ses lignes, Word et Excel compris) sont grisés ensemble.
   const EXPORT_LOCKED_IDS = ['v2-quality-group', 'v2-export-pdf-group', 'btn-create-email'];
-  const READ_ONLY_DISABLED_INPUTS = ['settings-margin-top', 'settings-margin-right', 'settings-margin-bottom', 'settings-margin-left'];
+  // Les quatre champs des marges, et avec eux les quatre préréglages et la chaîne qui lie les marges (js/settings.js) : tout ce qui change une marge est grisé.
+  // Annuler et Rétablir, que la lecture d'un PDF garde actifs (applyFormattingBarLock).
+  const PDF_HISTORY_IDS = ['v2-btn-undo', 'v2-btn-redo'];
+  const READ_ONLY_DISABLED_INPUTS = ['settings-margin-top', 'settings-margin-right', 'settings-margin-bottom', 'settings-margin-left',
+    'settings-margin-preset-none', 'settings-margin-preset-narrow', 'settings-margin-preset-classic', 'settings-margin-preset-wide', 'settings-margins-link'];
   // Réglage présent au démarrage : les droits sont attendus avant le premier affichage, au plus ce délai (Grist qui tarde à répondre) - au-delà le
   // widget démarre verrouillé (AccessRights.get() tant que le calcul n'a pas abouti) et se déverrouille seul à la réponse.
   const ACCESS_STARTUP_WAIT_MS = 5000;
@@ -797,11 +1524,46 @@
 
   function isReadOnly() { return AccessRights.get().readOnly; }
 
-  function setAccessLocked(el, locked) {
+  // `reason` : la clé de la phrase qui dit pourquoi (js/i18n.js, « lock.* »), l'info-bulle du contrôle et ce que son clic écrit dans le coin d'état (js/lock-reasons.js, cause « access »).
+  function setAccessLocked(el, locked, reason) {
     if (!el) return;
     el.classList.toggle(ACCESS_LOCK_CLASS, locked);
     if (locked) el.setAttribute('aria-disabled', 'true');
     else el.removeAttribute('aria-disabled');
+    LockReasons.set(el, 'access', locked && reason ? I18n.t(reason) : '');
+  }
+
+  // Pendant la lecture d'un PDF (js/pdf-reading.js, consigne GFS 040), ce qui ne s'applique pas à lui reste là, GRISÉ avec sa raison - dans l'info-bulle du survol (`title`, comme setExplained de js/main-toolbar.js :
+  // l'info-bulle de l'app, qu'un grisé estomperait avec le bouton, est cachée en CSS) et, au clic, dans le coin d'état -, jamais caché : l'édition, ce qui change ou range un modèle (enregistrer, renommer, supprimer, la
+  // page), l'export et les commentaires. « Nouveau » et l'arbre des modèles restent actifs : ouvrir un modèle ferme le PDF (loadTemplateIntoEditor). Un compte en lecture seule garde en plus son propre grisé
+  // (ACCESS_LOCK_CLASS), qui ne s'efface pas avec celui-ci. Les règles de la feuille de style : extensions/lecture-pdf/pdf-view.css.
+  const PDF_LOCK_CLASS = 'pp-pdf-locked';
+  const PDF_LOCKS = [
+    { reason: 'edit', ids: ['btn-mode-edit'] },
+    { reason: 'template', ids: ['v2-save-group', 'btn-delete', 'btn-link-rules', 'btn-rename-template', 'btn-set-default-template', 'v2-pdf-filename-cluster', 'v2-page-group'] },
+    { reason: 'export', ids: EXPORT_LOCKED_IDS },
+    { reason: 'comment', ids: ['v2-btn-comment'] },
+  ];
+  function applyPdfLocks() {
+    const on = PdfReading.isActive();
+    const reasons = on ? PdfReading.reasons() : null;
+    PDF_LOCKS.forEach(({ reason, ids }) => ids.forEach((id) => {
+      const el = document.getElementById(id);
+      if (!el) return;
+      const wasOn = el.classList.contains(PDF_LOCK_CLASS);
+      // Sans raison, pas de grisé : « Commenter » se dégrise pour un PDF qui a du texte (js/pdf-reading.js:reasons).
+      const locked = on && !!reasons[reason];
+      el.classList.toggle(PDF_LOCK_CLASS, locked);
+      // La raison est l'info-bulle du contrôle et ce que son clic écrit dans le coin d'état : js/lock-reasons.js (cause « pdf »), qui rend aussi au dégrisé le `title` d'avant.
+      LockReasons.set(el, 'pdf', locked ? reasons[reason] : '');
+      if (locked) {
+        el.setAttribute('aria-disabled', 'true');
+        el.setAttribute('data-pp-pdf-reason', reasons[reason]);
+      } else if (wasOn) {
+        el.removeAttribute('data-pp-pdf-reason');
+        if (!el.classList.contains(ACCESS_LOCK_CLASS)) el.removeAttribute('aria-disabled');
+      }
+    }));
   }
 
   // Barre de mise en forme et d'insertion (#v2-toolbar) : grisée en lecture seule, dès que la Lecture est affichée, choisie ou imposée, et tant que la
@@ -813,7 +1575,16 @@
     const formattingBar = document.getElementById('v2-toolbar');
     if (!formattingBar) return;
     const locked = isReadOnly() || currentMode === 'read' || isAccessGuideShown();
-    Array.from(formattingBar.children).forEach(child => { if (child.id !== 'v2-btn-comment') setAccessLocked(child, locked); });
+    // Pourquoi, dans l'ordre : un document en lecture seule, le mode lecture, la carte de l'accès. Les séparateurs se grisent avec la barre mais ne disent rien : on ne les clique pas.
+    const reason = isReadOnly() ? 'lock.readOnly' : currentMode === 'read' ? 'lock.readMode' : 'lock.accessGuide';
+    // Un PDF à l'écran se commente (extensions/lecture-pdf/pdf-comments.js) et ses commentaires se défont par l'historique de l'éditeur caché (js/action-history.js) : Annuler et Rétablir suivent alors le droit de commenter,
+    // comme Commenter (et disent la même raison), au lieu du grisé de la Lecture.
+    const followComments = PdfReading.isActive() && !isAccessGuideShown();
+    Array.from(formattingBar.children).forEach((child) => {
+      if (child.id === 'v2-btn-comment') return;
+      const follows = followComments && PDF_HISTORY_IDS.indexOf(child.id) !== -1;
+      setAccessLocked(child, follows ? !AccessRights.get().canComment : locked, child.classList.contains('v2-sep') ? '' : (follows ? 'lock.noComment' : reason));
+    });
   }
 
   // Commentaires : la Lecture les montre et en accepte de nouveaux (js/comments.js:readerMode) dès qu'elle est affichée, choisie ou imposée par la
@@ -827,13 +1598,22 @@
 
   function applyAccessRights() {
     const rights = AccessRights.get();
-    READ_ONLY_LOCKED_IDS.forEach(id => setAccessLocked(document.getElementById(id), rights.readOnly));
+    READ_ONLY_LOCKED_IDS.forEach(id => setAccessLocked(document.getElementById(id), rights.readOnly, 'lock.readOnly'));
     applyFormattingBarLock();
-    setAccessLocked(document.getElementById('v2-btn-comment'), !rights.canComment);
-    EXPORT_LOCKED_IDS.forEach(id => setAccessLocked(document.getElementById(id), !rights.canExport));
-    READ_ONLY_DISABLED_INPUTS.forEach(id => { const input = document.getElementById(id); if (input) input.disabled = rights.readOnly; });
+    setAccessLocked(document.getElementById('v2-btn-comment'), !rights.canComment, 'lock.noComment');
+    EXPORT_LOCKED_IDS.forEach(id => setAccessLocked(document.getElementById(id), !rights.canExport, 'lock.noExport'));
+    // Les marges de Réglages : grisées en lecture seule, avec leur raison en info-bulle (cause « state » : un champ `disabled` ne reçoit pas le clic).
+    READ_ONLY_DISABLED_INPUTS.forEach(id => {
+      const input = document.getElementById(id);
+      if (!input) return;
+      input.disabled = rights.readOnly;
+      LockReasons.set(input, 'state', rights.readOnly ? I18n.t('lock.readOnly') : '');
+    });
     applyCommentsPermissions();
+    applyPdfLocks();
     updateSaveStatus();
+    LiveEntry.changed(); // un document en lecture seule ne s'écrit pas en direct : la ligne du menu suit les droits (js/live-entry.js)
+    SlidesEntry.changed(); // ni ses diapositives (js/slides-entry.js)
   }
 
   // Grist rend les options du widget quand son accès change (GristAPI.onAccessLevelChange) : la carte de l'accès arrive ou s'en va tout de suite, et la
@@ -850,6 +1630,7 @@
     applyAccessRights();
     if (isReadOnly() || currentMode === 'read') switchMode(currentMode);
     openCleanReadingForReadOnly();
+    openNewsForEditors();
   }
 
   // Case « Ouvrir les personnes en lecture seule sur la Lecture épurée » (Réglages > Accès) : voir CleanReading.openForReadOnly, qui décide une seule
@@ -861,15 +1642,34 @@
     CleanReading.openForReadOnly({ state: AccessRights.getStatus().state, readOnly: AccessRights.get().readOnly, enabled: !!(config && config.cleanReading) });
   }
 
+  // La fenêtre des nouveautés s'ouvre toute seule, une fois par personne, à la première ouverture après une version qui en a (js/whats-new.js) : pour qui écrit, les droits confirmés (comme la Lecture épurée d'emblée, une
+  // personne qui démarre verrouillée par précaution n'est pas une personne en lecture seule : une table des droits qui répond après le délai du démarrage lui ouvre la fenêtre à la réponse, sur la Lecture où le verrou l'a
+  // mise) - ni sur la Lecture épurée, ni sur la carte de l'accès. Appelée à la fin d'init() puis à chaque changement de droits (jamais avant la fin du démarrage : le premier modèle n'est pas encore affiché) ;
+  // WhatsNew s'en souvient : une seule ouverture par séance.
+  let newsMayOpen = false;
+  function openNewsForEditors() {
+    if (!newsMayOpen) return;
+    WhatsNew.openOnFirstConnection(() => ({
+      answered: CleanReading.isAnswered(AccessRights.getStatus().state),
+      readOnly: isReadOnly(),
+      usable: !CleanReading.isActive() && !ReaderGuide.editorLacksAccess(),
+    })).catch(e => console.warn('[main] fenêtre des nouveautés non ouverte', e));
+  }
+
   // Un clic (souris, clavier, ou .click() d'un autre module) sur une commande grisée par applyAccessRights ou applyFormattingBarLock est arrêté en
-  // capture, avant tout gestionnaire.
+  // capture, avant tout gestionnaire. Et sur tout contrôle grisé qui dit pourquoi (js/lock-reasons.js : les droits, la lecture d'un PDF, le type du modèle,
+  // une grille...) : le clic ne fait rien et le coin d'état en dit la raison, comme l'info-bulle du survol. Les deux gardes se complètent : le premier
+  // arrête aussi ce qui n'a pas de raison.
   function wireAccessLockGuard() {
     document.addEventListener('click', event => {
       const target = event.target;
       if (!target || !target.closest || !target.closest('.' + ACCESS_LOCK_CLASS)) return;
       event.preventDefault();
       event.stopImmediatePropagation();
+      const reason = LockReasons.reasonOf(target.closest('.' + ACCESS_LOCK_CLASS));
+      if (reason) setStatus(reason);
     }, true);
+    LockReasons.wire(setStatus);
   }
 
   // Enregistrement automatique
@@ -901,6 +1701,11 @@
   // l'enregistrement automatique, indépendamment des autres personnes qui ouvrent le même widget.
   const AUTOSAVE_ENABLED_STORAGE = 'pp_autosave_enabled';
   let autosaveDirty = false;
+  // Ce qui est « à enregistrer » comprend un RÉGLAGE de cette personne (nom, e-mail, marges...), pas seulement du texte. Pendant l'écriture en direct, c'est ce qui fait écrire aussi une personne autre
+  // que celle qui enregistre le modèle pour tout le monde (autosaveTickBlocked, js/live-entry.js).
+  let autosaveSettingsDirty = false;
+  // La date d'un enregistrement venu d'ailleurs, déjà attendue une fois : celui qui l'a fait, s'il écrit en direct, l'annonce dans la seconde (runAutosaveTick).
+  let conflictDeferredFor = null;
   let autosaveLastKnownDateModif = null;
   // Dernière fois que le modèle ouvert a été comparé à Grist (performance.now : l'horloge du système peut reculer) : un passage qui a lu, ou le
   // chargement du modèle, qui vient de Grist.
@@ -909,8 +1714,12 @@
   let autosaveConflictTpl = null;
   let autosaveTimer = null;
   // La question « Enregistrer / Abandonner / Annuler » est posée (askBeforeLeaving) : l'enregistrement automatique n'écrit rien pendant ce temps,
-  // sinon « Abandonner » ne laisserait rien à abandonner - ce que la personne a tapé serait déjà enregistré.
+  // sinon « Abandonner » ne laisserait rien à abandonner - ce que la personne a tapé serait déjà enregistré. `leavePromptCount` : les demandes en route
+  // (la question attend d'abord le passage en cours) ; le drapeau ne retombe qu'avec la dernière.
   let leavePromptOpen = false;
+  let leavePromptCount = 0;
+  // Une restauration de version est en cours (restoreVersionOnScreen) : l'enregistrement automatique ne part pas, il écrirait l'ancien écran par-dessus la version restaurée.
+  let restoringVersion = false;
   // Numéro de la dernière modification (frappe ou réglage, cf. markAutosaveDirty). Un drapeau « à enregistrer » remis à zéro au retour de l'écriture
   // effacerait aussi ce qui a été tapé pendant qu'elle durait (des secondes quand Grist est lent) : ces mots ne seraient pas enregistrés tant qu'une
   // autre frappe ne rallumerait pas le drapeau, alors que « Enregistré à… » s'afficherait. noteSaved(numéro) ne rend « enregistré » que ce qui n'a
@@ -925,20 +1734,23 @@
   let autosaveTickPending = false;
   let autosaveTickStartedAt = 0;
   const AUTOSAVE_TICK_WATCHDOG_MS = 60000;
+  // Le temps que la question « Enregistrer / Abandonner / Annuler » laisse à un passage déjà parti pour finir d'écrire (askBeforeLeaving) : un passage normal dure bien moins, Grist lent quelques secondes.
+  const LEAVE_PROMPT_TICK_WAIT_MS = 8000;
 
+  // Le réglage est gardé par js/person-store.js (le navigateur, ou GFS quand elle héberge le widget).
   function isAutosaveEnabled() {
-    try { return localStorage.getItem(AUTOSAVE_ENABLED_STORAGE) !== 'false'; } // absent = activé par défaut
-    catch (e) { return true; } // stockage indisponible (navigation privée, quota) : comme activé, plutôt que figé désactivé
+    return PersonStore.get(AUTOSAVE_ENABLED_STORAGE) !== 'false'; // absent = activé par défaut ; stockage indisponible (navigation privée, quota) : lu absent, donc activé, plutôt que figé désactivé
   }
 
   function setAutosaveEnabled(enabled) {
-    try { localStorage.setItem(AUTOSAVE_ENABLED_STORAGE, enabled ? 'true' : 'false'); } catch (e) { /* non persisté : actif pour cette session */ }
+    PersonStore.set(AUTOSAVE_ENABLED_STORAGE, enabled ? 'true' : 'false'); // non retenu (stockage indisponible) : actif pour cette session
   }
 
   // Aspect du bouton Enregistrer d'après ce réglage : bleu et blanc enregistrement automatique allumé, noir et blanc coupé. Deux classes le disent :
-  // celle du bouton, et celle de <html> (pp-autosave-off), que le <head> d'index.html pose avant le premier affichage ; posée ici, à la fin du
-  // chargement des scripts, elle arriverait après un premier affichage en bleu suivi d'un fondu vers le noir chez qui a coupé l'enregistrement
-  // automatique. Remise à l'heure au début d'init, à chaque clic de la ligne du menu et quand un autre onglet change le réglage.
+  // celle du bouton, et celle de <html> (pp-autosave-off), que le <head> d'index.html pose avant le premier affichage (le stockage du navigateur : chez GFS
+  // il est refusé, l'espace de l'app n'arrive qu'avec le contexte) ; posée ici, à la fin du chargement des scripts, elle arriverait après un premier affichage
+  // en bleu suivi d'un fondu vers le noir chez qui a coupé l'enregistrement automatique. Remise à l'heure au début d'init, à chaque clic de la ligne du menu,
+  // quand un autre onglet change le réglage et quand l'espace de GFS arrive (PersonStore.onLoaded, dans init).
   function syncSaveButtonLook() {
     const off = !isAutosaveEnabled();
     document.documentElement.classList.toggle('pp-autosave-off', off);
@@ -946,15 +1758,20 @@
     if (saveBtn) saveBtn.classList.toggle('is-autosave-off', off);
   }
 
-  function markAutosaveDirty() { autosaveEditVersion++; autosaveDirty = true; updateSaveStatus(); }
+  function markAutosaveDirty() { autosaveEditVersion++; autosaveDirty = true; autosaveSettingsDirty = true; updateSaveStatus(); }
+  // Du texte tapé ici, ou reçu d'une autre personne de l'écriture en direct : à enregistrer, sans que ce soit un réglage de cette personne.
+  function markTextDirty() { autosaveEditVersion++; autosaveDirty = true; updateSaveStatus(); }
   // Une écriture vient de partir avec l'état de l'éditeur tel qu'il était à la version `editVersion` : ce qui a été tapé depuis reste « à
   // enregistrer » pour le passage suivant.
-  function noteSaved(editVersion) { if (editVersion === autosaveEditVersion) autosaveDirty = false; }
+  function noteSaved(editVersion) { if (editVersion === autosaveEditVersion) { autosaveDirty = false; autosaveSettingsDirty = false; } }
 
   function resetAutosaveState(tpl) {
     autosaveEpoch++;
     autosaveDirty = false;
+    autosaveSettingsDirty = false;
+    conflictDeferredFor = null;
     autosaveLastKnownDateModif = tpl ? tpl.dateModif : null;
+    SlideLinks.noteKnown(tpl);
     autosaveLastCheckAt = performance.now();
     hideConflictBanner();
     updateSaveStatus();
@@ -966,6 +1783,8 @@
   // « Enregistré à HH:MM » seulement quand tout ce qui a été tapé est en base, rien sinon (brouillon jamais enregistré, frappe en attente, conflit
   // non résolu) ; avec l'enregistrement automatique coupé, une frappe en attente le dit.
   function updateSaveStatus() {
+    // Un PDF à l'écran (js/pdf-reading.js) n'a ni enregistrement ni modèle sans nom à signaler : le coin d'état dit le PDF.
+    if (PdfReading.isActive()) { const pdf = PdfReading.info(); setStatus(I18n.t('pdf.status.opened', { name: pdf.name, n: pdf.pages })); return; }
     // Lecture seule (js/access-rights.js) : rien ne s'enregistre pour cette personne, « Enregistré à… » ou « modèle non enregistré » n'auraient pas
     // de sens.
     if (isReadOnly()) { setStatus(I18n.t('status.readOnly')); return; }
@@ -995,9 +1814,9 @@
   // donc être gérées.
   function formatSaveTime(dateModif) {
     try {
-      const d = typeof dateModif === 'number' ? new Date(dateModif * 1000) : new Date(dateModif);
-      if (isNaN(d.getTime())) return '';
-      return d.toLocaleTimeString(I18n.getLang() === 'en' ? 'en-US' : 'fr-FR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+      const modified = typeof dateModif === 'number' ? new Date(dateModif * 1000) : new Date(dateModif);
+      if (isNaN(modified.getTime())) return '';
+      return modified.toLocaleTimeString(I18n.getLang() === 'en' ? 'en-US' : 'fr-FR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
     } catch (e) { return ''; }
   }
 
@@ -1050,10 +1869,12 @@
 
   // Les cas où un passage ne fait rien du tout, avant même de lire la table.
   function autosaveTickBlocked() {
-    if (leavePromptOpen) return true;
+    if (leavePromptOpen || restoringVersion) return true;
     if (!isAutosaveEnabled()) return true;  // coupé par la personne (cf. wireSaveMenu) : ni vérification de conflit ni écriture en arrière-plan
     if (exportOperationInProgress) return true; // évite toute contention Grist avec un export en cours
     if (autosaveConflictActive) return true; // gelé tant que l'utilisateur n'a pas choisi (recharger, ou Enregistrer manuellement pour garder sa version)
+    // Écriture en direct : UNE personne enregistre le modèle pour tout le monde (js/live-entry.js) ; les autres n'écrivent que ce qui leur est propre (un réglage).
+    if (LiveEntry.blocksAutosave(autosaveSettingsDirty)) return true;
     return false;
   }
 
@@ -1072,18 +1893,28 @@
 
   // L'écriture d'un passage. `epoch` : le modèle choisi quand le passage a commencé ; `editVersion` : l'état de l'édition lu avant de lire quoi que ce
   // soit.
-  async function writeAutosave(id, { nom, isMacro }, remoteTpl, epoch, editVersion) {
+  async function writeAutosave(id, { nom, isMacro }, remoteTpl, epoch, editVersion, synced) {
     try {
       const suiviModifications = isMacro ? null : await Editor.getSuiviModificationsForSave();
       // un autre modèle a été choisi pendant l'attente de l'identification : l'éditeur n'est plus celui dont `id` est la ligne (cf. onSave)
       if (epoch !== autosaveEpoch) return;
-      const contenu = isMacro ? remoteTpl.contenu : Editor.getHTML();
-      const { dateModif } = await saveScreenAs(id, nom, suiviModifications, contenu);
+      // La question « Enregistrer / Abandonner / Annuler » s'est ouverte depuis le départ de ce passage (leavePromptOpen n'est regardé qu'au départ) : rien n'est écrit, ce qui attend reste à demander,
+      // et le passage suivant l'écrira si la personne reste.
+      if (leavePromptOpen) return;
+      // Les modèles viennent d'être relus par ce passage : les tableaux liés que le document a changé et pas leur modèle partent dans le même lot que sa ligne.
+      const send = linkedSendFor(isMacro);
+      const token = isMacro ? null : LiveEntry.saveToken(); // l'état du texte juste avant qu'il soit lu (écriture en direct)
+      const contenu = isMacro ? remoteTpl.contenu : (send ? send.html : Editor.getHTML());
+      const { dateModif } = await saveScreenAs(id, nom, suiviModifications, contenu, send ? send.writes : null);
+      LiveEntry.published(token, dateModif);
       // Un autre modèle chargé pendant l'écriture (autosaveEpoch) a son propre état : rien de ceci ne lui appartient.
       if (epoch === autosaveEpoch) {
         autosaveLastKnownDateModif = dateModif;
         noteSaved(editVersion);
+        if (send) send.commit();
+        noteKnownState(id);
         updateSaveStatus();
+        LinkedTable.tell(synced, send); // « Enregistré à… » ne doit pas effacer ce que la synchro et l'envoi viennent de dire
       }
     } catch (e) {
       console.error('[main] auto-save : échec d’enregistrement', e);
@@ -1107,11 +1938,19 @@
     catch (e) { console.error('[main] auto-save : vérification de conflit impossible', e); return; }
     if (!remote) return; // lecture sans valeur (cf. readRemoteTemplate) : rien à comparer ce coup-ci, le passage suivant relira
     autosaveLastCheckAt = checkStartedAt;
+    adoptTableName(); // un nom donné ailleurs depuis l'ouverture (GFS) : le titre le prend avant que ce passage n'écrive
     const remoteTpl = remote.remoteTpl;
     if (changedElsewhere(remoteTpl)) {
-      showConflictBanner(remoteTpl);
-      return;
+      // Une personne du direct vient d'enregistrer : sa date est annoncée dans la seconde (adoptLiveSave), le conflit n'est dit qu'au passage d'après, une fois par date inconnue. Le passage suivant relit.
+      const seen = String(remoteTpl.dateModif);
+      if (LiveEntry.expectsAnnouncement() && conflictDeferredFor !== seen) { conflictDeferredFor = seen; autosaveLastCheckAt = -Infinity; return; }
+      // Une présentation dont seules des diapositives à repère ont changé (l'envoi d'une présentation qui les a importées) les prend sans bandeau : sa date devient celle que ce widget connaît, et
+      // ce qui était à enregistrer l'est toujours (js/slide-links.js:adopt).
+      if (!SlideLinks.adopt(EditorCore.getEditor(), remoteTpl)) { showConflictBanner(remoteTpl); return; }
+      autosaveLastKnownDateModif = remoteTpl.dateModif;
     }
+    // Les modèles viennent d'être relus : les tableaux liés du document suivent les leurs, document modifié ou non, en lecture seule aussi (rien n'est écrit).
+    const synced = followLinkedModels();
     if (!autosaveDirty) return;
     // Lecture seule : la vérification de conflit ci-dessus garde son bandeau (le modèle a changé ailleurs), mais rien n'est écrit. Un commentaire
     // posé en Lecture passe par saveReaderCommentAnchors, jamais par ici.
@@ -1121,7 +1960,7 @@
     if (Editor.isEditingHeaderFooter()) return;
     const editVersion = autosaveEditVersion; // Avant de lire quoi que ce soit : ce qui est modifié après reste « à enregistrer » (cf. noteSaved)
     const target = autosaveWriteTarget(remoteTpl);
-    if (target) await writeAutosave(id, target, remoteTpl, epoch, editVersion);
+    if (target) await writeAutosave(id, target, remoteTpl, epoch, editVersion, synced);
   }
 
   function startAutosaveLoop() {
@@ -1129,8 +1968,8 @@
     autosaveTimer = setInterval(autosaveTick, AUTOSAVE_INTERVAL_MS);
   }
 
-  // Menu « Enregistrer » : le bouton garde son geste (un clic, un enregistrement) et son survol ouvre « Enregistrer sous… » (une copie) et la case
-  // « Enregistrement automatique » (cochée par défaut). Même mécanisme que les autres boutons à menu (.v2-hover-group, css/editor-v2.css).
+  // Menu « Enregistrer » : le bouton garde son geste (un clic, un enregistrement) et son survol ouvre « Enregistrer sous… » (une copie), « Historique des
+  // versions… » (openVersionHistory) et la case « Enregistrement automatique » (cochée par défaut). Même mécanisme que les autres boutons à menu (.v2-hover-group, css/editor-v2.css).
   // - Le bouton ne prend pas le focus à la souris, comme tout bouton à menu au survol (délégation de js/editor-core.js) : sinon son menu
   //   (:focus-within) resterait affiché une fois la souris partie, et le curseur quitterait le texte. Un champ de saisie qui l'avait (renommage…) le
   //   perd au clic, avant onSave : le nom validé est bien celui qui s'enregistre. Les lignes du menu, des <span tabindex="0">, sont traitées de même.
@@ -1138,16 +1977,17 @@
   //   clavier, « Enregistrer sous… » met d'abord le focus sur le bouton : la fenêtre qu'elle ouvre le lui rend à sa fermeture, ce qu'une ligne de
   //   menu refermée ne pourrait pas recevoir.
   // - La boucle setInterval de l'enregistrement automatique tourne toujours une fois démarrée ; seul autosaveTick teste isAutosaveEnabled. Décocher
-  //   la case fait donc sauter les passages sans rien arrêter ni recréer (une lecture localStorage toutes les 2,5 s).
+  //   la case fait donc sauter les passages sans rien arrêter ni recréer (une lecture du réglage toutes les 2,5 s).
   function wireSaveMenu() {
     const saveBtn = document.getElementById('btn-save');
     const saveAsRow = document.getElementById('v2-btn-save-as');
+    const historyRow = document.getElementById('v2-btn-history');
     const autosaveRow = document.getElementById('v2-btn-autosave');
     if (!saveBtn) return;
     const holdFocus = (event) => event.preventDefault();
     const blurTextField = () => {
       const active = document.activeElement;
-      if (active && active !== document.body && !active.closest('.ProseMirror') && active.matches('input, textarea, select')) active.blur();
+      if (EditorCore.isFormFieldFocus(active)) active.blur();
     };
     saveBtn.addEventListener('click', onSave);
     // La coche du menu et l'aspect du bouton disent le même état.
@@ -1178,6 +2018,7 @@
       });
     };
     wireRow(saveAsRow, (viaKeyboard) => { if (viaKeyboard) saveBtn.focus(); onSaveAs(); });
+    wireRow(historyRow, (viaKeyboard) => { if (viaKeyboard) saveBtn.focus(); openVersionHistory(); });
     wireRow(autosaveRow, toggleAutosave);
     syncAutosaveRow();
     // Le choix est par navigateur : un autre onglet (ou un autre widget du même document) qui le change se voit ici aussi, sans rechargement.
@@ -1223,19 +2064,27 @@
   // Pour un macro-modèle, le contenu à résoudre n'est jamais Editor.getHTML() (toujours vide, cf. loadMacroIntoEditor) mais la concaténation des
   // modèles retenus pour cette ligne ou cette table (MacroTemplates.buildConcatenatedHtml) : la page de garde et les annexes partagent la même ligne,
   // un seul appel suffit.
-  async function currentDocumentHtml(tableId, record) {
-    if (currentTypeModele !== 'macro') return Editor.getHTML();
+  // Une présentation marque ses sauts de page pour la Lecture et les exports (SlidesEntry.outputHtml : la page de sa dernière diapositive s'ouvre même vide). `options` : { keepProps } garde le repère
+  // de chaque diapositive (transition, fond, notes de l'intervenant), que seul le PowerPoint reprend ; { anchors } (la Lecture) laisse à une diapositive que vise un lien son bloc d'adresse.
+  async function currentDocumentHtml(tableId, record, options) {
+    if (currentTypeModele !== 'macro') return SlidesEntry.outputHtml(currentTypeModele, Editor.getHTML(), Object.assign({ theme: PageLayout.getTheme() }, options));
     if (!record || !tableId) return '';
-    return MacroTemplates.buildConcatenatedHtml(getCurrentMacroSlots(), tableId, record, Templates.getCached());
+    return MacroTemplates.buildConcatenatedHtml(getCurrentMacroSlots(), tableId, record, LinkedTable.resolveTemplates(EditorCore.getEditor(), Templates.getCached()), Object.assign(perModelOption(), { anchors: !!(options && options.anchors) }));
   }
 
+  // « Selon chaque modèle » (PageLayout.isOrientationAuto) : le macro-modèle chargé laisse chaque modèle assemblé garder le sens de sa page. L'assemblage (MacroTemplates) le dit dans
+  // le HTML, d'où la Lecture, le PDF, le Word et l'impression tournent leurs pages ; un sens imposé n'ajoute rien.
+  function perModelOption(perModel = PageLayout.isOrientationAuto()) { return { perModel }; }
+
   async function renderReader(record, recordTableId) {
+    // Un PDF à l'écran (js/pdf-reading.js) : la Lecture montre le PDF, que la ligne de la table change ou non ; il se pose une fois, et seul un modèle qui s'ouvre le remplace.
+    if (PdfReading.isActive()) { await PdfReading.render(readerContainer); return; }
     if (typeof record === 'undefined') record = latestRecord || GristAPI.getCurrentRecord();
     let tableId = recordTableId || GristAPI.getCurrentTableId() || currentTableId;
     // Sans ligne sélectionnée, ReaderMode.render() affiche tout de même son état vide : un simple `return` laisserait #reader-container vide, un
     // écran blanc sans explication. onCreateEmail (mode email) appelle aussi renderReader() alors que currentMode reste 'edit', pour lire le corps
     // résolu sans changer de mode : #reader-container reste display:none tant que currentMode !== 'read' (cf. switchMode).
-    if (!record) { await ReaderMode.render(await currentDocumentHtml(tableId, null), tableId, null, Editor.getHeaderFooterData()); return; }
+    if (!record) { await ReaderMode.render(await currentDocumentHtml(tableId, null, { anchors: true }), tableId, null, Editor.getHeaderFooterData()); return; }
     if (!tableId) {
       const ctx = await GristAPI.detectCurrentContext();
       if (ctx && ctx.tableId) { currentTableId = ctx.tableId; tableId = ctx.tableId; }
@@ -1243,7 +2092,7 @@
     readerContainer.classList.toggle('pp-reader-comments', readerCommentsActive());
     // Le HTML est donné par une fonction : l'assemblage d'un macro-modèle (ses règles de slot) relit des tables, ce qui doit se faire dans les
     // lectures partagées de ce rendu.
-    const html = () => (readerCommentsActive() ? Comments.buildReaderHtml() : currentDocumentHtml(tableId, record));
+    const html = async () => (readerCommentsActive() ? SlidesEntry.outputHtml(currentTypeModele, await Comments.buildReaderHtml(), { anchors: true, theme: PageLayout.getTheme() }) : currentDocumentHtml(tableId, record, { anchors: true }));
     await ReaderMode.render(html, tableId, record, Editor.getHeaderFooterData());
   }
 
@@ -1276,10 +2125,13 @@
     try {
       const suiviModifications = await Editor.getSuiviModificationsForSave();
       const editVersion = autosaveEditVersion;
+      const token = LiveEntry.saveToken(); // l'état du texte juste avant qu'il soit lu (écriture en direct)
       const { dateModif } = await saveScreenAs(id, nom, suiviModifications);
+      LiveEntry.published(token, dateModif);
       if (epoch === autosaveEpoch) {
         autosaveLastKnownDateModif = dateModif;
         noteSaved(editVersion);
+        noteKnownState(id);
         updateSaveStatus();
       }
       // Cache des modèles relu (Templates.save ne le touche pas) : revenir plus tard sur ce modèle doit montrer la marque qui vient d'être posée.
@@ -1291,8 +2143,8 @@
     }
   }
 
-  // Bascule l'affichage d'Objet/À/Cc/Cci entre gabarit brut (édition) et valeurs résolues (lecture) sur les mêmes <input>, jamais dupliqués (cf.
-  // emailFieldsRawCache ci-dessus). Sans ligne sélectionnée, les gabarits bruts restent affichés (rien à résoudre) plutôt qu'un champ vidé sans
+  // Bascule l'affichage d'Objet/À/Cc/Cci entre gabarit brut (édition) et valeurs résolues (lecture) sur les mêmes champs, jamais dupliqués (cf.
+  // emailFieldsRawCache ci-dessus). La valeur résolue s'écrit par showText : un texte, que le champ ne relit pas comme un modèle. Sans ligne sélectionnée, les gabarits bruts restent affichés (rien à résoudre) plutôt qu'un champ vidé sans
   // explication.
   async function updateEmailFieldsDisplay() {
     if (!emailFieldsRow || currentTypeModele !== 'email') return;
@@ -1315,7 +2167,7 @@
     // Repassé en édition (ou modèle changé) pendant la résolution : emailFieldsRawCache a déjà été traité par la branche ci-dessus, ne pas écraser
     // son travail avec ce résultat maintenant obsolète.
     if (currentMode !== 'read' || emailFieldsRawCache !== raw) return;
-    eachEmailInput((input, key) => { input.value = resolved[key]; });
+    eachEmailInput((input, key) => { input.showText(resolved[key]); });
   }
 
   // L'URL mailto: de cette ligne : les champs résolus, et le corps lu dans le rendu de la Lecture (ReaderMode.render : mêmes bulles et chips que le
@@ -1326,7 +2178,7 @@
     if (stale && stale()) return null;
     const content = readerContainer.querySelector('.reader-content');
     const bodyText = MailtoExport.plainTextFromHtml(content ? content.innerHTML : readerContainer.innerHTML);
-    return MailtoExport.buildMailtoUrl({ to: fields.destinataires, cc: fields.cc, bcc: fields.cci, subject: fields.objet, bodyText });
+    return MailtoExport.buildMailtoUrl({ to: fields.destinataires, cc: fields.cc, bcc: fields.cci, subject: fields.objet, bodyText, client: MailtoExport.getMailClient() });
   }
 
   // Jauge de longueur mailto:, permanente, sur l'URL résolue (to+cc+cci+objet+corps) et non sur le gabarit tapé : un accent ou un retour à la ligne
@@ -1381,7 +2233,7 @@
   }
   // Les contrôles qu'un export en cours grise : tous les exports et « Créer l'email », pour qu'on ne lance pas un second export par-dessus le
   // premier.
-  const EXPORT_CONTROL_IDS = ['btn-export-pdf', 'v2-btn-export-pdf-batch', 'v2-btn-export-pdf-merged', 'v2-btn-export-pdf-sheets', 'v2-btn-export-docx', 'v2-btn-export-docx-batch', 'v2-btn-export-xlsx',
+  const EXPORT_CONTROL_IDS = ['btn-export-pdf', 'v2-btn-export-pdf', 'v2-btn-export-pdf-batch', 'v2-btn-export-pdf-merged', 'v2-btn-export-pdf-sheets', 'v2-btn-export-docx', 'v2-btn-export-docx-batch', 'v2-btn-export-xlsx',
     'v2-btn-export-xlsx-batch', 'v2-btn-export-xlsx-single', 'btn-create-email'];
   function withExportLock(fn) {
     return async (...args) => {
@@ -1410,17 +2262,30 @@
   // L'état de fin d'un export réussi : son texte, précédé - quand des images n'ont pas pu être lues et manquent dans le fichier
   // (ExportCommon.noteUnreadImage) - de leur nombre, en tête : le coin d'état coupe ce qui dépasse, à droite. Le fichier est bien produit : ce n'est
   // pas une erreur (pas de rouge), mais la personne n'a plus à ouvrir le fichier pour s'en apercevoir.
-  function setExportDoneStatus(text) {
+  function setExportDoneStatus(text, note) {
     const unread = ExportCommon.unreadImageCount();
-    setStatus(unread ? I18n.t('status.imagesUnread', { n: unread }) + ' ' + text : text);
+    const done = unread ? I18n.t('status.imagesUnread', { n: unread }) + ' ' + text : text;
+    // `note` : ce qui n'a pas pu se faire après l'export (stampExportDate), en tête et en rouge - le coin d'état coupe à droite, et le fichier, lui, est bien produit.
+    setStatus(note ? note + ' ' + done : done, !!note);
   }
+
+  // La date du dernier export PDF (js/export-date.js), écrite une fois le fichier produit pour ces lignes. Rend ce qu'il faut dire quand elle n'a pas pu l'être,
+  // '' sinon (rien à écrire, écrite, ou compte Lecteur). Tout nouveau chemin d'export PDF l'appelle après son téléchargement.
+  async function stampExportDate(tableId, rowIds) {
+    const problem = await ExportDate.stamp(tableId, rowIds);
+    return problem ? I18n.t('status.exportDate.' + problem.reason, { column: problem.column }) : '';
+  }
+
+  // Les exports qui écrivent la cible d'une diapositive que vise un lien (le PDF, le Word, le HTML : js/pdf-export.js, js/docx-export.js, js/html-export.js) ont son bloc d'adresse (SlideProps.forOutput,
+  // option `anchors`), comme l'impression par le navigateur (`slideAnchors` : js/print-export.js en fait une destination) ; le Markdown, le tableur, l'e-mail et le PowerPoint (qui écrit les liens lui-même) n'en ont pas : un lien y reste du texte.
+  const writesSlideAnchors = spec => !!spec.slideAnchors || (spec.engines || []).some(engine => engine === 'pdf' || engine === 'docx' || engine === 'html');
 
   // Le document de la ligne courante pour un export seul : { html, headerFooterData } - ceux du modèle, avec la valeur de chaque liste réglée « Un
   // document par valeur » (js/list-split.js) quand elle n'en a qu'une -, ou { split } quand la ligne fait plusieurs documents : l'appelant passe
   // alors à l'archive d'onExportBatch (PDF, Word ou Excel, un fichier par valeur). Sans liste ainsi réglée, le HTML et les en-têtes du modèle, tels
   // quels.
-  async function currentRecordDocument(tableId, record) {
-    const html = await currentDocumentHtml(tableId, record);
+  async function currentRecordDocument(tableId, record, options) {
+    const html = await currentDocumentHtml(tableId, record, options);
     const headerFooterData = Editor.getHeaderFooterData();
     const plan = await ListSplit.plan(ListSplit.partsOf(html, headerFooterData), tableId, record);
     if (plan.variants.length > 1) return { split: { record, plan, html } };
@@ -1428,14 +2293,33 @@
   }
 
   // Les exports d'une seule ligne : le lot que prend son document quand « Un document par valeur » le découpe, l'alerte sans ligne, les textes du
-  // coin d'état et l'export lui-même (`doc` : { html, headerFooterData }, cf. currentRecordDocument). Word n'a ni sélecteur de qualité ni autre mode
-  // (cf. en-tête de js/docx-export.js). Excel exporte le tableau d'une grille, sans en-tête ni pied de page ni marges du document : la feuille
-  // reprend l'orientation et les marges de PageLayout. `engines` : les moteurs de js/export-engines.js que `run` appelle, chargés au premier export.
+  // coin d'état et l'export lui-même (`doc` : { html, headerFooterData }, cf. currentRecordDocument), et `stampsExportDate` pour le PDF seul : la date de son dernier
+  // export s'écrit dans la colonne choisie (js/export-date.js). Word n'a ni sélecteur de qualité ni autre mode
+  // (cf. en-tête de js/docx-export.js). Le type choisi dans le menu « Type d'export » (selectedExportType) décide lequel part au bouton Exporter. Excel exporte le tableau d'une grille, sans en-tête ni pied de page ni marges du document : la feuille
+  // reprend l'orientation et les marges de PageLayout. `engines` : les moteurs de js/export-engines.js que `run` appelle, chargés au premier export. Le PDF d'une
+  // présentation ne demande jamais « Exporter quand même ? » pour une page blanche : chacune est une diapositive (SlidesEntry.showsEveryPage).
   const SINGLE_EXPORTS = {
     pdf: {
       engines: ['pdf'],
       batch: 'pdfZip', noRecord: 'alert.noRecordForExport', generating: 'status.pdfGenerating', generated: 'status.pdfGenerated', failed: 'status.pdfGenerationError',
-      run: (doc, tableId, record) => PdfExport.exportCurrentRecord(doc.html, tableId, record, getPdfFilenameTemplate(), doc.headerFooterData, PageLayout.getMarginsPt()),
+      stampsExportDate: true,
+      run: (doc, tableId, record) => PdfExport.exportCurrentRecord(doc.html, tableId, record, getPdfFilenameTemplate(), doc.headerFooterData, PageLayout.getMarginsPt(), undefined, pdfImageQuality(), undefined, SlidesEntry.showsEveryPage(currentTypeModele)),
+    },
+    // « PDF protégé » (type du menu Type d'export) : le même PDF vectoriel, chiffré avec le mot de passe, les autorisations et les propriétés que la fenêtre
+    // (js/pdf-protection-dialog.js) vient de fixer, avant tout le reste (`protect`). « Impression navigateur » n'a pas de sens ici (le navigateur imprime, il ne chiffre pas) :
+    // la qualité « Léger » seule s'applique. Un document découpé « Un document par valeur » reste un lot protégé (une archive ZIP).
+    pdfProtected: {
+      engines: ['pdf'], protect: true,
+      batch: 'pdfProtectedZip', noRecord: 'alert.noRecordForExport', generating: 'status.pdfGenerating', generated: 'status.pdfProtectedGenerated', failed: 'status.pdfGenerationError',
+      stampsExportDate: true,
+      run: (doc, tableId, record, protection) => PdfExport.exportCurrentRecord(doc.html, tableId, record, getPdfFilenameTemplate(), doc.headerFooterData, PageLayout.getMarginsPt(), undefined, pdfImageQuality(), PdfProtection.docFields(protection), SlidesEntry.showsEveryPage(currentTypeModele)),
+    },
+    // « Impression navigateur » (qualité du bouton PDF) : la Lecture, imprimée par le navigateur (js/print-export.js), sans moteur à charger. Un document
+    // découpé « Un document par valeur » reste un lot : le lot PDF (archive ZIP), une impression ne faisant qu'un document.
+    print: {
+      engines: [], slideAnchors: true,
+      batch: 'pdfZip', noRecord: 'alert.noRecordForExport', generating: 'status.printPreparing', generated: 'status.printStarted', failed: 'status.printFailed',
+      run: (doc, tableId, record) => PrintExport.printRecord(doc.html, tableId, record, getPdfFilenameTemplate(), doc.headerFooterData),
     },
     docx: {
       engines: ['docx'],
@@ -1447,31 +2331,169 @@
       batch: 'xlsxZip', noRecord: 'alert.noRecordForExportXlsx', generating: 'status.xlsxGenerating', generated: 'status.xlsxGenerated', failed: 'status.xlsxGenerationError',
       run: (doc, tableId, record) => XlsxExport.exportCurrentRecord(doc.html, tableId, record, getPdfFilenameTemplate()),
     },
+    // PowerPoint (js/pptx-export.js) : la présentation, une diapositive du fichier par diapositive, objets modifiables ; `keepProps` : le HTML garde le repère de chaque diapositive, d'où viennent sa transition, son fond et ses notes.
+    pptx: {
+      engines: ['pptx'], keepProps: true,
+      batch: 'pptxZip', noRecord: 'alert.noRecordForExportPptx', generating: 'status.pptxGenerating', generated: 'status.pptxGenerated', failed: 'status.pptxGenerationError',
+      run: (doc, tableId, record) => PptxExport.exportCurrentRecord(doc.html, tableId, record, getPdfFilenameTemplate(), doc.headerFooterData, PageLayout.getMarginsPt()),
+    },
+    // Markdown (js/markdown-export.js) : le texte du document, sans marges ni pages ; comme le Word, il est fait pour un document, pas pour une grille.
+    md: {
+      engines: ['md'],
+      batch: 'mdZip', noRecord: 'alert.noRecordForExportMd', generating: 'status.mdGenerating', generated: 'status.mdGenerated', failed: 'status.mdGenerationError',
+      run: (doc, tableId, record) => MarkdownExport.exportCurrentRecord(doc.html, tableId, record, getPdfFilenameTemplate(), doc.headerFooterData),
+    },
+    // HTML (js/html-export.js) : le texte du document qui coule comme une page web, ni pages ni marges. `html` : le fichier complet à déposer sur un site ; `htmlFragment` : le contenu
+    // seul à coller dans un bloc de page (`fragment`). Comme le Word et le Markdown, ils ne font que des documents.
+    html: {
+      engines: ['html'],
+      batch: 'htmlZip', noRecord: 'alert.noRecordForExportHtml', generating: 'status.htmlGenerating', generated: 'status.htmlGenerated', failed: 'status.htmlGenerationError',
+      run: (doc, tableId, record) => HtmlExport.exportCurrentRecord(doc.html, tableId, record, getPdfFilenameTemplate(), doc.headerFooterData),
+    },
+    htmlFragment: {
+      engines: ['html'],
+      batch: 'htmlFragmentZip', noRecord: 'alert.noRecordForExportHtml', generating: 'status.htmlGenerating', generated: 'status.htmlGenerated', failed: 'status.htmlGenerationError',
+      run: (doc, tableId, record) => HtmlExport.exportCurrentRecord(doc.html, tableId, record, getPdfFilenameTemplate(), doc.headerFooterData, { fragment: true }),
+    },
   };
+
+  // Les réglages de « PDF protégé » pour la ligne affichée : ceux de la fenêtre tels quels, sauf pour « Un par ligne », où le mot de passe est celui de la cellule de CETTE ligne. La ligne
+  // de l'écran (grist.onRecord) ne porte que les colonnes affichées : la ligne se relit en entier dans Grist, colonne des mots de passe comprise. Lève l'erreur de
+  // PdfProtection.settingsForRow (`passwordProblem`, `column`) quand la cellule ne donne pas un mot de passe utilisable.
+  async function protectionForRecord(protection, tableId, record) {
+    if (protection.mode !== 'column') return protection;
+    return PdfProtection.settingsForRow(protection, await GristAPI.fetchRowById(tableId, record.id, true));
+  }
 
   async function exportRecordAs(kind) {
     const spec = SINGLE_EXPORTS[kind];
     Editor.exitHeaderFooterModeIfActive();
     const record = GristAPI.getCurrentRecord();
     if (!record) { alert(exportText(spec.noRecord)); return; }
+    // « PDF protégé » : la fenêtre du mot de passe d'abord, avant « Génération en cours… » - y renoncer ne lance rien. Elle vaut aussi pour le lot que découpe « Un document par valeur ».
+    const tableId = currentTableId || GristAPI.getCurrentTableId();
+    let protection;
+    if (spec.protect) {
+      protection = await PdfProtectionDialog.open({ table: tableId });
+      if (!protection) { setStatus(I18n.t('status.exportCancelled')); return; }
+    }
     setStatus(I18n.t(spec.generating));
     try {
-      const tableId = currentTableId || GristAPI.getCurrentTableId();
-      const doc = await currentRecordDocument(tableId, record);
-      if (doc.split) { await onExportBatch(spec.batch, doc.split); return; }
+      // « Un par ligne » : le mot de passe de CETTE ligne, lu maintenant ; sa cellule inutilisable arrête l'export avant tout travail (jamais un PDF sans le mot de passe attendu).
+      if (protection) protection = await protectionForRecord(protection, tableId, record);
+      const doc = await currentRecordDocument(tableId, record, { keepProps: !!spec.keepProps, anchors: writesSlideAnchors(spec) });
+      if (doc.split) { await onExportBatch(spec.batch, doc.split, { protection }); return; }
       await ExportEngines.ensure(spec.engines);
-      await spec.run(doc, tableId, record);
-      setExportDoneStatus(I18n.t(spec.generated));
+      PdfDelivery.takeReport();   // un rapport resté d'un export d'avant ne dit rien de celui-ci
+      const saved = await spec.run(doc, tableId, record, protection);
+      // « Annuler » sur la fenêtre des pages blanches (le PDF seul, js/pdf-export.js) : rien n'est enregistré, et la ligne n'est pas datée.
+      if (saved === false) { setStatus(I18n.t('status.exportCancelled')); return; }
+      // Le PDF a pu être rangé dans GFS au lieu d'être téléchargé, ou en plus (js/pdf-delivery.js) : le coin d'état le dit, et la ligne n'est datée que si le fichier est parti quelque part (la personne qui refuse le nom chez GFS n'a pas de PDF).
+      const delivery = PdfDelivery.takeReport();
+      const said = PdfDelivery.describe(delivery);
+      const gone = !delivery || !delivery.shelved || delivery.delivered.size > 0;
+      const problem = spec.stampsExportDate && gone ? await stampExportDate(tableId, [record.id]) : '';
+      const generated = I18n.t(spec.generated);
+      setExportDoneStatus(said.text ? (delivery.downloaded ? said.text + ' ' + generated : said.text) : generated, [said.note, problem].filter(Boolean).join(' '));
     } catch (e) {
       // « Annuler » sur la fenêtre des images d'un site externe (js/external-images.js) : un choix, pas une erreur.
       if (ExternalImages.isCancel(e)) { setStatus(I18n.t('status.exportCancelled')); return; }
+      // « Un par ligne » : la cellule de mot de passe de cette ligne ne sert pas (vide, trop longue...) - la phrase dit laquelle et quelle colonne, rien n'a été généré.
+      if (e && e.passwordProblem) { setStatus(I18n.t('status.pdfPasswordProblem.' + e.passwordProblem, { column: e.column }), true); return; }
+      // Un document de plus de PrintExport.MAX_PAGES pages : l'impression navigateur le refuse (son coût croît avec le carré du nombre de pages) ; ce n'est
+      // pas une panne, la phrase dit quoi choisir à la place.
+      if (PrintExport.isTooLong(e)) { setStatus(I18n.t('status.printTooLong', { n: e.pages, max: PrintExport.MAX_PAGES }), true); return; }
       console.error(e);
       setStatus(I18n.t(spec.failed), true);
     }
   }
-  const onExportPdf = () => exportRecordAs('pdf');
+  // Le type d'export (menu du bouton à gauche d'Exporter, ex-« Qualité PDF ») : PDF, PDF protégé, Word, Excel, Markdown, Markdown (modèle), HTML ou HTML (contenu à coller), gardé dans la liste cachée
+  // #v2-export-type comme la qualité du PDF l'est dans #v2-pdf-quality. Word, Markdown et HTML n'ont de sens que pour un document (un macro-modèle compris) et Excel que pour une
+  // grille ; « Markdown (modèle) » écrit le contenu du modèle ouvert (ses variables comprises), donc ni une grille ni un macro-modèle, qui n'a pas de contenu à lui : un type
+  // que le modèle ouvert ne sait pas faire n'est pas proposé (ligne grisée) et le bouton Exporter retombe sur le PDF, jamais sur une erreur.
+  function exportTypeAvailable(type) {
+    const grid = GridEditor.isGridType(currentTypeModele);
+    return type === 'pdf' || type === 'pdfProtected' || ((type === 'docx' || type === 'md' || type === 'html' || type === 'htmlFragment') && !grid) || (type === 'xlsx' && grid)
+      || (type === 'mdTemplate' && !grid && currentTypeModele !== 'macro') || (type === 'pptx' && currentTypeModele === 'presentation');
+  }
+  // Pourquoi une ligne du menu « Type d'export » est grisée pour le modèle ouvert (js/lock-reasons.js) : PowerPoint ne sert qu'une présentation, Excel qu'une grille, un tableau seul ne s'écrit ni en Word, ni en Markdown, ni en HTML,
+  // un macro-modèle n'a pas de texte à écrire en Markdown.
+  function exportTypeReason(type) {
+    if (type === 'pptx') return I18n.t('lock.exportPptx');
+    if (type === 'xlsx') return I18n.t('lock.exportXlsx');
+    if (type === 'mdTemplate' && currentTypeModele === 'macro') return I18n.t('lock.exportMacroMd');
+    return GridEditor.isGridType(currentTypeModele) ? I18n.t('lock.exportNotGrid') : '';
+  }
+  function selectedExportType() {
+    const select = document.getElementById('v2-export-type');
+    const type = select ? select.value : 'pdf';
+    return exportTypeAvailable(type) ? type : 'pdf';
+  }
+  // La qualité du PDF : « Impression navigateur » imprime la Lecture par le navigateur, toute autre ligne garde le PDF vectoriel. Les lots (toutes les
+  // lignes, PDF fusionné, planches) restent vectoriels et suivent « Léger » comme le PDF d'une ligne : il ne change que le poids des images (PdfExport,
+  // ImageIo.lighten), jamais la page.
+  function selectedPdfQuality() {
+    const select = document.getElementById('v2-pdf-quality');
+    return select ? select.value : 'native';
+  }
+  // Ce que le moteur PDF reçoit de la qualité choisie : 'light' ramène les images à leur définition, toute autre ligne les reprend telles quelles.
+  function pdfImageQuality() {
+    return selectedPdfQuality() === 'light' ? 'light' : 'native';
+  }
+  const onExportPdf = () => exportRecordAs(selectedPdfQuality() === 'browser-print' ? 'print' : 'pdf');
+  const onExportPdfProtected = () => exportRecordAs('pdfProtected');
   const onExportDocx = () => exportRecordAs('docx');
+  const onExportPptx = () => exportRecordAs('pptx');
   const onExportXlsx = () => exportRecordAs('xlsx');
+  const onExportMd = () => exportRecordAs('md');
+  const onExportHtml = () => exportRecordAs('html');
+  const onExportHtmlFragment = () => exportRecordAs('htmlFragment');
+  // « Markdown (modèle) » : le modèle ouvert tel que l'éditeur le montre, ses variables écrites {{Table.Colonne}} et le reste de ses éléments de fusion en HTML en ligne
+  // (js/markdown-export.js:exportTemplate), pour que l'import le relise intact. Ni ligne, ni valeur : rien à lire dans Grist, un seul fichier nommé d'après le modèle.
+  async function onExportMdTemplate() {
+    Editor.exitHeaderFooterModeIfActive();
+    setStatus(I18n.t('status.mdGenerating'));
+    try {
+      await ExportEngines.ensure(['md']);
+      await MarkdownExport.exportTemplate(SlideLinks.strip(Editor.getHTML()), Editor.getHeaderFooterData(), sanitizeFilenamePart(templateNameInput ? templateNameInput.value : ''));
+      setExportDoneStatus(I18n.t('status.mdTemplateGenerated'));
+    } catch (e) {
+      console.error(e);
+      setStatus(I18n.t('status.mdGenerationError'), true);
+    }
+  }
+  // Les lignes que le bouton Exporter exporte (options du menu du bouton Exporter, demande du 12/10) : « une seule ligne » (la ligne affichée) ou
+  // toutes les lignes de la table - un ZIP (un fichier par ligne), un seul PDF, l'assemblage avant impression, ou pour Excel un seul classeur. L'option cochée est
+  // gardée dans la liste cachée #v2-export-lines. Chaque type n'a que ses lots (EXPORT_BATCH_OF) : une option que le type ne connaît pas (le PDF unique après un
+  // passage à Word, le classeur unique après un retour au PDF) retombe sur « toutes les lignes (ZIP) » sans toucher au choix gardé, qui revient avec son type.
+  const EXPORT_BATCH_OF = {
+    pdf: { zip: 'pdfZip', merged: 'pdfMerged', sheets: 'pdfSheets' },
+    // Le PDF protégé n'a ni PDF unique ni planche : pdf-lib, qui assemble des PDF, ne sait pas les chiffrer (lignes grisées dans le menu Exporter).
+    pdfProtected: { zip: 'pdfProtectedZip' },
+    docx: { zip: 'docxZip' },
+    pptx: { zip: 'pptxZip' },
+    xlsx: { zip: 'xlsxZip', workbook: 'xlsxSingle' },
+    md: { zip: 'mdZip' },
+    html: { zip: 'htmlZip' },
+    htmlFragment: { zip: 'htmlFragmentZip' },
+    // Le modèle n'est pas une ligne : un seul fichier, jamais de lot (le menu Exporter ne propose rien d'autre que le dire).
+    mdTemplate: {},
+  };
+  const EXPORT_LINES = ['one', 'zip', 'merged', 'sheets', 'workbook'];
+  function selectedExportLines(type) {
+    const select = document.getElementById('v2-export-lines');
+    const lines = select ? select.value : 'one';
+    if (EXPORT_LINES.indexOf(lines) === -1 || lines === 'one') return 'one';
+    if (EXPORT_BATCH_OF[type][lines]) return lines;
+    return EXPORT_BATCH_OF[type].zip ? 'zip' : 'one';
+  }
+  // Le bouton Exporter (et Alt+P) : ce que le menu coche, dans le type choisi - la ligne affichée, ou tout un lot (avec sa confirmation, comme avant).
+  const onExport = () => {
+    const type = selectedExportType();
+    const lines = selectedExportLines(type);
+    if (lines !== 'one') return onExportBatch(EXPORT_BATCH_OF[type][lines]);
+    return ({ pdf: onExportPdf, pdfProtected: onExportPdfProtected, docx: onExportDocx, pptx: onExportPptx, xlsx: onExportXlsx, md: onExportMd, mdTemplate: onExportMdTemplate, html: onExportHtml, htmlFragment: onExportHtmlFragment })[type]();
+  };
 
   // Mode email (planning/feature-email-mode.md) : construit l'URL mailto: de la ligne courante et l'ouvre par un <a> synthétique plutôt que
   // window.location.href, dont le comportement dans l'iframe sandboxée d'un widget Grist est moins prévisible. Le corps réutilise la résolution du
@@ -1492,11 +2514,13 @@
         setStatus('');
         return;
       }
-      const a = document.createElement('a');
-      a.href = url;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
+      const link = document.createElement('a');
+      link.href = url;
+      // Dans le cadre isolé de GFS, un lien mailto: suivi dans le cadre le ferait mourir : nouvel onglet (consigne GFS 011). Seule, rien ne change.
+      if (GfsLink.opensInNewTab(url)) { link.target = '_blank'; link.rel = 'noopener noreferrer'; }
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
       setStatus(I18n.t('status.emailCreated'));
     } catch (e) {
       console.error('[main] échec de la création de l’email', e);
@@ -1509,6 +2533,8 @@
   const GRID_WORDING = {
     'toolbar.exportPdfBatch': 'toolbar.exportPdfBatchGrid',
     'toolbar.exportPdfMerged': 'toolbar.exportPdfMergedGrid',
+    'exportLines.zip': 'exportLines.zipGrid',
+    'exportLines.merged': 'exportLines.mergedGrid',
     'dialog.batchExport.title': 'dialog.batchExport.titleGrid',
     'confirm.batchExport': 'confirm.batchExportGrid',
     'confirm.mergedExport': 'confirm.mergedExportGrid',
@@ -1525,8 +2551,9 @@
   }
 
   // Les exports qui n'ont de sens que pour un seul genre de modèle : Word pour un document, Excel pour une grille. La ligne de l'autre genre reste
-  // dans le menu, grisée ; son clic ne fait rien (cf. onExportRow, au câblage des boutons). Les deux lignes PDF « toutes les lignes » prennent aussi
-  // les mots de la grille (`data-i18n` change, pour que le texte suive un changement de langue).
+  // dans la page, grisée (même masquée) ; son clic ne fait rien (cf. onExportRow, au câblage des boutons). Les deux lignes PDF « toutes les lignes » et
+  // leurs options du menu Exporter prennent aussi les mots de la grille. Les menus
+  // d'export suivent ensuite (syncExportMenus) : le type Word ou Excel que le nouveau modèle ne sait pas faire revient au PDF.
   function syncExportRowsForModelType() {
     const grid = GridEditor.isGridType(currentTypeModele);
     const grey = (id, off) => {
@@ -1537,13 +2564,68 @@
     };
     ['v2-btn-export-docx', 'v2-btn-export-docx-batch'].forEach(id => grey(id, grid));
     ['v2-btn-export-xlsx', 'v2-btn-export-xlsx-batch', 'v2-btn-export-xlsx-single'].forEach(id => grey(id, !grid));
-    [['v2-btn-export-pdf-batch', 'toolbar.exportPdfBatch'], ['v2-btn-export-pdf-merged', 'toolbar.exportPdfMerged']].forEach(([id, key]) => {
+    [['v2-btn-export-pdf-batch', 'toolbar.exportPdfBatch'], ['v2-btn-export-pdf-merged', 'toolbar.exportPdfMerged'],
+      ['v2-export-lines-zip', 'exportLines.zip'], ['v2-export-lines-merged', 'exportLines.merged']].forEach(([id, key]) => {
       const row = document.getElementById(id);
       if (!row) return;
       const wanted = grid ? GRID_WORDING[key] : key;
-      row.setAttribute('data-i18n', wanted);
       row.textContent = I18n.t(wanted);
     });
+    syncExportMenus();
+  }
+
+  // Les deux menus d'export d'accord avec le type choisi, l'option de lignes cochée et le genre du modèle ouvert (on grise ou on masque ce qui ne s'applique
+  // pas, les lignes restent dans la page) :
+  // - menu « Type d'export » (#v2-quality-flyout) : la ligne du type choisi est active ; Word ou Excel, que le modèle ne sait pas faire, est grisé ; la qualité du
+  //   PDF (intitulé, filet et trois lignes : `data-export-for="pdf pdfProtected"`) n'est montrée que pour les deux PDF - demande du 12/10 -, la qualité choisie est gardée
+  //   et revient avec le PDF (hors des PDF ses lignes sont aussi grisées : un clic dessus ne choisit rien). En PDF protégé, « Impression navigateur » reste montrée mais grisée
+  //   (`data-export-grey-for` : le navigateur imprime, il ne chiffre pas) et la ligne active est celle qui s'applique, « Vectoriel » si c'était l'impression ;
+  // - menu « Exporter » (#v2-export-pdf-flyout) : seules les options du type choisi sont montrées (`data-export-for`, une liste de types) et celle que le bouton
+  //   Exporter lance, selectedExportLines, est cochée (`aria-checked`). Une option que le type montre sans pouvoir la faire est grisée, avec sa raison en info-bulle
+  //   (`data-export-grey-for` : le PDF unique et l'assemblage en PDF protégé, que pdf-lib assemble sans pouvoir les chiffrer). Sous les options de lignes, pour les deux PDF seulement, la
+  //   destination du PDF (intitulé, filet et trois lignes `data-destination`) : `PdfDelivery.sync` coche celle qui s'applique et grise, avec sa raison, les deux qui rangent dans GFS quand GFS
+  //   n'héberge pas l'app ou ne répond pas. Elle est dans ce menu et non dans celui du type, dont le bas est à 490 px pour un panneau de 400 ;
+  // - le bouton du type est allumé quand ce n'est pas le PDF, pour qu'on sache avant de cliquer sur Exporter que le fichier ne sera pas un PDF.
+  // Un type que le modèle ne sait pas faire revient au PDF pour de bon (la liste cachée est remise), de sorte que le modèle suivant ne le retrouve pas.
+  function syncExportMenus() {
+    const typeSelect = document.getElementById('v2-export-type');
+    const qualitySelect = document.getElementById('v2-pdf-quality');
+    const typeFlyout = document.getElementById('v2-quality-flyout');
+    const exportFlyout = document.getElementById('v2-export-pdf-flyout');
+    const typeButton = document.getElementById('v2-btn-quality');
+    if (!typeSelect || !qualitySelect || !typeFlyout || !exportFlyout || !typeButton) return;
+    if (!exportTypeAvailable(typeSelect.value)) typeSelect.value = 'pdf';
+    const type = typeSelect.value;
+    // Une ligne grisée dit pourquoi : en info-bulle au survol et, au clic, dans le coin d'état (js/lock-reasons.js, cause « mode »). Une ligne qui ne l'est pas n'en porte pas.
+    const grey = (row, off, reason) => {
+      row.classList.toggle('v2-hover-row-disabled', off);
+      if (off) row.setAttribute('aria-disabled', 'true'); else row.removeAttribute('aria-disabled');
+      LockReasons.set(row, 'mode', off && reason ? reason : '');
+    };
+    typeFlyout.querySelectorAll('.v2-hover-row[data-export-type]').forEach(row => {
+      row.classList.toggle('is-active', row.dataset.exportType === type);
+      grey(row, !exportTypeAvailable(row.dataset.exportType), exportTypeReason(row.dataset.exportType));
+    });
+    const greyedFor = (row, key) => ((row.dataset.exportGreyFor || '').split(' ').indexOf(type) !== -1 ? I18n.t(key) : '');
+    const pdfType = type === 'pdf' || type === 'pdfProtected';
+    typeFlyout.querySelectorAll('.v2-hover-row[data-quality]').forEach(row => {
+      const applied = type === 'pdfProtected' && qualitySelect.value === 'browser-print' ? 'native' : qualitySelect.value;
+      row.classList.toggle('is-active', pdfType && row.dataset.quality === applied);
+      const notForProtected = greyedFor(row, 'quality.protectedOff');
+      grey(row, !pdfType || !!notForProtected, notForProtected || I18n.t('lock.exportPdfOnly'));
+    });
+    // Où va le PDF (js/pdf-delivery.js) : télécharger, ranger dans GFS ou les deux ; les deux lignes qui rangent sont grisées sans GFS.
+    PdfDelivery.sync(exportFlyout);
+    [typeFlyout, exportFlyout].forEach(flyout => flyout.querySelectorAll('[data-export-for]').forEach(el => {
+      el.hidden = el.dataset.exportFor.split(' ').indexOf(type) === -1;
+    }));
+    const lines = selectedExportLines(type);
+    exportFlyout.querySelectorAll('.v2-hover-row[data-export-lines]').forEach(row => {
+      row.setAttribute('aria-checked', row.dataset.exportLines === lines ? 'true' : 'false');
+      const protectedOff = greyedFor(row, 'exportLines.protectedOff');
+      grey(row, !!protectedOff, protectedOff);
+    });
+    typeButton.classList.toggle('active', type !== 'pdf');
   }
 
   // Caractères invalides dans un nom de fichier ZIP ou Windows : une valeur de cellule comme « Dupont/Fils » casserait l'arborescence du ZIP si elle
@@ -1564,7 +2646,7 @@
 
   // Export en lot : une ligne = un fichier, regroupés dans une archive ZIP (PDF, DOCX ou classeur Excel), ou mis bout à bout dans un seul PDF
   // (js/pdf-merge.js : même rendu par ligne que le ZIP, une nouvelle page par ligne) ou un seul classeur Excel (une feuille par ligne,
-  // js/xlsx-export.js). Lit toutes les lignes via docApi, sans le filtre de vue.
+  // js/xlsx-export.js). Lit les lignes de la vue Grist, ou toute la table via docApi (cf. readBatchRows).
   // Ce qui change d'un export à l'autre : ses textes (clés i18n), le nom des fichiers, la fonction qui rend une ligne et ses marges (points pour le
   // PDF, twips pour le DOCX, aucune pour l'Excel dont la feuille reprend la page du modèle) et ses bibliothèques (`loadLibs` : l'archive ZIP n'a
   // besoin que de JSZip, ~0,1 Mo, pas du lot PDF de ~4 Mo). Le reste (lecture des lignes, confirmation, boucle, archive, téléchargement) est commun.
@@ -1578,12 +2660,26 @@
   const PDF_BATCH = {
     label: 'PDF', loading: 'status.loadingPdfLibs', loadError: 'status.pdfLibsLoadError', progress: 'status.batchExportProgress', noFile: 'status.exportError',
     engines: ['pdf'], margins: () => PageLayout.getMarginsPt(),
-    renderRow: (html, tableId, row, filenameTemplate, headerFooterData, margins) => PdfExport.getNativePdfBlobForRecord(html, tableId, row, filenameTemplate, headerFooterData, margins),
+    // La date du dernier export PDF s'écrit pour les lignes du fichier (js/export-date.js) : les trois lots PDF, ZIP, PDF unique et planche.
+    stampsExportDate: true,
+    // Le fichier d'un lot PDF peut se ranger dans GFS (js/pdf-delivery.js) au lieu de se télécharger, ou en plus : le PDF unique et la planche d'un bloc, l'archive ZIP PDF par PDF.
+    shelvable: true,
+    // Le PDF d'une ligne sait si son modèle est une grille (un lot « Modèle selon la ligne » peut mêler grilles et documents), et la qualité du menu Type d'export
+    // choisie au départ du lot (`imageQuality`, cf. openBatchSink) : 'light' ramène les images à leur définition.
+    // `docFields` : ceux d'un PDF protégé (js/pdf-protection.js), absents d'un PDF ordinaire. Le PDF d'une présentation ne signale aucune page blanche : chacune est une diapositive
+    // (SlidesEntry.showsEveryPage).
+    renderRow: (html, tableId, row, filenameTemplate, headerFooterData, margins, _pageOptions, typeModele, imageQuality, docFields) => PdfExport.getNativePdfBlobForRecord(html, tableId, row, filenameTemplate, headerFooterData, margins, GridEditor.isGridType(typeModele), imageQuality, docFields, SlidesEntry.showsEveryPage(typeModele)),
   };
   const BATCH_EXPORTS = {
     pdfZip: Object.assign({}, PDF_BATCH, {
       confirm: 'confirm.batchExport', done: 'status.batchExportDone', doneWithFailures: 'status.batchExportDoneWithFailures',
       entryExt: '.pdf', fileSuffix: '-export-pdf.zip',
+      loadLibs: async () => { await PdfExport.ensurePdfLibsLoaded(); await ExportCommon.ensureJsZipLoaded(); },
+    }),
+    // « PDF protégé » en lot : les PDF d'une archive ZIP, chacun chiffré avec le même mot de passe (`protect` : la fenêtre js/pdf-protection-dialog.js tient lieu de confirmation).
+    pdfProtectedZip: Object.assign({}, PDF_BATCH, {
+      protect: true, confirm: 'confirm.batchExport', done: 'status.batchExportDoneProtected', doneWithFailures: 'status.batchExportDoneWithFailuresProtected',
+      entryExt: '.pdf', fileSuffix: '-export-pdf-protege.zip',
       loadLibs: async () => { await PdfExport.ensurePdfLibsLoaded(); await ExportCommon.ensureJsZipLoaded(); },
     }),
     pdfMerged: Object.assign({}, PDF_BATCH, {
@@ -1608,12 +2704,44 @@
       loadLibs: () => ExportCommon.ensureJsZipLoaded(),
       renderRow: (html, tableId, row, filenameTemplate, headerFooterData, margins) => DocxExport.getDocxBlobForRecord(html, tableId, row, filenameTemplate, headerFooterData, margins),
     },
+    // Un fichier .pptx par ligne, dans une archive ZIP (js/pptx-export.js) : la page du modèle est celle des diapositives, `keepProps` garde le repère de chacune (transition, fond, notes).
+    pptxZip: {
+      label: 'PowerPoint', confirm: 'confirm.batchExportPptx', loading: 'status.loadingExportLibs', loadError: 'status.exportLibsLoadError', progress: 'status.batchExportProgressPptx',
+      noFile: 'status.exportErrorPptx', done: 'status.batchExportDonePptx', doneWithFailures: 'status.batchExportDoneWithFailuresPptx',
+      entryExt: '.pptx', fileSuffix: '-export-pptx.zip', margins: () => PageLayout.getMarginsPt(), grid: false, engines: ['pptx'], keepProps: true,
+      loadLibs: () => ExportCommon.ensureJsZipLoaded(),
+      renderRow: (html, tableId, row, filenameTemplate, headerFooterData, margins) => PptxExport.getPptxBlobForRecord(html, tableId, row, filenameTemplate, headerFooterData, margins),
+    },
     xlsxZip: {
       label: 'Excel', confirm: 'confirm.batchExportXlsx', loading: 'status.loadingExportLibs', loadError: 'status.exportLibsLoadError', progress: 'status.batchExportProgressXlsx',
       noFile: 'status.exportErrorXlsx', done: 'status.batchExportDoneXlsx', doneWithFailures: 'status.batchExportDoneWithFailuresXlsx',
       entryExt: '.xlsx', fileSuffix: '-export-xlsx.zip', grid: true, engines: ['xlsx'], pageOptions: () => XlsxExport.pageOptionsFromLayout(),
       loadLibs: async () => { await ExportCommon.ensureJsZipLoaded(); await XlsxExport.ensureExcelLibLoaded(); },
       renderRow: (html, tableId, row, filenameTemplate, headerFooterData, margins, pageOptions) => XlsxExport.getXlsxBlobForRecord(html, tableId, row, filenameTemplate, pageOptions || undefined),
+    },
+    // Un fichier .md par ligne, dans une archive ZIP : ni marges ni page, le texte seul (js/markdown-export.js) ; comme le Word, il ne fait que des documents.
+    mdZip: {
+      label: 'Markdown', confirm: 'confirm.batchExportMd', loading: 'status.loadingExportLibs', loadError: 'status.exportLibsLoadError', progress: 'status.batchExportProgressMd',
+      noFile: 'status.exportErrorMd', done: 'status.batchExportDoneMd', doneWithFailures: 'status.batchExportDoneWithFailuresMd',
+      entryExt: '.md', fileSuffix: '-export-md.zip', grid: false, engines: ['md'],
+      loadLibs: () => ExportCommon.ensureJsZipLoaded(),
+      renderRow: (html, tableId, row, filenameTemplate, headerFooterData) => MarkdownExport.getMarkdownBlobForRecord(html, tableId, row, filenameTemplate, headerFooterData),
+    },
+    // Un fichier .html par ligne, dans une archive ZIP : le fichier complet à déposer (`htmlZip`) ou le contenu seul à coller (`htmlFragmentZip`, dont les fichiers portent « -fragment »).
+    // Ni marges ni page (js/html-export.js) ; comme le Word et le Markdown, ils ne font que des documents.
+    htmlZip: {
+      label: 'HTML', confirm: 'confirm.batchExportHtml', loading: 'status.loadingExportLibs', loadError: 'status.exportLibsLoadError', progress: 'status.batchExportProgressHtml',
+      noFile: 'status.exportErrorHtml', done: 'status.batchExportDoneHtml', doneWithFailures: 'status.batchExportDoneWithFailuresHtml',
+      entryExt: '.html', fileSuffix: '-export-html.zip', grid: false, engines: ['html'],
+      loadLibs: () => ExportCommon.ensureJsZipLoaded(),
+      renderRow: (html, tableId, row, filenameTemplate, headerFooterData) => HtmlExport.getHtmlBlobForRecord(html, tableId, row, filenameTemplate, headerFooterData),
+    },
+    htmlFragmentZip: {
+      label: 'HTML', confirm: 'confirm.batchExportHtml', loading: 'status.loadingExportLibs', loadError: 'status.exportLibsLoadError', progress: 'status.batchExportProgressHtml',
+      noFile: 'status.exportErrorHtml', done: 'status.batchExportDoneHtml', doneWithFailures: 'status.batchExportDoneWithFailuresHtml',
+      entryExt: '-fragment.html', fileSuffix: '-export-html-fragment.zip', grid: false, engines: ['html'],
+      loadLibs: () => ExportCommon.ensureJsZipLoaded(),
+      renderRow: (html, tableId, row, filenameTemplate, headerFooterData) => HtmlExport.getHtmlBlobForRecord(html, tableId, row, filenameTemplate, headerFooterData, { fragment: true }),
     },
     xlsxSingle: {
       label: 'Excel', confirm: 'confirm.singleWorkbookExport', loading: 'status.loadingExportLibs', loadError: 'status.exportLibsLoadError', progress: 'status.batchExportProgressXlsx',
@@ -1655,26 +2783,29 @@
   function openTemplateSource(cfg) {
     const isMacro = currentTypeModele === 'macro';
     return {
-      typeModele: currentTypeModele, isMacro, html: isMacro ? null : Editor.getHTML(), macroSlots: isMacro ? getCurrentMacroSlots() : null,
+      typeModele: currentTypeModele, isMacro, html: isMacro ? null : SlidesEntry.outputHtml(currentTypeModele, Editor.getHTML(), { keepProps: !!cfg.keepProps, anchors: writesSlideAnchors(cfg), theme: PageLayout.getTheme() }), macroSlots: isMacro ? getCurrentMacroSlots() : null, perModelSense: isMacro && PageLayout.isOrientationAuto(), anchors: writesSlideAnchors(cfg),
       headerFooterData: Editor.getHeaderFooterData(), filenameTemplate: getPdfFilenameTemplate(), margins: cfg.margins ? cfg.margins() : null, pageOptions: null,
     };
   }
 
   // La source d'un autre modèle de la liste, tel qu'il est enregistré : rien n'est chargé dans l'éditeur ni changé à l'écran. Sa page est lue par les
   // fonctions de l'écran (PageLayout borne les marges et les convertit) : posée le temps de la lecture et rendue aussitôt, sans `await` entre les
-  // deux - ni l'une ni l'autre n'est jamais affichée. Ses en-têtes et pieds passent par l'export comme ceux de l'écran (leur HTML y est assaini).
+  // deux - ni l'une ni l'autre n'est jamais affichée. Ses en-têtes et pieds passent par l'export comme ceux de l'écran (leur HTML y est assaini). Une présentation sans format à elle a la page
+  // d'une diapositive, comme à l'écran, et ses sauts de page marqués comme ceux de l'écran (js/slides-entry.js).
   function templateSource(tpl, cfg) {
     const isMacro = tpl.typeModele === 'macro';
     const onScreen = PageLayout.getMarginsMm();
     let margins = null;
     let pageOptions = null;
-    PageLayout.setMarginsMm(tpl.marginsMm);
+    let perModelSense = false;
+    PageLayout.setMarginsMm(SlidesEntry.pageFor(tpl.typeModele, tpl.marginsMm));
     try {
       margins = cfg.margins ? cfg.margins() : null;
       pageOptions = cfg.pageOptions ? cfg.pageOptions() : null;
+      perModelSense = isMacro && PageLayout.isOrientationAuto();
     } finally { PageLayout.setMarginsMm(onScreen); }
     return {
-      typeModele: tpl.typeModele || 'document', isMacro, html: isMacro ? null : (tpl.contenu || ''), macroSlots: isMacro ? (tpl.macroSlots || { slots: [] }) : null,
+      typeModele: tpl.typeModele || 'document', isMacro, html: isMacro ? null : SlidesEntry.outputHtml(tpl.typeModele, LinkedTable.resolveHtml(EditorCore.getEditor(), tpl.contenu || ''), { keepProps: !!cfg.keepProps, anchors: writesSlideAnchors(cfg), theme: tpl.marginsMm && tpl.marginsMm.theme, stored: tpl.marginsMm || null }), macroSlots: isMacro ? (tpl.macroSlots || { slots: [] }) : null, perModelSense, anchors: writesSlideAnchors(cfg),
       headerFooterData: tpl.headerFooter, filenameTemplate: String(tpl.nomFichierPDF || '').trim(), margins, pageOptions,
     };
   }
@@ -1700,7 +2831,7 @@
 
   // Le HTML brut du document de cette ligne pour cette source (un macro-modèle : ses annexes, choisies avec les valeurs de la ligne).
   function sourceRowHtml(source, tableId, row, templatesCache) {
-    return source.isMacro ? MacroTemplates.buildConcatenatedHtml(source.macroSlots, tableId, row, templatesCache) : source.html;
+    return source.isMacro ? MacroTemplates.buildConcatenatedHtml(source.macroSlots, tableId, row, templatesCache, Object.assign(perModelOption(source.perModelSense), { anchors: !!source.anchors })) : source.html;
   }
 
   // Cette source peut-elle se découper en plusieurs documents (« Un document par valeur ») ? Sans bulle réglée ainsi dans le modèle, ses en-têtes ni
@@ -1713,10 +2844,11 @@
     return source.maySplit;
   }
 
-  // Les lignes d'un export en lot : celles de la table (docApi, sans le filtre de vue), ou `only.record` seul. null : rien à exporter, le coin d'état
-  // le dit.
+  // Les lignes d'un export en lot : celles de la vue Grist - ses filtres, son tri -, celles de la vue d'à côté à laquelle le widget est relié par « Sélectionner par » (ses filtres
+  // enregistrés, js/view-source.js), ou toute la table (docApi, forme brute), au choix quand la vue n'en montre qu'une partie (js/batch-scope.js) ; ou `only.record` seul. null : rien à
+  // exporter, ou la personne renonce ; le coin d'état dit pourquoi dans le premier cas. Sinon { rows, linked } : `linked` est le nom de la vue d'à côté dont viennent les lignes, '' sinon.
   async function readBatchRows(cfg, tableId, only) {
-    if (only) return [only.record];
+    if (only) return { rows: [only.record], linked: '' };
     let rows;
     try { rows = await GristAPI.fetchTableRows(tableId); }
     catch (e) {
@@ -1725,7 +2857,9 @@
       return null;
     }
     if (!rows.length) { setStatus(exportText('status.noRowsInTable', { table: tableId }), true); return null; }
-    return rows;
+    const linked = await ViewSource.linkedRows(tableId, rows);
+    const picked = await BatchScope.pick(rows, await BatchScope.viewRowIds(tableId), { table: tableId, grid: GridEditor.isGridType(currentTypeModele), linked });
+    return picked && { rows: picked.rows, linked: picked.linked || '' };
   }
 
   // Au-delà de ce nombre de documents, l'export d'une seule ligne que « Un document par valeur » découpe demande d'abord (deux listes de 20
@@ -1735,23 +2869,31 @@
   // L'accord avant un export en lot : `{}`, ou `{ layout }` pour les planches, qui se règlent dans leur propre fenêtre (feuille, emplacements, traits
   // de coupe) : elle tient lieu de confirmation. Un export seul n'en demande pas, son clic vaut accord, sauf quand sa ligne fait plus de
   // SPLIT_CONFIRM_FROM documents. null : la personne renonce.
-  async function confirmBatch(cfg, { only, tableId, rowCount, jobCount, splitting }) {
+  async function confirmBatch(cfg, { only, tableId, rowCount, jobCount, splitting, protection, linkedView }) {
+    // Un lot « PDF protégé » : la fenêtre du mot de passe tient lieu de confirmation (elle dit combien de PDF partent). Un document que « Un document par valeur » découpe l'a
+    // déjà posée au départ de l'export (exportRecordAs, `protection`) : ici seule la question de ses nombreux documents peut encore se poser.
+    if (cfg.protect && !protection) {
+      const asked = await PdfProtectionDialog.open({ batch: true, count: jobCount, table: tableId, grid: GridEditor.isGridType(currentTypeModele) });
+      if (!asked) setStatus(I18n.t('status.exportCancelled'));
+      return asked ? { protection: asked } : null;
+    }
+    const setup = cfg.protect ? { protection } : {};
     if (only) {
-      if (jobCount <= SPLIT_CONFIRM_FROM) return {};
+      if (jobCount <= SPLIT_CONFIRM_FROM) return setup;
       const proceed = await Dialogs.confirm({ title: I18n.t('varList.split.label'), message: I18n.t('confirm.splitExport', { documents: jobCount }), confirmLabel: I18n.t('common.generate') });
       // « Génération en cours… » (exportRecordAs) ne doit pas rester affiché derrière un renoncement.
       if (!proceed) setStatus(I18n.t('status.exportCancelled'));
-      return proceed ? {} : null;
+      return proceed ? setup : null;
     }
     if (cfg.sheets) return (await SheetAssemblyDialog.open({ count: jobCount, table: tableId, grid: GridEditor.isGridType(currentTypeModele) })) || null;
-    const note = splitting ? '\n\n' + I18n.t('confirm.splitNote', { documents: jobCount }) : '';
+    const note = (splitting ? '\n\n' + I18n.t('confirm.splitNote', { documents: jobCount }) : '') + (linkedView ? '\n\n' + I18n.t('confirm.linkedViewNote', { name: linkedView }) : '');
     const proceed = await Dialogs.confirm({ title: exportText('dialog.batchExport.title'), message: exportText(cfg.confirm, { count: rowCount, table: tableId }) + note, confirmLabel: I18n.t('common.generate') });
-    return proceed ? {} : null;
+    return proceed ? setup : null;
   }
 
   // Où un export en lot range ses documents : une archive ZIP (un fichier par document), un PDF unique (`merged`, ou `sheets` : posés sur des
-  // planches) ou un classeur Excel unique (`single`). `add` reçoit le document tout prêt ; `finish` rend le fichier, `finishing` dit ce qui se passe
-  // pendant ce temps. `sheetCount` ne se lit qu'une fois `finish` terminé.
+  // planches) ou un classeur Excel unique (`single`). `add` reçoit le document tout prêt et rend, pour un PDF, `{ blankPages }` - les pages blanches de ce document ;
+  // `finish` rend le fichier, `finishing` dit ce qui se passe pendant ce temps. `sheetCount` ne se lit qu'une fois `finish` terminé.
   async function openBatchSink(cfg, tableId, sheetSetup) {
     if (cfg.single) {
       const workbook = await XlsxExport.createSingleWorkbook();
@@ -1761,11 +2903,20 @@
         finishing: 'status.xlsxAssembling',
       };
     }
-    const render = doc => cfg.renderRow(doc.html, tableId, doc.row, doc.source.filenameTemplate, doc.headerFooterData, doc.source.margins, doc.source.pageOptions);
+    // La qualité choisie au départ de l'export vaut pour tout le lot : un changement de ligne dans le menu pendant qu'il tourne n'y change rien.
+    const imageQuality = pdfImageQuality();
+    // Un lot protégé : le mot de passe et les autorisations de la fenêtre pour chaque PDF - le mot de passe de sa ligne en mode « Un par ligne », et c'est cette ligne qui échoue, jamais
+    // le lot, quand sa cellule ne sert pas -, chacun avec son propre mot de passe « propriétaire » tiré au hasard.
+    const protection = sheetSetup && sheetSetup.protection;
+    const render = doc => cfg.renderRow(doc.html, tableId, doc.row, doc.source.filenameTemplate, doc.headerFooterData, doc.source.margins, doc.source.pageOptions, doc.source.typeModele, imageQuality, protection ? PdfProtection.docFields(PdfProtection.settingsForRow(protection, doc.row)) : undefined);
     if (cfg.merged) {
       const pdf = await (cfg.sheets ? PdfMerge.createSheets(tableId, sheetSetup.layout) : PdfMerge.create(tableId));
       return {
-        add: async doc => pdf.append((await render(doc)).blob),
+        add: async doc => {
+          const { blob, blankPages } = await render(doc);
+          await pdf.append(blob);
+          return { blankPages };
+        },
         finish: () => pdf.toBlob(),
         finishing: cfg.sheets ? 'status.sheetsAssembling' : 'status.pdfMerging',
         sheetCount: () => (cfg.sheets ? pdf.sheetCount : 0),
@@ -1773,13 +2924,25 @@
     }
     const zip = new JSZip();
     const usedNames = new Set();
+    // Les PDF de l'archive, un à un, avec la ligne de chacun : GFS garde des PDF, pas des archives (PdfDelivery les range l'un après l'autre). Les lots qui ne sont pas des PDF n'en gardent rien.
+    const files = [];
     return {
       add: async doc => {
-        const { blob, filename } = await render(doc);
+        const { blob, filename, blankPages } = await render(doc);
         const base = (sanitizeFilenamePart(filename) || ('document-' + doc.row.id)) + (doc.valueName ? ' - ' + doc.valueName : '');
-        zip.file(uniqueZipFilename(base, usedNames) + cfg.entryExt, blob);
+        const entry = uniqueZipFilename(base, usedNames) + cfg.entryExt;
+        zip.file(entry, blob);
+        if (cfg.shelvable) files.push({ name: entry, blob, rowId: doc.row.id });
+        return { blankPages };
       },
-      finish: () => zip.generateAsync({ type: 'blob' }),
+      // Sans argument, l'archive entière ; avec `subset` (des éléments de `files`), l'archive de ces seuls fichiers : ce que GFS n'a pas gardé.
+      finish: subset => {
+        if (!subset) return zip.generateAsync({ type: 'blob' });
+        const part = new JSZip();
+        subset.forEach(file => part.file(file.name, file.blob));
+        return part.generateAsync({ type: 'blob' });
+      },
+      files,
       finishing: 'status.zipCompressing',
     };
   }
@@ -1787,7 +2950,8 @@
   // `only` (facultatif) : la ligne courante seule - { record, plan, html } -, quand son document se découpe en plusieurs (« Un document par valeur »,
   // js/list-split.js) : une archive de ses documents, sans lire la table ni demander confirmation (le clic d'un export seul vaut accord), nommée
   // comme la ligne.
-  async function onExportBatch(kind, only) {
+  // `preset` (facultatif) : ce que l'export seul a déjà demandé avant de partir en lot - { protection }, les réglages de la fenêtre « PDF protégé ».
+  async function onExportBatch(kind, only, preset) {
     const cfg = BATCH_EXPORTS[kind];
     Editor.exitHeaderFooterModeIfActive();
     const tableId = currentTableId || GristAPI.getCurrentTableId();
@@ -1799,11 +2963,12 @@
       setStatus(I18n.t(cfg.loadError), true);
       return;
     }
-    const rows = await readBatchRows(cfg, tableId, only);
-    if (!rows) return;
+    const picked = await readBatchRows(cfg, tableId, only);
+    if (!picked) return;
+    const { rows, linked } = picked;
 
     const { openSource, templatesCache, jobs, splitting } = await planBatchJobs(cfg, tableId, only, rows);
-    const sheetSetup = await confirmBatch(cfg, { only, tableId, rowCount: rows.length, jobCount: jobs.length, splitting });
+    const sheetSetup = await confirmBatch(cfg, { only, tableId, rowCount: rows.length, jobCount: jobs.length, splitting, protection: preset && preset.protection, linkedView: linked });
     if (!sheetSetup) return;
 
     // Ni JSZip ni le lot PDF ne sont chargés d'office au démarrage du widget : `JSZip` n'existe pas tant que ceci n'a pas été attendu au moins une
@@ -1818,11 +2983,16 @@
     }
 
     const sink = await openBatchSink(cfg, tableId, sheetSetup);
-    const { ok, failed, cancelled } = await runBatchJobs(cfg, sink, jobs, { tableId, openSource, templatesCache });
+    const { ok, failed, cancelled, failures, blankRows, exportedIds } = await runBatchJobs(cfg, sink, jobs, { tableId, openSource, templatesCache });
     if (cancelled) { setStatus(I18n.t('status.exportCancelled')); return; }
-    if (!ok) { setStatus(I18n.t(cfg.noFile), true); return; }
+    // Les lignes en échec, listées avec leur raison une fois le fichier téléchargé (ou, quand aucune n'a pu l'être, tout de suite) : la fenêtre se
+    // referme avant que l'export libère ses contrôles.
+    if (!ok) { setStatus(I18n.t(cfg.noFile), true); await BatchFailures.show(failures, { ok, format: cfg.label }); return; }
 
-    await finishBatchExport(cfg, sink, { only, tableId, rows, openSource, splitting, ok, failed });
+    await finishBatchExport(cfg, sink, { only, tableId, rows, openSource, splitting, ok, failed, exportedIds });
+    await BatchFailures.show(failures, { ok, format: cfg.label });
+    // Les PDF qui ont des pages blanches sont dans le fichier téléchargé : la fin du lot dit lesquels, pour les corriger et les refaire.
+    await BatchFailures.showBlankPages(blankRows);
   }
 
   // Les documents à générer : un par ligne, ou un par valeur quand « Un document par valeur » découpe. Rend aussi ce que leur génération relit
@@ -1832,7 +3002,7 @@
     // la concaténation est refaite ligne par ligne dans la boucle de runBatchJobs ; un modèle normal garde le même gabarit pour toutes les lignes,
     // seule la résolution des #Variable change. Pas de modèle unique non plus quand « Modèle selon la ligne » est réglé : chaque ligne a la source
     // du modèle que ses règles lui donnent (rowSourceResolver), comme à l'écran.
-    const templatesCache = Templates.getCached();
+    const templatesCache = LinkedTable.resolveTemplates(EditorCore.getEditor(), Templates.getCached());
     const openSource = openTemplateSource(cfg);
     const sourceOf = only ? async () => openSource : rowSourceResolver(tableId, cfg, openSource);
     // Compté avant la confirmation : « Un document par valeur » fait plus de documents que de lignes.
@@ -1843,56 +3013,114 @@
   }
 
   // Génère les documents un par un dans `sink`. cancelled : « Annuler » sur la fenêtre des images d'un site externe a arrêté tout le lot ;
-  // failed : les lignes que leur modèle ou une erreur a empêché de générer.
+  // failed : le nombre de lignes que leur modèle ou une erreur a empêché de générer, et failures : ces lignes mêmes, de quoi les reconnaître et la
+  // raison, pour la fenêtre de fin de lot (js/batch-failures.js) ; blankRows : les lignes dont le PDF a des pages blanches, dans le fichier mais à revoir, pour la même
+  // fenêtre ; exportedIds : les identifiants des lignes dont tous les documents sont dans le fichier, celles dont la
+  // date du dernier export s'écrit (vide quand le lot est annulé).
   async function runBatchJobs(cfg, sink, jobs, { tableId, openSource, templatesCache }) {
     let ok = 0;
-    let failed = 0;
     let cancelled = false;
+    const failedJobs = [];
+    const blankJobs = [];
+    const doneRows = new Set();
+    const failedRows = new Set();
     for (let i = 0; i < jobs.length; i++) {
       const { row, variant, source } = jobs[i];
       setStatus(I18n.t(cfg.progress, { current: i + 1, total: jobs.length }));
+      const valueName = variant && variant.label ? sanitizeFilenamePart(variant.label) : '';
       // Le modèle d'une ligne (« Modèle selon la ligne ») peut ne pas être du genre de cet export - une grille en Word, un document en Excel : la
       // ligne n'est pas générée, comme celle qui échoue.
       if (source !== openSource && cfg.grid != null && cfg.grid !== GridEditor.isGridType(source.typeModele)) {
         console.error('[main] export ' + cfg.label + ' en lot : le modèle de la ligne ' + row.id + ' (' + source.typeModele + ') ne se génère pas dans ce format');
-        failed++;
+        failedJobs.push({ row, source, valueName, wrongKind: cfg.grid ? 'document' : 'grid' });
+        failedRows.add(row.id);
         continue;
       }
       try {
         // Le document de cette valeur : les bulles réglées « Un document par valeur » y écrivent leur k-ième valeur (js/list-split.js) ; sans
         // découpage, le HTML et les en-têtes sont ceux de la ligne, tels quels.
         const html = ListSplit.pin(jobs[i].rowHtml !== undefined ? jobs[i].rowHtml : await sourceRowHtml(source, tableId, row, templatesCache), variant);
-        await sink.add({
-          row, source, html, headerFooterData: ListSplit.pinHeaderFooter(source.headerFooterData, variant),
-          valueName: variant && variant.label ? sanitizeFilenamePart(variant.label) : '',
-        });
+        const added = await sink.add({ row, source, html, headerFooterData: ListSplit.pinHeaderFooter(source.headerFooterData, variant), valueName });
         ok++;
+        doneRows.add(row.id);
+        if (added && added.blankPages && added.blankPages.length) blankJobs.push({ row, source, valueName, pages: added.blankPages });
       } catch (e) {
         // « Annuler » sur la fenêtre des images d'un site externe arrête tout le lot, pas seulement cette ligne : rien n'est téléchargé.
         if (ExternalImages.isCancel(e)) { cancelled = true; break; }
         console.error('[main] export ' + cfg.label + ' en lot : échec pour la ligne', row.id, e);
-        failed++;
+        failedJobs.push({ row, source, valueName, message: e && e.message, passwordProblem: e && e.passwordProblem, column: e && e.column });
+        failedRows.add(row.id);
       }
     }
-    return { ok, failed, cancelled };
+    // Une ligne dont un document a échoué n'est pas datée, même si les autres sont dans le fichier (« Un document par valeur ») : la date dirait « exporté » d'une ligne
+    // dont le PDF manque.
+    const exportedIds = cancelled ? [] : Array.from(doneRows).filter(id => !failedRows.has(id));
+    return { ok, failed: failedJobs.length, cancelled, failures: cancelled ? [] : await describeBatchFailures(failedJobs, tableId), blankRows: cancelled ? [] : await describeBatchFailures(blankJobs, tableId), exportedIds };
+  }
+
+  // Les lignes en échec (ou aux pages blanches : `pages`) telles que la fenêtre de fin de lot les liste (js/batch-failures.js) : leur n°, le nom que leur fichier aurait porté - celui du
+  // modèle de la ligne, suivi de la valeur d'un « Un document par valeur » -, la raison. Une seule passe de lecture pour toutes (GristAPI.withReadPass),
+  // avant le téléchargement : la fenêtre s'ouvre aussitôt après. Le nom n'est qu'un repère : illisible, la ligne se reconnaît à son n°.
+  function describeBatchFailures(failedJobs, tableId) {
+    if (!failedJobs.length) return [];
+    return GristAPI.withReadPass(async () => {
+      const failures = [];
+      for (const { row, source, valueName, wrongKind, message, pages, passwordProblem, column } of failedJobs) {
+        let name = '';
+        try {
+          if (source && source.filenameTemplate) name = sanitizeFilenamePart(await ReaderMode.resolveFilename(source.filenameTemplate, tableId, row));
+        } catch (e) { name = ''; }
+        failures.push({ id: row.id, name: valueName ? (name ? name + ' - ' : '') + valueName : name, wrongKind, message, pages, passwordProblem, column });
+      }
+      return failures;
+    });
   }
 
   // La fin d'un export en lot : le fichier assemblé est téléchargé, le coin d'état dit combien de documents (et de planches) il contient.
-  async function finishBatchExport(cfg, sink, { only, tableId, rows, openSource, splitting, ok, failed }) {
-    setStatus(I18n.t(sink.finishing));
-    const outBlob = await sink.finish();
+  // Un lot PDF (`shelvable`) peut aussi, ou à la place, se ranger dans GFS (js/pdf-delivery.js) : le PDF unique ou la planche d'un bloc, l'archive PDF par PDF. Le coin d'état dit alors ce que GFS a gardé, et les lignes ne sont datées
+  // que si leur PDF est parti quelque part (téléchargé ou rangé).
+  async function finishBatchExport(cfg, sink, { only, tableId, rows, openSource, splitting, ok, failed, exportedIds }) {
     // Archive d'un export seul : nommée comme la ligne ; sinon comme la table.
-    const outBase = only ? (sanitizeFilenamePart(await ReaderMode.resolveFilename(openSource.filenameTemplate, tableId, rows[0])) || sanitizeFilenamePart(tableId)) : sanitizeFilenamePart(tableId);
-    ExportCommon.downloadBlob(outBlob, outBase + cfg.fileSuffix);
+    const baseName = async () => (only ? (sanitizeFilenamePart(await ReaderMode.resolveFilename(openSource.filenameTemplate, tableId, rows[0])) || sanitizeFilenamePart(tableId)) : sanitizeFilenamePart(tableId));
+    const how = cfg.shelvable ? PdfDelivery.plan() : { download: true, shelve: false };
+    let delivery = null;
+    let stampIds = exportedIds;
+    if (!how.shelve) {
+      setStatus(I18n.t(sink.finishing));
+      const outBlob = await sink.finish();
+      ExportCommon.downloadBlob(outBlob, (await baseName()) + cfg.fileSuffix);
+    } else {
+      // Rangé seul, une archive ne se fabrique pas : chaque PDF part tel quel.
+      if (how.download || cfg.merged) setStatus(I18n.t(sink.finishing));
+      const base = await baseName();
+      let merged = null;
+      const files = cfg.merged ? [{ name: base + cfg.fileSuffix, blob: async () => merged || (merged = await sink.finish()) }] : sink.files;
+      delivery = await PdfDelivery.deliver(files, async subset => {
+        ExportCommon.downloadBlob(cfg.merged ? await files[0].blob() : await sink.finish(subset), base + cfg.fileSuffix);
+      }, { plan: how, lot: PdfDelivery.lotFor(tableId) });
+      // Un seul fichier (réuni ou posé sur des planches) : ses lignes sont datées s'il est parti ; une archive : les lignes dont chaque PDF est parti.
+      if (cfg.merged) stampIds = delivery.delivered.size ? exportedIds : [];
+      else {
+        const missing = new Set();
+        files.forEach((file, i) => { if (!delivery.delivered.has(i)) missing.add(file.rowId); });
+        stampIds = exportedIds.filter(id => !missing.has(id));
+      }
+    }
+    const note = cfg.stampsExportDate ? await stampExportDate(tableId, stampIds) : '';
     const sheets = sink.sheetCount ? sink.sheetCount() : 0;
     const useSplitTexts = splitting && cfg.splitDone;
     const doneKey = failed ? (useSplitTexts ? cfg.splitDoneWithFailures : cfg.doneWithFailures) : (useSplitTexts ? cfg.splitDone : cfg.done);
-    setExportDoneStatus(exportText(doneKey, { ok, failed, sheets }));
+    // Rien n'est téléchargé quand tout est rangé : la phrase « archive ZIP téléchargée » ne serait pas vraie, celle de GFS dit ce qu'il a gardé.
+    const said = PdfDelivery.describe(delivery, failed);
+    const usual = exportText(doneKey, { ok, failed, sheets });
+    setExportDoneStatus(said.text ? (delivery.downloaded ? said.text + ' ' + usual : said.text) : usual, [said.note, note].filter(Boolean).join(' '));
   }
 
   async function switchMode(mode) {
     // Lecture seule : le mode Lecture est le seul accessible, y compris depuis la dernière ligne d'init().
     if (isReadOnly()) mode = 'read';
+    // Un PDF à l'écran (js/pdf-reading.js) ne s'édite pas : le mode Lecture est le seul accessible, le bouton Édition est grisé avec sa raison (applyPdfLocks).
+    if (PdfReading.isActive()) mode = 'read';
     // La Lecture épurée (js/clean-reading.js) n'existe que dans le mode Lecture : un autre mode la quitte, la barre du haut revient avec lui.
     CleanReading.onModeChange(mode);
     if (mode === 'read') Editor.exitHeaderFooterModeIfActive();
@@ -1903,6 +3131,12 @@
     btnRead.classList.toggle('active', mode === 'read');
     syncEditorVisibilityForMode();
     readerContainer.style.display = mode === 'read' ? 'block' : 'none';
+    // Le facteur d'ajustement de la page se pose avant le rendu quand la Lecture n'en a pas encore : le conteneur vient d'être affiché, et c'est le moment où l'observateur de taille
+    // (wirePageFitZoom) le trouverait changé et redessinerait la Lecture une seconde fois, en plein rendu - la première entrée la dessinait deux fois. Une Lecture qui en a un déjà (une
+    // entrée suivante) le garde : le recalculer ici ferait mettre en page l'ancien contenu, qui est sur le point d'être remplacé.
+    if (mode === 'read' && !readerContainer.style.getPropertyValue('--pp-fit-zoom')) applyPageFitZoom(readerContainer);
+    // Les graphiques de l'éditeur se redessinent pour la ligne et les données d'aujourd'hui : la Lecture a pu les changer pendant qu'ils étaient cachés.
+    if (mode === 'edit') ChartEntry.refreshEditor();
     if (mode === 'read') await renderReader(latestRecord || GristAPI.getCurrentRecord(), latestRecordTableId || GristAPI.getCurrentTableId());
     await updateEmailFieldsDisplay();
     await updateEmailLengthGauge();
@@ -1917,11 +3151,14 @@
     const label = toggle.closest('.a4-toggle');
     const on = toggle.checked && !GridEditor.isGridType(currentTypeModele);
     editorContainer.classList.toggle('a4-preview', on);
-    readerContainer.classList.toggle('a4-preview', on);
+    readerContainer.classList.toggle('a4-preview', on || PdfReading.isActive());
     if (label) label.classList.toggle('checked', toggle.checked);
     // Le facteur d'ajustement n'a de sens qu'en Aperçu A4 : applyPageFitZoom le retire de lui-même quand la classe disparaît. Avant la pagination,
     // qui mesure le rendu réel et serait sinon calculée avec l'ancien facteur.
     refreshPageFitZoom();
+    // Un tableau posé quand la page n'existait pas (ou chargé Aperçu A4 éteint) peut la dépasser : il y rentre dès qu'elle apparaît, sans attendre la
+    // prochaine frappe. Éditeur masqué (Lecture, macro-modèle) : rien à mesurer, syncEditorVisibilityForMode le fera à son retour.
+    if (on) withoutMarkingDirty(Editor.fitTablesToPage);
     Editor.refreshPaginationPreview();
     recaptureStaleLayerGrids();
   }
@@ -1953,25 +3190,46 @@
       if (pdfFilenameInput.hidden) { pdfFilenameInput.hidden = false; pdfFilenameInput.focus(); } else close();
     });
     pdfFilenameInput.addEventListener('blur', close);
-    pdfFilenameInput.addEventListener('keydown', e => { if (e.key === 'Enter') pdfFilenameInput.blur(); });
+    // Entrée valide le nom (la liste # ouverte garde l'Entrée qui choisit une variable : l'évènement ne part pas dans ce cas).
+    pdfFilenameInput.addEventListener('fieldenter', () => pdfFilenameInput.blur());
   }
 
-  // Qualité PDF : bouton + panneau au survol plutôt qu'un <select> toujours affiché. Seul le vectoriel existe : l'export ne lit plus la valeur
-  // choisie, les autres lignes sont grisées (« bientôt »).
-  function wireQualityDropdown() {
-    const select = document.getElementById('v2-pdf-quality');
+  // Type d'export : bouton + panneau au survol plutôt qu'un <select> toujours affiché. Quatre lignes de type (PDF, PDF protégé, Word, Excel), puis la qualité du PDF
+  // (le vectoriel par défaut, l'impression par le navigateur, « Léger » : le vectoriel aux images réduites), montrée pour les deux PDF seulement. Un clic sur une ligne
+  // grisée ne choisit rien. Le menu du bouton Exporter se câble de même : un clic (ou Entrée, Espace) sur une option de lignes la coche, rien ne s'exporte ; la destination du PDF
+  // (le télécharger, le ranger dans GFS ou les deux : js/pdf-delivery.js) s'y coche de la même façon.
+  // Le bouton Exporter, onExportPdf et les lots lisent les valeurs choisies ; syncExportMenus tient les deux menus d'accord, aussi à chaque survol (un
+  // appel direct a pu changer la liste cachée).
+  function wireExportMenus() {
+    const typeSelect = document.getElementById('v2-export-type');
+    const qualitySelect = document.getElementById('v2-pdf-quality');
+    const linesSelect = document.getElementById('v2-export-lines');
     const flyout = document.getElementById('v2-quality-flyout');
+    const exportFlyout = document.getElementById('v2-export-pdf-flyout');
     const trigger = document.getElementById('v2-btn-quality');
-    if (!select || !flyout || !trigger) return;
-    const rows = flyout.querySelectorAll('.v2-hover-row[data-quality]');
-    const syncActiveRow = () => rows.forEach(row => row.classList.toggle('is-active', row.dataset.quality === select.value));
-    rows.forEach(row => {
-      if (row.classList.contains('v2-hover-row-disabled')) return;
-      row.addEventListener('click', () => { select.value = row.dataset.quality; syncActiveRow(); });
+    const exportTrigger = document.getElementById('btn-export-pdf');
+    if (!typeSelect || !qualitySelect || !linesSelect || !flyout || !exportFlyout || !trigger || !exportTrigger) return;
+    // Chaque choix est un pas d'Annuler / Rétablir (js/history-markers.js, domaine « exportChoices ») ; rien n'est posé si le choix ne change rien.
+    const choose = (select, value) => HistoryMarkers.track('exportChoices', () => { select.value = value; syncExportMenus(); ExportChoices.remember(select.id, value); });
+    const onRow = (row, select, value) => row.addEventListener('click', () => { if (!row.classList.contains('v2-hover-row-disabled')) choose(select, value); });
+    flyout.querySelectorAll('.v2-hover-row[data-export-type]').forEach(row => onRow(row, typeSelect, row.dataset.exportType));
+    flyout.querySelectorAll('.v2-hover-row[data-quality]').forEach(row => onRow(row, qualitySelect, row.dataset.quality));
+    // La destination du PDF est un réglage de la personne (PersonStore), pas du modèle : son pas d'Annuler est celui de SettingsHistory, et le rangement dit au coin d'état où il en est.
+    PdfDelivery.wire(exportFlyout, syncExportMenus);
+    PdfDelivery.onProgress((current, total) => setStatus(I18n.t(total > 1 ? 'shelve.progress' : 'shelve.progressOne', { current, total })));
+    exportFlyout.querySelectorAll('.v2-hover-row[data-export-lines]').forEach(row => {
+      onRow(row, linesSelect, row.dataset.exportLines);
+      row.addEventListener('keydown', e => {
+        if (e.key !== 'Enter' && e.key !== ' ') return;
+        e.preventDefault();
+        choose(linesSelect, row.dataset.exportLines);
+      });
     });
-    const group = trigger.closest('.v2-hover-group');
-    if (group) group.addEventListener('mouseenter', syncActiveRow);
-    syncActiveRow();
+    [trigger, exportTrigger].forEach(button => {
+      const group = button.closest('.v2-hover-group');
+      if (group) group.addEventListener('mouseenter', syncExportMenus);
+    });
+    syncExportMenus();
   }
 
   // Ajustement de la page à la largeur disponible (cf. la règle `zoom` de css/editor-v2.css) : réduit la feuille juste ce qu'il faut pour
@@ -1979,29 +3237,49 @@
   // sous lequel le texte deviendrait illisible ; le défilement horizontal reprend alors la main. Quand la feuille tient déjà, le facteur vaut 1 et
   // rien ne change. C'est l'affichage d'origine : js/page-zoom.js (factorFor) calcule ce facteur et le remplace par le niveau que la personne a
   // choisi (pastille de zoom, Ctrl + molette, « Ajuster »), le même pour l'éditeur et la Lecture.
-  function applyPageFitZoom(container) {
-    if (!container) return;
-    if (!container.classList.contains('a4-preview')) { container.style.removeProperty('--pp-fit-zoom'); return; }
+  // Deux temps, comme tout ce qui lit la mise en page puis la change : `planPageFitZoom` LIT (le facteur, et l'écart de hauteur des lignes de tableau que mesure la sonde de js/page-zoom.js),
+  // `commitPageFitZoom` ÉCRIT. Posé d'abord, le facteur obligeait la sonde à faire refaire le style de tout le document pour le lire (0,2 s sur une présentation de 39 diapositives), puis la
+  // variable de l'écart (`--pp-row-grow`) le faisait refaire une seconde fois ; et le conteneur suivant, lu après l'écriture du premier, payait encore ce que celui-là venait de défaire.
+  // La sonde est posée dans `body` : son résultat ne dépend que du facteur, jamais de l'état du document, qu'elle lise avant ou après.
+  function planPageFitZoom(container) {
+    if (!container) return null;
+    if (!container.classList.contains('a4-preview')) return { container, reset: true };
     const zoom = PageZoom.factorFor(container);
-    if (zoom == null) return;
+    if (zoom == null) return null;
     // Arrondi au millième : sans ça, un redimensionnement continu réécrit la variable à chaque pixel et relance la pagination en boucle.
     const next = String(Math.round(zoom * 1000) / 1000);
-    if (container.style.getPropertyValue('--pp-fit-zoom') === next) return;
-    container.style.setProperty('--pp-fit-zoom', next);
-    return true;
+    // L'écart de hauteur des lignes de tableau sous ce facteur (js/page-zoom.js:rowGrow) suit le facteur, et la densité de pixels de l'écran, qui peut changer seule : mesuré ici, gardé en mémoire
+    // pour `syncRowGrow` de l'écriture.
+    if (Number(next) > 0 && Number(next) !== 1) PageZoom.rowGrow(Number(next));
+    return { container, next };
+  }
+  function commitPageFitZoom(plan) {
+    if (!plan) return undefined;
+    const { container } = plan;
+    if (plan.reset) { container.style.removeProperty('--pp-fit-zoom'); PageZoom.syncRowGrow(container, 0); return undefined; }
+    const changed = container.style.getPropertyValue('--pp-fit-zoom') !== plan.next;
+    if (changed) container.style.setProperty('--pp-fit-zoom', plan.next);
+    return PageZoom.syncRowGrow(container, Number(plan.next)) || changed || undefined;
+  }
+  // Un seul conteneur (l'entrée en Lecture) : lit, puis écrit. Rend true quand le facteur ou l'écart de lignes a changé.
+  function applyPageFitZoom(container) {
+    return commitPageFitZoom(planPageFitZoom(container));
+  }
+  // Les deux conteneurs d'un coup : tout se lit, puis tout s'écrit, dans l'ordre donné. Rend, dans le même ordre, ce que chaque écriture dit (true quand le conteneur a changé).
+  function applyPageFitZoomTo(first, second) {
+    const plans = [planPageFitZoom(first), planPageFitZoom(second)];
+    return [commitPageFitZoom(plans[0]), commitPageFitZoom(plans[1])];
   }
 
   // Pose le facteur sur les deux conteneurs sans rien rafraîchir, pour les appelants qui rafraîchissent eux-mêmes juste après (chargement d'un
   // modèle, changement d'orientation). Rend true si l'un des deux a changé.
   function applyPageFitZoomToBoth() {
-    const editorChanged = applyPageFitZoom(editorContainer);
-    const readerChanged = applyPageFitZoom(readerContainer);
+    const [editorChanged, readerChanged] = applyPageFitZoomTo(editorContainer, readerContainer);
     return !!(editorChanged || readerChanged);
   }
 
   function refreshPageFitZoom() {
-    const editorChanged = applyPageFitZoom(editorContainer);
-    const readerChanged = applyPageFitZoom(readerContainer);
+    const [editorChanged, readerChanged] = applyPageFitZoomTo(editorContainer, readerContainer);
     // Les bandes de pagination sont positionnées à partir de mesures réelles : un changement de facteur les rend caduques tant qu'on n'a pas
     // recalculé.
     if (editorChanged && currentMode === 'edit') Editor.refreshPaginationPreview();
@@ -2082,7 +3360,7 @@
   // Le libellé du raccourci dépend de la plateforme (⌘S sur macOS, Ctrl+S ailleurs) et de la touche choisie dans Réglages > Raccourcis
   // (js/shortcuts.js ; '' quand elle a été retirée) : impossible à écrire dans index.html. Posé sur le titre du menu du bouton Enregistrer (qui
   // remplace son info-bulle : un bouton à menu n'a pas de data-tip, les deux se superposeraient) et sur son aria-label. Réappliqué à chaque
-  // changement de langue et de touche, sinon I18n.applyTranslations() le réécrirait sans le raccourci.
+  // changement de touche.
   function decorateSaveButtonShortcut() {
     const btn = document.getElementById('btn-save');
     if (!btn) return;
@@ -2124,7 +3402,8 @@
   function wireTemplateGalleryModal() {
     TemplateGalleryModal.wire({
       clearTemplateSelection: () => { templateSelect.value = ''; },
-      loadTemplateIntoEditor, onSave, setStatus, hasEditsToConfirmBeforeLeaving, askBeforeLeaving, savedTemplateName,
+      // `saveCreated` enregistre l'écran comme un modèle neuf et le range dans l'historique d'Annuler / Rétablir (saveAsNewTemplate) ; `currentTemplateId`, le modèle que l'écran montre avant que le nouveau le remplace.
+      loadTemplateIntoEditor, saveCreated: saveAsNewTemplate, currentTemplateId: () => Templates.getCurrentId(), setStatus, hasEditsToConfirmBeforeLeaving, askBeforeLeaving, savedTemplateName,
       saveWatchdogMs: SAVE_WATCHDOG_MS,
     });
   }
@@ -2134,27 +3413,104 @@
     // 'update' et non 'transaction' : ne part que si le document a réellement changé (docChanged), jamais pour un simple déplacement du curseur ou de
     // la sélection (cf. la section Enregistrement automatique plus haut). Couvre aussi l'édition de l'en-tête et du pied (même instance d'éditeur,
     // contenu échangé par setContent).
-    EditorCore.getEditor().on('update', markAutosaveDirty);
+    // Hors la synchro des tableaux liés (js/linked-table.js:syncOpen) : un tableau qui suit son modèle n'est pas une modification de la personne, et ouvrir un document n'écrit rien.
+    // Le texte reçu d'une autre personne de l'écriture en direct compte, il reste à enregistrer jusqu'à ce que l'une d'elles l'ait fait ; l'accroche du texte au salon (au démarrage) non.
+    EditorCore.getEditor().on('update', ({ transaction }) => { if (!LinkedTable.isSyncTransaction(transaction) && !SlideLinks.isSyncTransaction(transaction) && !LiveEntry.isSettingUp()) markTextDirty(); });
     EditorCore.getEditor().on('update', scheduleEmailLengthGauge);
     if (templateNameInput) templateNameInput.addEventListener('input', markAutosaveDirty);
     if (pdfFilenameInput) pdfFilenameInput.addEventListener('input', markAutosaveDirty);
+    // Annuler ou Rétablir rend une valeur à un champ (js/field-editor.js, domaine « fields ») : le crayon du nom du PDF et le bouton « + Cci » en montrent l'état, comme au chargement d'un modèle.
+    if (pdfFilenameInput) pdfFilenameInput.addEventListener('fieldrestored', () => { pdfFilenameInput.hidden = !pdfFilenameInput.value.trim(); });
+    if (emailCciInput) {
+      emailCciInput.addEventListener('fieldrestored', () => {
+        emailCciInput.hidden = !emailCciInput.value.trim();
+        if (emailCciToggle) emailCciToggle.classList.toggle('is-active', !emailCciInput.hidden);
+      });
+    }
+    // Les champs sont des éditeurs de bulles (js/field-editor.js) : la liste # n'y propose que des variables et les puces qui s'écrivent en texte (date,
+    // heure, email et nom de l'utilisateur) - une note de bas de page, un bloc conditionnel ou un calcul n'ont aucun sens dans un objet ou une liste
+    // d'adresses.
     eachEmailInput(el => {
       el.addEventListener('input', markAutosaveDirty);
       el.addEventListener('input', scheduleEmailLengthGauge);
-      // Même mécanisme #Variable que le champ « nom de fichier PDF » (texte brut, cf. le commentaire CSS de #v2-email-fields-row), sans suggestion de
-      // chips (setTabsVisible(false) dans checkForFilenameTrigger) : une note de bas de page, une date ou une heure n'a aucun sens dans un objet ou
-      // une liste d'adresses.
-      Variables.initFilenameInput(el);
     });
     wireCciToggle();
     // Émis par js/settings.js à chaque saisie dans les quatre champs de marge (onglet Réglages) : changer seulement les marges ne touche pas au
     // texte, et sans cet évènement le brouillon ne serait jamais marqué « modifié ».
-    document.addEventListener('pp:marginsChanged', markAutosaveDirty);
+    // En écriture en direct, la page est celle du groupe (extensions/edition/live-page.js) : changée ici, ou reçue d'une autre personne (`detail.remote`, rien à marquer, le modèle est déjà « à enregistrer »),
+    // elle n'est pas un réglage de cette personne. Le modèle est seulement « à enregistrer » et c'est la personne qui enregistre qui l'écrit, avec le texte : une personne qui n'enregistre pas ne réécrit
+    // jamais la page à sa place (une page restée en retard écraserait celle du groupe).
+    document.addEventListener('pp:marginsChanged', (event) => {
+      if (event.detail && event.detail.remote) return;
+      if (LiveEntry.isLive()) markTextDirty(); else markAutosaveDirty();
+    });
     // Émis par PageLayout.setOrientation (bouton Portrait / Paysage) : la feuille change de largeur et de hauteur. Le bouton ne rafraîchit rien
     // lui-même.
     document.addEventListener('pp:pageLayoutChanged', onPageLayoutChanged);
     // Émis par PageLayout.setWatermark (fenêtre « Filigrane… ») : la couche des pages est repeinte, la page ne change pas de forme.
     document.addEventListener('pp:watermarkChanged', onWatermarkChanged);
+    // Émis par MailtoExport.setMailClient (Réglages > Email) : le lien de l'email, donc sa longueur, change avec la messagerie choisie.
+    document.addEventListener('pp:mailClientChanged', scheduleEmailLengthGauge);
+  }
+
+  // La date `a` d'un modèle est-elle antérieure à `b` ? (secondes de Grist, ou leur écriture ISO quand la relecture a échoué ; une date illisible n'est antérieure à rien)
+  function dateModifBefore(a, b) {
+    const seconds = value => (typeof value === 'number' ? value : Date.parse(value) / 1000);
+    const x = seconds(a), y = seconds(b);
+    return Number.isFinite(x) && Number.isFinite(y) && x < y && !Templates.sameDateModif(a, b);
+  }
+  // L'écriture en direct (extension « édition », js/live-entry.js) : ce que le socle lui dit du modèle ouvert, ce qu'elle peut lui demander, et l'enregistrement d'une autre personne du direct.
+  // Sa date est celle que ce widget connaît maintenant (le passage suivant n'y voit pas un conflit) et, si le texte d'ici est dans l'état qu'elle a enregistré, rien n'est plus « à enregistrer ».
+  function adoptLiveSave({ modified, atState }) {
+    if (!LiveEntry.isLive()) return;
+    // Jamais en arrière : le dernier enregistrement que le salon garde peut être plus ancien que le modèle ouvert ici (enregistré depuis, hors du direct) ; sa date ferait voir un conflit qui n'en est pas un.
+    if (dateModifBefore(modified, autosaveLastKnownDateModif)) return;
+    autosaveLastKnownDateModif = modified;
+    // Une page ouverte hors du direct pendant que le groupe enregistrait montre le bandeau « modifié ailleurs » d'un enregistrement du groupe ; en rejoignant, elle prend le texte du groupe, qui est
+    // celui de cet enregistrement ou d'un plus récent : le conflit est réglé. Un enregistrement fait depuis hors du direct (plus récent que celui du groupe) garde le bandeau.
+    if (autosaveConflictActive && autosaveConflictTpl && !dateModifBefore(modified, autosaveConflictTpl.dateModif)) hideConflictBanner();
+    if (atState && !autosaveSettingsDirty) autosaveDirty = false;
+    updateSaveStatus();
+  }
+  // Le texte affiché peut-il être remplacé par celui d'un direct déjà en cours (l'entrée automatique, js/live-entry.js) sans que la personne s'y attende ? Pas quand l'écran est à autre chose qu'à ce
+  // texte : la Lecture, la carte de l'accès, une question de départ, une restauration de version, un export, un conflit à trancher, l'en-tête ou le pied en édition.
+  function textMayBeReplaced() {
+    return currentMode === 'edit' && !isAccessGuideShown() && !leavePromptOpen && !restoringVersion && !exportOperationInProgress && !autosaveConflictActive && !Editor.isEditingHeaderFooter();
+  }
+  function wireLiveEditing() {
+    LiveEntry.setContext(() => ({ id: Templates.getCurrentId(), type: currentTypeModele, readOnly: isReadOnly(), dirty: autosaveDirty, modified: autosaveLastKnownDateModif, idle: textMayBeReplaced() }));
+    LiveEntry.setHooks({ markUnsaved: markTextDirty });
+    LiveEntry.onSaved(adoptLiveSave);
+  }
+
+  // L'ajustement de la page se refait tout de suite ; la pagination de l'éditeur une seule fois, en fin de tâche, et pas du tout si une autre a eu lieu entre-temps : l'ouverture d'un
+  // modèle montre la bande puis pagine elle-même, et une pagination coûte sur une présentation chargée (70 diapositives d'images : 0,3 s, mesure du 21/10).
+  let slidesRelayoutPending = false;
+  function relayoutForSlides() {
+    const [readerChanged] = applyPageFitZoomTo(readerContainer, editorContainer);
+    if (readerChanged && currentMode === 'read') renderReader();
+    if (slidesRelayoutPending) return;
+    slidesRelayoutPending = true;
+    queueMicrotask(() => {
+      if (!slidesRelayoutPending) return;
+      slidesRelayoutPending = false;
+      if (currentMode === 'edit') Editor.refreshPaginationPreview();
+    });
+  }
+
+  // Les présentations (extension « diapositives », js/slides-entry.js) : « Nouvelle présentation » ouvre un modèle vierge de ce type par le chemin des autres « Nouveau… ». Quand GFS allume ou
+  // éteint une extension (son contexte arrive au démarrage, ou la personne change d'avis), les modèles qui s'ouvrent ici changent : la liste se redessine tout de suite, en gardant le modèle
+  // qu'elle montre (même au démarrage, quand l'ouverture vient de le choisir). La bande des diapositives apprend ce que l'écran montre, et quand elle prend ou rend sa place à gauche du
+  // document, la page se réajuste à la largeur qui reste et sa pagination se refait (relayoutForSlides).
+  function wireSlides() {
+    SlidesEntry.setContext(() => ({ type: currentTypeModele, editing: currentMode === 'edit' && editorContainer.style.display !== 'none' && !isReadOnly() }));
+    SlidesEntry.setHooks({ startNew: startNewTemplate, relayout: relayoutForSlides, status: (msg, isError) => setStatus(msg, !!isError) });
+    HeaderFooterPreview.onPaginated(() => { slidesRelayoutPending = false; });
+    SlidesEntry.onChange(() => {
+      const shown = templateSelect.value;
+      renderTemplateOptions(Templates.getCached());
+      templateSelect.value = shown;
+    });
   }
 
   // La ligne sélectionnée dans Grist a changé : la Lecture, les champs de l'email et la jauge suivent.
@@ -2170,6 +3526,17 @@
     await updateEmailLengthGauge();
   }
 
+  // Les lignes de la vue de Grist ont changé (un filtre posé ou retiré, une ligne ajoutée ou modifiée ailleurs que sous le curseur) : la ligne choisie est la
+  // même, onRecordChange n'a rien dit. Seule une Lecture qui boucle sur toutes les lignes (ReaderMode.readsAllRows) les montre : elle se redessine, une fois pour
+  // une rafale de messages (un filtre en envoie plusieurs).
+  const VIEW_REFRESH_MS = 250;
+  let viewRefreshTimer = null;
+  function onViewRowsChanged() {
+    if (currentMode !== 'read' || !ReaderMode.readsAllRows()) return;
+    clearTimeout(viewRefreshTimer);
+    viewRefreshTimer = setTimeout(() => { if (currentMode === 'read' && ReaderMode.readsAllRows()) renderReader(); }, VIEW_REFRESH_MS);
+  }
+
   // Les boutons de la barre : nouveau modèle, import, suppression, exports, création de l'email, modes Édition et Lecture.
   function wireToolbarButtons() {
     document.getElementById('btn-new').addEventListener('click', onNew);
@@ -2177,16 +3544,25 @@
     const btnNewEmail = document.getElementById('v2-btn-new-email');
     const btnNewMacro = document.getElementById('v2-btn-new-macro');
     const btnNewGrid = document.getElementById('v2-btn-new-grid');
+    const btnNewPresentation = document.getElementById('v2-btn-new-presentation');
     if (btnNewDocument) btnNewDocument.addEventListener('click', onNew);
     if (btnNewEmail) btnNewEmail.addEventListener('click', onNewEmail);
     if (btnNewMacro) btnNewMacro.addEventListener('click', onNewMacro);
     if (btnNewGrid) btnNewGrid.addEventListener('click', onNewGrid);
+    if (btnNewPresentation) btnNewPresentation.addEventListener('click', onNewPresentation);
     const btnImportXlsx = document.getElementById('v2-btn-import-xlsx');
     if (btnImportXlsx) btnImportXlsx.addEventListener('click', onImportXlsx);
+    const btnImportMd = document.getElementById('v2-btn-import-md');
+    if (btnImportMd) btnImportMd.addEventListener('click', onImportMd);
+    const btnImportPptx = document.getElementById('v2-btn-import-pptx');
+    if (btnImportPptx) btnImportPptx.addEventListener('click', onImportPptx);
     MacroEditor.wire(onMacroSaved, macroSettingsOnScreen, openTemplateFromMacro, onMacroModelVisibility);
     TemplateOrganizeModal.wire();
     document.getElementById('btn-delete').addEventListener('click', onDelete);
-    document.getElementById('btn-export-pdf').addEventListener('click', withExportLock(onExportPdf));
+    // Le bouton Exporter exporte, dans le type choisi (menu à sa gauche), l'option cochée de son menu : la ligne affichée ou toutes les lignes. Les neuf lignes
+    // d'export d'avant, masquées (index.html), restent câblées à leur export comme avant, avec « Exporter en PDF » pour le PDF d'une ligne.
+    document.getElementById('btn-export-pdf').addEventListener('click', withExportLock(onExport));
+    document.getElementById('v2-btn-export-pdf').addEventListener('click', withExportLock(onExportPdf));
     // Fonctions fléchées : sans elles, l'événement click arriverait comme premier argument (`merged`) et serait lu comme vrai.
     document.getElementById('v2-btn-export-pdf-batch').addEventListener('click', withExportLock(() => onExportBatch('pdfZip')));
     document.getElementById('v2-btn-export-pdf-merged').addEventListener('click', withExportLock(() => onExportBatch('pdfMerged')));
@@ -2200,10 +3576,12 @@
     onExportRow('v2-btn-export-xlsx-single', withExportLock(() => onExportBatch('xlsxSingle')));
     if (btnCreateEmail) btnCreateEmail.addEventListener('click', withExportLock(onCreateEmail));
     btnEdit.addEventListener('click', () => switchMode('edit'));
-    btnRead.addEventListener('click', () => switchMode('read'));
+    // Le bouton Mode lecture fait ce que dit la ligne cochée de son menu (js/clean-reading.js), comme Exporter : la Lecture (cochée au départ) ou la Lecture épurée.
+    // `detail` à 0 : Entrée, Espace ou Alt+L (qui clique le bouton) - le focus revient au bouton à la sortie de la Lecture épurée.
+    btnRead.addEventListener('click', event => CleanReading.readButton(event.detail === 0));
   }
 
-  // Le reste des branchements de l'interface : Lecture épurée, fenêtres, nom du fichier PDF, qualité, raccourcis, bandeau de conflit, menu
+  // Le reste des branchements de l'interface : Lecture épurée, fenêtres, nom du fichier PDF, type d'export, raccourcis, bandeau de conflit, menu
   // Enregistrer.
   function wireWidgetControls() {
     CleanReading.wire({
@@ -2214,28 +3592,26 @@
     });
     wireA4PreviewToggle();
     OrientationToggle.wire({ isReadOnly });
+    LinkedTable.wire({ setStatus, openModel: openLinkedModel });
     wireLinkRulesModal();
     wireTemplateGalleryModal();
     wireTemplateRename();
     wireDefaultTemplateButton();
     wirePdfFilenameToggle();
-    wireQualityDropdown();
-    Settings.wireSettingsModal();
+    wireExportMenus();
+    Settings.wireSettingsModal({ hasEditsToConfirmBeforeLeaving, askBeforeLeaving }); // changer de langue recharge la page : la question « Enregistrer / Abandonner / Annuler » d'abord
     RowTemplatePanel.wire();
     ViewTemplate.wirePanel();
+    ExportDate.wirePanel();
     wirePageModals();
     wireSaveShortcut();
     wirePageFitZoom();
     decorateSaveButtonShortcut();
-    I18n.onChange(decorateSaveButtonShortcut);
     Shortcuts.onChange(decorateSaveButtonShortcut);
-    // Le message « Modifications non enregistrées » dure tant que rien n'est enregistré : il suit un changement de langue au lieu de rester dans
-    // l'ancienne.
-    I18n.onChange(() => { if (statusMsg.classList.contains('is-unsaved')) statusMsg.textContent = I18n.t('status.unsavedChanges'); });
-    Variables.initFilenameInput(pdfFilenameInput);
     wireAutosaveConflictBanner();
     wirePasteTooBigNotice();
     wireMacroReturn();
+    wireLinkedReturn();
     wireSaveMenu();
   }
 
@@ -2259,6 +3635,8 @@
   async function init() {
     FirstContact.start(); // widget ouvert hors de Grist, adresse bloquée par le réseau, démarrage trop long : js/first-contact.js
     syncSaveButtonLook();
+    // Hébergé par GFS, le réglage vient de l'espace de l'app, qui arrive avec le contexte : l'aspect du bouton se remet à l'heure à ce moment-là (js/person-store.js).
+    PersonStore.onLoaded(syncSaveButtonLook);
     wireAccessLockGuard();
     // Grist (schéma, règles de liaison), les modèles et l'éditeur se chargent ensemble : en série, leurs aller-retour et leurs téléchargements
     // faisaient attendre 6 s le premier modèle. index.html a pu les lancer plus tôt encore (window.__earlyStart), pendant que les derniers scripts
@@ -2271,17 +3649,37 @@
     try { await gristInit; } catch (e) { setStatus(I18n.t('status.gristApiError'), true); }
     // Lancé dès que les options du widget sont connues (GristAPI.init), attendu seulement avant le premier affichage, en fin d'init().
     const accessReady = AccessRights.init();
+    // Au plus ACCESS_STARTUP_WAIT_MS : le widget démarre verrouillé (lecture seule) tant que les droits ne sont pas connus. Une seule attente, quel que soit le nombre de fois qu'on la demande.
+    let accessWait = null;
+    const accessKnown = () => {
+      if (!accessWait) accessWait = Promise.race([accessReady, new Promise(resolve => setTimeout(resolve, ACCESS_STARTUP_WAIT_MS))]);
+      return accessWait;
+    };
     ViewTemplate.init();
+    ExportDate.init();
+    SaveReminder.init();
     RowTemplate.init({
-      openTemplate: openTemplateForRow,
+      // La ligne de la table qui change ne remplace pas le PDF que la personne lit.
+      openTemplate: id => (PdfReading.isActive() ? Promise.resolve(false) : openTemplateForRow(id)),
       currentId: () => Templates.getCurrentId(),
       currentRecord: () => ({ record: latestRecord, tableId: latestRecordTableId }),
     });
+    // GFS (js/gfs-open.js, consignes GFS 010, 014, 035 et 047) : le modèle qu'il désigne s'ouvre au démarrage, et son appel `ouvrir` passe par le chemin du sélecteur, comme la règle de ligne ; « Nouveau » ouvre un modèle vierge du type
+    // demandé, par le chemin du bouton « Nouveau » de ce type ; « Nouveau > Importer » importe le fichier qu'il donne, par le chemin de la ligne d'import du menu « + ». Avant de quitter le modèle ouvert, ce qui attend est enregistré
+    // sans question quand l'enregistrement automatique est allumé (saveBeforeGfsLeaves), et l'appel `fermer` y répond (leaveForGfs). Seul, rien n'arrive.
+    GfsOpen.init({ openTemplate: openTemplateForRow, openBlank: openBlankOfType, importFile: importFileFromGfs, readPdf: PdfReading.open, say: text => setStatus(text), saveBeforeLeaving: saveBeforeGfsLeaves, leave: leaveForGfs });
+    PdfReading.init({ leave: leaveForPdf, show: () => switchMode('read'), say: (text, isError) => setStatus(text, isError), layoutChanged: () => refreshPageFitZoom() });
+    PdfReading.onChange(onPdfReadingChange);
+    PdfReading.onLocksChanged(applyPdfLocks);
     await editorReady;
+    attachFieldEditors(await Editor.loadLibraries());
     Comments.setReaderHooks({ save: saveReaderCommentAnchors, refresh: () => renderReader() });
     Comments.wireReader(readerContainer);
     wireEditTracking();
+    wireLiveEditing();
+    wireSlides();
     GristAPI.onRecord(onRecordChange);
+    BatchScope.onViewChange(onViewRowsChanged);
     await refreshTemplateList(templatesLoaded);
     // Enveloppe #template-select avant l'écriture de templateSelect.value ci-dessous (modèle par défaut) : TemplateTreeSelect intercepte cet
     // accesseur pour se synchroniser (js/template-tree-select.js), donc l'ordre importe ; attaché après, le premier affichage du modèle par défaut
@@ -2289,42 +3687,85 @@
     // Le try/catch garde le reste du démarrage : init() n'a ailleurs aucun filet, et une exception dans cette vue décorative empêcherait de brancher
     // tout ce qui suit (Enregistrer, Ctrl+S, enregistrement automatique, statut « Prêt ») sans aucun message. Un bug de rendu de l'arbre doit rester
     // dans l'arbre.
-    // `onOrganize` : « Organiser mes modèles » vit dans l'en-tête du panneau (js/template-tree-select.js).
-    try { TemplateTreeSelect.attach(templateSelect, { onOrganize: () => { if (!isReadOnly()) TemplateOrganizeModal.open(); } }); } catch (e) { console.error('[main] TemplateTreeSelect.attach a échoué, arbre non disponible', e); }
+    // `onOrganize` : « Organiser mes modèles » vit dans l'en-tête du panneau (js/template-tree-select.js). `onToggleDefault` et `isLocked` : l'étoile du modèle
+    // par défaut qu'une ligne de la liste et de « Organiser » porte (toggleDefaultTemplate).
+    try {
+      TemplateTreeSelect.attach(templateSelect, {
+        onOrganize: () => { if (!isReadOnly()) TemplateOrganizeModal.open(); },
+        onToggleDefault: toggleDefaultTemplate,
+        isLocked: isReadOnly,
+      });
+    } catch (e) { console.error('[main] TemplateTreeSelect.attach a échoué, arbre non disponible', e); }
     // Chargement non bloquant, comme Comments.loadForTemplate ci-dessous : l'identification de la personne (GristAPI.getCurrentUserEmail) est un
     // aller-retour réseau qui ne doit pas retarder le démarrage pour la section « Épinglés » de l'arbre.
+    ExportChoices.wire({ canSave: () => !isReadOnly(), onApplied: syncExportMenus });
+    ActionHistory.wire({ status: setStatus });
+    FormatSlots.wire({ status: setStatus });
+    HeadingStyles.wire({ status: setStatus });
     TemplatePreferences.loadForCurrentUser()
-      .then(() => TemplateTreeSelect.refresh())
+      .then(() => { TemplateTreeSelect.refresh(); ExportChoices.refresh(); })
       .catch(e => console.error('[main] chargement des préférences de rangement impossible', e));
     // Modèle par défaut (cf. btn-set-default-template) : sélectionné avant la lecture de templateSelect.value ci-dessous, pour que le widget s'ouvre
     // directement dessus plutôt que sur "-- Nouveau modèle --". Silencieux si l'id ne correspond à aucune option (modèle supprimé entre-temps).
     // Réglage « Modèle selon la ligne » activé et la ligne déjà connue : le widget s'ouvre directement sur son modèle, sans passer par le modèle par
     // défaut.
+    // Un rechargement que l'app a voulu elle-même (changer de langue, changer la touche de déclenchement : js/settings.js) ramène la personne sur le modèle où elle était (demande du 20/10), avant GFS, la ligne,
+    // la vue et le ★. Son identifiant vient du fragment de l'adresse du cadre, effacé aussitôt, jamais du stockage du navigateur (le cadre isolé de GFS le refuse). Les extensions viennent du contexte de GFS
+    // (une présentation ne s'ouvre que si « diapositives » est active) : on l'attend d'abord, comme js/gfs-open.js. Modèle supprimé entre-temps ou que ce widget ne sait pas ouvrir : l'ordre habituel, sans message.
+    await GfsLink.ready;
+    const reopenId = Settings.takeReopenId();
+    const reopenedTemplate = reopenId == null ? undefined : Templates.openableById(reopenId);
+    const reopenTemplateId = reopenedTemplate ? reopenedTemplate.id : null;
+    // Hébergé par GFS : le modèle qu'il désigne (un double-clic dans son explorateur) passe avant tout l'ordre ci-dessous ; null seul, sans réponse de GFS ou quand ce modèle ne s'ouvre pas. Un modèle rouvert après
+    // un rechargement passe avant lui : GFS ne rend l'`ouverture` qu'une fois (contrats 5.2, point 3), mais un GFS plus ancien la rejouerait, et le dernier clic n'est pas là où la personne était.
+    const gfsTemplateId = reopenTemplateId == null ? await GfsOpen.startupTemplateId() : null;
+    // « Nouveau » dans GFS (consigne 014) : un modèle vierge du type demandé s'ouvre à la place de tout l'ordre ci-dessous (le macro-modèle, qui n'a rien à charger, ouvre son écran de composition après le démarrage,
+    // par-dessus le modèle habituel). Les droits se lisent d'abord : un document en lecture seule garde l'ordre habituel.
+    const gfsBlankType = gfsTemplateId == null && reopenTemplateId == null ? await GfsOpen.startupBlankType() : null;
+    let gfsBlankOpened = false;
+    if (gfsBlankType !== null && gfsBlankType !== 'macro') {
+      await accessKnown();
+      gfsBlankOpened = (await openBlankOfType(gfsBlankType)) === true;
+    }
     let startupRowTemplateId = null;
-    if (RowTemplate.isActive() && latestRecord) {
+    if (gfsTemplateId == null && reopenTemplateId == null && !gfsBlankOpened && RowTemplate.isActive() && latestRecord) {
       try { startupRowTemplateId = await RowTemplate.pick(latestRecord, latestRecordTableId); }
       catch (e) { console.error('[main] modèle de la ligne introuvable au démarrage', e); }
     }
-    // Ordre d'ouverture : la ligne qui désigne un modèle, puis le modèle choisi pour cette vue (js/view-template.js), puis le modèle par défaut du
-    // document (★, jamais un modèle email ou macro : Templates.getDefaultId les ignore, même quand la colonne les marque encore).
-    const startupTemplateId = [startupRowTemplateId, ViewTemplate.usableId(), Templates.getDefaultId()].find(id => id != null);
-    if (startupTemplateId !== undefined) templateSelect.value = startupTemplateId;
-    await onTemplateSelectChange();
+    // Ordre d'ouverture : le modèle rouvert après un rechargement voulu par l'app, puis celui que GFS désigne, puis la ligne qui désigne un modèle, puis le modèle choisi pour cette vue (js/view-template.js), puis
+    // le modèle par défaut du document (★, jamais un modèle email ou macro : Templates.getDefaultId les ignore, même quand la colonne les marque encore).
+    const startupTemplateId = [reopenTemplateId, gfsTemplateId, startupRowTemplateId, ViewTemplate.usableId(), Templates.getDefaultId()].find(id => id != null);
+    if (!gfsBlankOpened) {
+      if (startupTemplateId !== undefined) templateSelect.value = startupTemplateId;
+      await onTemplateSelectChange();
+    }
     templateSelect.addEventListener('change', onTemplateSelectChange);
-    // Les lignes reçues avant ce point (modèles pas encore chargés) comptent maintenant ; la ligne déjà ouverte au démarrage ne rouvre rien.
-    RowTemplate.start().catch(e => console.error('[main] modèle selon la ligne non appliqué', e));
+    // Les lignes reçues avant ce point (modèles pas encore chargés) comptent maintenant ; la ligne déjà ouverte au démarrage ne rouvre rien - ni quand c'est GFS qui a désigné le modèle (ou demandé un modèle vierge) ni quand la personne retrouve celui d'avant son rechargement
+    // ouvert : la ligne courante est alors tenue pour traitée, les suivantes suivent les règles comme d'habitude.
+    RowTemplate.start(reopenTemplateId != null || gfsTemplateId != null || gfsBlankOpened).catch(e => console.error('[main] modèle selon la ligne non appliqué', e));
     wireToolbarButtons();
     wireWidgetControls();
     startAutosaveLoop();
-    await Promise.race([accessReady, new Promise(resolve => setTimeout(resolve, ACCESS_STARTUP_WAIT_MS))]);
+    await accessKnown();
     applyAccessRights();
     AccessRights.onChange(onAccessRightsChange);
     GristAPI.onAccessLevelChange(onWidgetAccessChange);
     await switchMode('edit');
     FirstContact.ready();
     setStatus(I18n.t(isReadOnly() ? 'status.readyReadOnly' : 'status.ready'));
+    // Juste après « Widget prêt. » : la phrase qui dit pourquoi ce modèle s'est ouvert (GFS) la remplace ; les avertissements de checkAfterOpen passent après elle, et l'import que GFS demande (« Nouveau > Importer ») puis les appels `ouvrir` reçus pendant le démarrage sont traités à la fin de ce tour.
+    GfsOpen.startupDone();
+    // « Nouveau » dans GFS : le coin d'état garde l'avertissement « modèle non enregistré » que pose l'ouverture d'un modèle vierge, au lieu de « Widget prêt. » ; le macro-modèle ouvre son écran de composition, vide.
+    if (gfsBlankOpened) updateSaveStatus();
+    else if (gfsBlankType === 'macro') onNewMacro();
     openCleanReadingForReadOnly();
     checkAfterOpen();
+    // Hébergée par GFS (consigne 019) : la page est partie dans la langue que son adresse porte ; si GFS en dit une autre (changée pendant le rechargement, qu'il ne signale pas à un cadre absent), elle
+    // se recharge dans la bonne, après l'ouverture du modèle pour que le rechargement le rouvre. Rien seule, ni quand GFS ne donne pas la langue.
+    Settings.followGfsLanguage();
+    // Après elle : une page qui va se recharger dans la langue de GFS ne montre pas la fenêtre des nouveautés pour la rouvrir aussitôt.
+    newsMayOpen = true;
+    openNewsForEditors();
   }
 
   // Dernier filet de init() : hors TemplateTreeSelect.attach() (cf. ci-dessus), une exception interromprait l'initialisation en silence, sa seule
@@ -2332,6 +3773,7 @@
   init().catch((e) => {
     console.error('[main] init() a échoué', e);
     setStatus(I18n.t('status.initError', { message: (e && e.message) || String(e) }), true);
+    GfsOpen.startupFailed();
     FirstContact.failed(e);
   });
 })();

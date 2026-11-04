@@ -11,8 +11,33 @@ const MacroTemplates = (function () {
   // Le saut de page qui ouvre le slot de rang `rank` (le 2e, le 3e... du document assemblé) : le même HTML, plus data-macro-slot. Les `top` des
   // images en calque d'un modèle se comptent depuis le haut de sa première page ; une fois les slots mis bout à bout, la Lecture (ReaderMode.render)
   // et l'export PDF (js/pdf-export.js) s'en servent pour retrouver où chaque slot commence et y rebaser ses images, sans quoi elles s'empileraient
-  // toutes en haut du premier slot.
-  function slotBreakHtml(rank) { return PAGE_BREAK_HTML.replace('<div ', '<div data-macro-slot="' + rank + '" '); }
+  // toutes en haut du premier slot. `page` (« Selon chaque modèle », cf. buildConcatenatedHtml) : la page de ce modèle - son sens, ou `{ orientation, format }` -, dite par le saut
+  // lui-même (js/page-sections.js) ; absente, le saut ne dit rien et reste exactement celui d'avant.
+  function slotBreakHtml(rank, page) {
+    return PAGE_BREAK_HTML.replace('<div ', '<div data-macro-slot="' + rank + '"' + (page ? PageSections.attrsFor(page) : '') + ' ');
+  }
+
+  // La page d'un modèle assemblé : `{ orientation, format }`. Son sens est celui de la page qu'il a enregistrée (colonne Margins, `marginsMm.orientation`), portrait quand il n'en dit pas ; un modèle
+  // Grille a la sienne, réglée avec le même bouton Page. Une présentation a la page d'une diapositive (SlidesEntry.pageFor : 16:9, en paysage, tant qu'elle n'a pas d'autre format) et c'est le seul
+  // modèle qui apporte son FORMAT : tout autre modèle suit le format du macro-modèle (format nul), comme avant - « Page A4 selon chaque modèle » ne change que le sens de chacun.
+  function pageOfTemplate(tpl) {
+    const presentation = !!tpl && tpl.typeModele === 'presentation';
+    const stored = presentation ? SlidesEntry.pageFor(tpl.typeModele, tpl.marginsMm) : (tpl && tpl.marginsMm);
+    return {
+      orientation: stored && stored.orientation === PageSections.LANDSCAPE ? PageSections.LANDSCAPE : PageSections.PORTRAIT,
+      format: presentation ? PageSections.formatToken(PageLayout.normalizeFormat(stored && stored.format)) : null,
+    };
+  }
+  // Son sens seul.
+  function senseOfTemplate(tpl) {
+    return pageOfTemplate(tpl).orientation;
+  }
+
+  // Le HTML d'un modèle sans le sens que portent ses sauts de page (une page paysage au milieu de ses pages portrait, js/page-sections.js) : un macro-modèle au sens imposé donne à toutes ses pages
+  // celui de sa propre page, les pages tournées d'un modèle assemblé ne l'y suivent pas. « Selon chaque modèle » les garde, chacun dans sa page. Sans saut tourné, le HTML est rendu tel quel.
+  function withoutTurnedBreaks(html) {
+    return html.indexOf(PageSections.ATTR) === -1 ? html : html.replace(new RegExp('\\s' + PageSections.ATTR + '="(?:portrait|landscape)"', 'g'), '').replace(new RegExp('\\s' + PageSections.FORMAT_ATTR + '="[^"]*"', 'g'), '');
+  }
 
   // L'évaluation d'une règle { column, operator, value } contre la ligne courante (comparaison, colonnes Oui/Non et Date, fuseau, avertissement
   // « colonne absente de la ligne ») est dans js/condition-rules.js, partagée avec les variables conditionnelles.
@@ -81,7 +106,15 @@ const MacroTemplates = (function () {
 
   // Construit le HTML brut (pas encore résolu) du document assemblé : un fragment par slot retenu, séparés par un saut de page. `templates` : le
   // tableau déjà chargé (Templates.getCached()), passé en paramètre plutôt que lu ici pour rester testable sans le module Templates.
-  async function buildConcatenatedHtml(macroSlots, tableId, record, templates) {
+  // `options.perModel` (« Selon chaque modèle », PageLayout.isOrientationAuto du macro-modèle) : le document dit lui-même la page de chaque modèle, son sens (celui de sa page, senseOfTemplate) et,
+  // pour une présentation, son format de diapositive - un repère de départ devant le premier modèle, `data-page-orientation` (et `data-page-format`) sur le saut de page qui ouvre chacun des
+  // autres (js/page-sections.js). La Lecture, le PDF, le Word et l'impression le lisent à l'identique. Sans cette option (un sens imposé au macro-modèle), rien n'est ajouté : le même HTML qu'avant.
+  // Chaque modèle donne son HTML tel que sa sortie le fait (SlidesEntry.outputHtml) : un document sans le repère de ses copies de diapositive, une présentation sans le repère d'une diapositive liée ni
+  // la transition, les notes et le fond des siennes, ses sauts de page marqués diapositive.
+  // `options.anchors` (les sorties qui écrivent la cible d'un lien vers une diapositive : la Lecture, le PDF, le Word, le HTML) : une diapositive que vise un lien y garde son bloc d'adresse (SlideProps.forOutput).
+  async function buildConcatenatedHtml(macroSlots, tableId, record, templates, options) {
+    const perModel = !!(options && options.perModel);
+    const anchors = !!(options && options.anchors);
     const slots = (macroSlots && Array.isArray(macroSlots.slots)) ? macroSlots.slots : [];
     const fragments = [];
     for (const slot of slots) {
@@ -91,10 +124,12 @@ const MacroTemplates = (function () {
       if (modeleId == null) continue;
       const tpl = templates.find(t => String(t.id) === String(modeleId));
       if (!tpl) { console.error('[MacroTemplates] modèle introuvable pour un slot, id=', modeleId); continue; }
-      fragments.push(tpl.contenu || '');
+      const content = SlidesEntry.outputHtml(tpl.typeModele, tpl.contenu || '', { anchors, theme: tpl.marginsMm && tpl.marginsMm.theme, stored: tpl.marginsMm || null });
+      fragments.push({ html: perModel ? content : withoutTurnedBreaks(content), page: pageOfTemplate(tpl) });
     }
-    return fragments.reduce((html, fragment, rank) => html + (rank ? slotBreakHtml(rank) : '') + fragment, '');
+    const body = fragments.reduce((html, fragment, rank) => html + (rank ? slotBreakHtml(rank, perModel ? fragment.page : null) : '') + fragment.html, '');
+    return perModel && fragments.length ? PageSections.startHtml(fragments[0].page) + body : body;
   }
 
-  return { pickModeleId, buildConcatenatedHtml, PAGE_BREAK_HTML, slotBreakHtml, slotModelIds, isModelHidden, withModelHidden, keepHidden };
+  return { pickModeleId, buildConcatenatedHtml, PAGE_BREAK_HTML, slotBreakHtml, pageOfTemplate, senseOfTemplate, slotModelIds, isModelHidden, withModelHidden, keepHidden };
 })();

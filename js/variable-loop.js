@@ -1,20 +1,29 @@
 // Fenêtre « Boucle » d'une bulle #Variable : répéter la ligne du tableau, l'élément de liste ou le paragraphe qui contient la bulle - ou la bulle
-// seule, dans la phrase - pour chaque ligne liée à la ligne de la page. La boucle vit dans l'attribut `loop` de la bulle (js/editor-nodes.js) ; son
-// moteur (lignes parcourues, filtre, tri, déroulé en lecture et à l'export) est js/loop-rules.js. Même gabarit que la fenêtre de condition
-// (js/variable-condition.js), mêmes lignes de filtre (js/condition-fields.js, sur les colonnes de la table parcourue), aperçu en direct sur la ligne
-// sélectionnée puis sur toutes les lignes de la page. Ouverte depuis la barre flottante de la bulle
-// (js/floating-toolbars.js:wireVariableFloatingToolbar) ; les repères de la zone répétée dans l'éditeur sont en CSS seul (css/variable-actions.css).
+// seule, dans la phrase - pour chaque ligne rattachée à la ligne de la page, ou pour toutes les lignes de sa table (la vue Grist du widget, ou toute
+// la table). La boucle vit dans l'attribut `loop` de la bulle (js/editor-nodes.js) ; son moteur (lignes parcourues, filtre, tri, déroulé en lecture
+// et à l'export) est js/loop-rules.js. Même gabarit que la fenêtre de condition (js/variable-condition.js), mêmes lignes de filtre
+// (js/condition-fields.js, sur les colonnes de la table parcourue), aperçu en direct sur la ligne sélectionnée puis sur toutes les lignes de la page
+// (sur les lignes parcourues seules pour toutes les lignes : elles ne dépendent pas de la ligne de la page). Ouverte depuis la barre flottante de la
+// bulle (js/floating-toolbars.js:wireVariableFloatingToolbar), ou, pour la ligne d'un tableau, depuis « Répéter la ligne » de la barre du tableau (rowStatus et
+// openRow choisissent la bulle de la ligne) ; les repères de la zone répétée dans l'éditeur sont en CSS seul (css/variable-actions.css).
 const VariableLoop = (function () {
   const { el, option } = Dom;
   const { setLine, shorten } = VariableModal;
   // Nœuds ProseMirror qui forment une zone répétée, pour chaque `repeat` : les mêmes que js/loop-rules.js:zoneOf côté HTML (tr, li, p et h1-h6).
   const ZONE_NODES = { row: ['tableRow'], item: ['listItem', 'taskItem'], paragraph: ['paragraph', 'heading'] };
+  // Les bulles qui lisent une ligne de table : « La ligne du tableau » les fait toutes suivre, une boucle « dans sa cellule » ne répète que celle qui la porte.
+  const BUBBLE_NODES = ['varBadge', 'calcBadge'];
   // Valeurs citées dans l'aperçu d'une zone répétée : les premières seulement, la suite en « … ».
   const PREVIEW_VALUES = 3;
 
+  // Au-delà, la Lecture devient lente (mesures du 04/10 : 2 000 lignes, environ 25 s ; le PDF reste rapide) : la fenêtre le dit.
+  const MANY_ROWS = 1000;
+
   let win = null; // la fenêtre de js/modal-base.js, créée à la première ouverture
   let refs = null;
-  // { editor, pos, node, had, place, source, working } - `working` est une copie : rien n'est écrit dans la bulle avant « Enregistrer ».
+  // { editor, pos, node, had, place, source, linked, allSource, working } - `source` : celle qui est choisie ; `linked` et `allSource` : celles que la bulle
+  // propose (les lignes rattachées, toutes les lignes de sa table), null quand elle n'a pas la sienne. `working` est une copie : rien n'est écrit dans la bulle
+  // avant « Enregistrer ».
   let state = null;
   const previewRun = VariableModal.previewRunner(updatePreview);
 
@@ -22,7 +31,7 @@ const VariableLoop = (function () {
 
   // === Lecture du document de l'éditeur ===
   function nearestDepth($pos, names) {
-    for (let d = $pos.depth; d > 0; d--) if (names.indexOf($pos.node(d).type.name) !== -1) return d;
+    for (let depth = $pos.depth; depth > 0; depth--) if (names.indexOf($pos.node(depth).type.name) !== -1) return depth;
     return -1;
   }
   // Bulle qui répète ce nœud (`start` : sa position) : la première, dans l'ordre du document, qui porte une boucle `repeat` dont ce nœud est la
@@ -42,48 +51,220 @@ const VariableLoop = (function () {
     });
     return owner;
   }
-  // Zones répétées qui contiennent `pos`, de la plus proche à la plus large : [{ repeat, owner }].
+  // Le contexte d'un éditeur qui vit hors du document mais dont le texte s'y écrit : le « Sinon afficher » d'une valeur ou d'un bloc conditionnels (js/variable-condition.js)
+  // est un petit éditeur de sa fenêtre, et ses variables, une fois écrites à la place du nœud, lisent la ligne du tour des zones répétées qui entourent ce nœud. `provider`
+  // rend ces zones (zonesAt du document, à la position du nœud). Rangé par schéma de l'éditeur, qui est le sien ; sans `provider`, le contexte est retiré.
+  const contexts = new WeakMap();
+  function setContext(schema, provider) {
+    if (provider) contexts.set(schema, provider); else contexts.delete(schema);
+  }
+  // Zones répétées qui contiennent `pos`, de la plus proche à la plus large : [{ repeat, start (position du nœud de la zone), owner }]. Celles du contexte de l'éditeur
+  // (setContext) viennent après, marquées `outer` : leurs positions sont celles d'un autre document.
   function zonesAt(editorState, pos) {
     const $pos = editorState.doc.resolve(pos);
     const zones = [];
-    for (let d = $pos.depth; d > 0; d--) {
-      const node = $pos.node(d);
+    for (let depth = $pos.depth; depth > 0; depth--) {
+      const node = $pos.node(depth);
       const repeat = Object.keys(ZONE_NODES).find(r => ZONE_NODES[r].indexOf(node.type.name) !== -1);
       if (!repeat) continue;
-      const owner = zoneOwner(editorState.doc, $pos.before(d), node, repeat);
-      if (owner) zones.push({ repeat, owner });
+      const owner = zoneOwner(editorState.doc, $pos.before(depth), node, repeat);
+      if (owner) zones.push({ repeat, start: $pos.before(depth), owner });
     }
+    const context = contexts.get(editorState.schema);
+    if (context) context().forEach(zone => zones.push(Object.assign({}, zone, { outer: true })));
     return zones;
   }
-  // Table parcourue par la zone répétée qui contient `pos` (la plus proche) : l'autocomplétion # propose ses colonnes en premier, sans demander de
-  // lien (js/variables.js). Null hors d'une zone répétée.
-  function loopTableAt(editorState, pos) {
+  // Tables que parcourent les zones répétées qui contiennent `pos`, de la plus proche à la plus large, chacune une fois : l'autocomplétion # propose
+  // leurs colonnes en premier, sans demander de lien (js/variables.js) - dans une zone répétée pour une table, ses variables lisent la ligne du tour.
+  // Vide hors d'une zone répétée.
+  function loopTablesAt(editorState, pos) {
     try {
-      const zones = zonesAt(editorState, pos);
-      return zones.length ? zones[0].owner.loop.table : null;
+      return zonesAt(editorState, pos).map(z => z.owner.loop.table).filter((table, index, all) => all.indexOf(table) === index);
     } catch (e) {
-      return null;
+      return [];
     }
   }
+  // La zone répétée la plus proche de `pos` dont la boucle n'est pas celle de la bulle à `bubblePos` (aucune bulle : l'insertion d'une variable) : la
+  // zone dans laquelle une boucle de cette bulle serait imbriquée. Null hors d'une telle zone.
+  function enclosingAt(editorState, pos, bubblePos) {
+    return zonesAt(editorState, pos).find(z => z.outer || z.owner.pos !== bubblePos) || null;
+  }
+  // Vrai quand la variable `item` ({ table, column }) placée à `pos` se parcourt dans la zone répétée qui l'entoure sans lien avec la page : ses lignes
+  // se rattachent à celles de la zone (js/loop-rules.js:sourceFor). L'insertion ne demande alors pas de lien ; la boucle se pose ensuite sur la bulle.
+  function nestableAt(editorState, pos, item, bubblePos) {
+    try {
+      const zone = enclosingAt(editorState, pos, bubblePos);
+      return !!zone && !!LoopRules.sourceFor(item, GristAPI.getCurrentTableId(), zone.owner.loop.table);
+    } catch (e) {
+      return false;
+    }
+  }
+  // Vrai quand la bulle placée à `pos` lit, pour `table`, la ligne du tour d'une boucle qui trouve sa source (LoopRules.sourceError) : celle d'une zone
+  // répétée qui la contient, ou sa propre boucle « dans sa cellule » (`ownLoop`, l'attribut `loop` de la bulle). Une zone dont la source est perdue (table
+  // plus liée, colonne de rattachement disparue) ne se déroule pas : ses variables lisent comme hors de la zone, et la Lecture écrit leur erreur. Les
+  // boucles se lisent de la plus large à la plus proche : une boucle imbriquée trouve sa ligne englobante dans la zone qui l'entoure quand celle-ci se
+  // déroule (LoopRules.scopeFor), dans la page sinon. Vrai quand la lecture échoue : une bulle ne se colore pas à tort.
+  function feedsAt(editorState, pos, table, ownLoop) {
+    try {
+      const zones = zonesAt(editorState, pos);
+      const loops = zones.map(z => z.owner.loop).reverse();
+      const own = LoopRules.normalizeLoop(ownLoop);
+      if (own && own.repeat === 'inline') loops.push(own);
+      const page = GristAPI.getCurrentTableId();
+      const fed = new Set();
+      loops.forEach(loop => {
+        const parent = LoopRules.parentTable(loop);
+        if (!LoopRules.sourceError(loop, parent && fed.has(parent) ? parent : page)) fed.add(loop.table);
+      });
+      return fed.has(table);
+    } catch (e) {
+      return true;
+    }
+  }
+  // `nestableAt` pour une zone qui se déroule : les lignes d'une zone dont la source est perdue ne se déroulent pas, rien ne s'y rattache (feedsAt). Vrai quand
+  // la lecture échoue, comme feedsAt.
+  function nestableInFedZoneAt(editorState, pos, item, bubblePos) {
+    try {
+      const zone = enclosingAt(editorState, pos, bubblePos);
+      if (!zone) return false;
+      const within = zone.owner.loop.table;
+      return !!LoopRules.sourceFor(item, GristAPI.getCurrentTableId(), within) && feedsAt(editorState, pos, within, null);
+    } catch (e) {
+      return true;
+    }
+  }
+  // Ce que la bulle `attrs` peut parcourir : { linked, all } - les lignes rattachées à la ligne de la page ou de la zone qui l'entoure (LoopRules.sourceFor)
+  // et toutes les lignes de sa table (LoopRules.allSourceFor, jamais dans une zone répétée par une autre bulle). Null pour chacune qui n'existe pas ; les
+  // lignes de toute la table ne se proposent pas pour une variable qui ne trouve plus sa colonne.
+  function sourcesFor(attrs, enclosingTableId) {
+    const page = GristAPI.getCurrentTableId();
+    return {
+      linked: LoopRules.sourceFor(attrs, page, enclosingTableId),
+      all: Variables.badgeProblem(attrs.table, attrs.column) ? null : LoopRules.allSourceFor(attrs, page, enclosingTableId),
+    };
+  }
+  // Ce que la fenêtre propose pour la bulle `node` à `pos` : { existing, linked, all, source } - la boucle déjà posée (normalisée), les lignes que la bulle peut parcourir
+  // (rattachées, toutes) et celles qui sont choisies. Une boucle déjà posée garde sa source ; une nouvelle, dans une zone répétée par une autre bulle, se rattache à la
+  // ligne de cette zone. Sinon, les lignes rattachées à la ligne de la page quand la variable en a, toutes les lignes de sa table à défaut. `source` est nulle quand rien
+  // ne se parcourt.
+  function sourcesAt(editorState, pos, node) {
+    const existing = LoopRules.normalizeLoop(node.attrs.loop);
+    const zone = existing ? null : enclosingAt(editorState, pos, pos);
+    const found = sourcesFor(node.attrs, existing ? LoopRules.enclosingOf(existing, GristAPI.getCurrentTableId()) : zone && zone.owner.loop.table);
+    if (existing && existing.all) found.all = { table: existing.table, via: null, all: existing.all };
+    else if (existing) found.linked = { table: existing.table, via: existing.via, within: existing.within, by: existing.by };
+    found.existing = existing;
+    found.source = existing ? (existing.all ? found.all : found.linked) : found.linked || found.all;
+    return found;
+  }
   // Icône Boucle de la barre flottante pour la bulle à `pos` : active quand une boucle est posée ; grisée, avec l'info-bulle qui dit pourquoi, quand
-  // la variable n'a qu'une ligne à montrer ou qu'elle est déjà dans une zone répétée par une autre bulle (pas de boucle dans une boucle).
+  // la variable ne trouve plus sa colonne, ou quand - dans une zone répétée par une autre bulle - ses lignes ne se rattachent pas à celles de la zone.
   function status(editor, pos, node) {
     if (LoopRules.normalizeLoop(node.attrs.loop)) return { active: true, enabled: true, title: I18n.t('varToolbar.loop') };
-    const outer = zonesAt(editor.state, pos).find(z => z.owner.pos !== pos);
-    if (outer) return { active: false, enabled: false, title: I18n.t('varToolbar.loopNested', { table: outer.owner.loop.table }) };
-    const source = LoopRules.sourceFor(node.attrs, GristAPI.getCurrentTableId());
-    return { active: false, enabled: !!source, title: I18n.t(source ? 'varToolbar.loop' : 'varToolbar.loopDisabled') };
+    const zone = enclosingAt(editor.state, pos, pos);
+    const sources = sourcesFor(node.attrs, zone && zone.owner.loop.table);
+    if (sources.linked || sources.all) return { active: false, enabled: true, title: I18n.t('varToolbar.loop') };
+    if (!zone) return { active: false, enabled: false, title: I18n.t('varToolbar.loopDisabled') };
+    const within = zone.owner.loop.table;
+    return { active: false, enabled: false, title: I18n.t(node.attrs.table === within ? 'varToolbar.loopNested' : 'varToolbar.loopNestedNone', { table: node.attrs.table, within }) };
   }
   // Où est la bulle : décide des choix « Ce qui se répète » (le plus proche l'emporte : une liste dans une cellule propose l'élément de liste).
   // `rowMerged` : une case fusionnée sur plusieurs lignes traverse la ligne de la bulle (js/table-merge.js) ; la copier pour chaque ligne liée
-  // casserait le tableau, « La ligne du tableau » est alors grisée.
-  function placeOf(editorState, pos) {
+  // casserait le tableau, « La ligne du tableau » est alors grisée. `rowOthers` : combien d'autres variables la ligne porte - « La variable, dans sa cellule »
+  // ne les répète pas, la fenêtre le dit (renderRepeat). `inlineOnly` : la bulle d'un champ texte (Objet, À, Cc, Cci, nom du PDF), une seule
+  // ligne de texte sans tableau ni liste ni paragraphes à répéter : la boucle n'y est que « dans la phrase ». Une zone n'a qu'une boucle : celle que
+  // porte déjà une autre bulle ne se propose plus (la bulle d'une case d'un tableau répété ne répète pas la ligne de sa case, mais sa case, ou une liste
+  // ou un tableau qu'elle contient).
+  function placeOf(editorState, pos, inlineOnly) {
+    if (inlineOnly) return { kind: 'paragraph', repeats: ['inline'], inCell: false };
+    const place = placeIn(editorState, pos);
+    const $pos = editorState.doc.resolve(pos);
+    const others = zonesAt(editorState, pos).filter(z => z.owner.pos !== pos);
+    const taken = repeat => others.some(z => z.repeat === repeat && z.start === $pos.before(nearestDepth($pos, ZONE_NODES[repeat])));
+    place.repeats = place.repeats.filter(repeat => repeat === 'inline' || !taken(repeat));
+    return place;
+  }
+  // Combien de bulles (variables, calculs) porte la ligne de tableau `row` (`start` : sa position) en plus de celle qui est à `pos`.
+  function bubblesBesides(row, start, pos) {
+    let count = 0;
+    row.descendants((child, rel) => {
+      if (BUBBLE_NODES.indexOf(child.type.name) !== -1 && start + 1 + rel !== pos) count++;
+      return true;
+    });
+    return count;
+  }
+  function placeIn(editorState, pos) {
     const $pos = editorState.doc.resolve(pos);
     const rowDepth = nearestDepth($pos, ZONE_NODES.row);
     const itemDepth = nearestDepth($pos, ZONE_NODES.item);
-    if (rowDepth !== -1 && rowDepth > itemDepth) return { kind: 'table', repeats: ['row', 'inline'], inCell: true, rowMerged: TableMerge.rowCrossedByMerge($pos.node(rowDepth - 1), $pos.index(rowDepth - 1)) };
+    if (rowDepth !== -1 && rowDepth > itemDepth) {
+      return {
+        kind: 'table', repeats: ['row', 'inline'], inCell: true, rowMerged: TableMerge.rowCrossedByMerge($pos.node(rowDepth - 1), $pos.index(rowDepth - 1)),
+        rowOthers: bubblesBesides($pos.node(rowDepth), $pos.before(rowDepth), pos),
+      };
+    }
     if (itemDepth !== -1) return { kind: 'list', repeats: ['item', 'inline'], inCell: rowDepth !== -1 };
     return { kind: $pos.parent.type.name === 'heading' ? 'heading' : 'paragraph', repeats: ['inline', 'paragraph'], inCell: false };
+  }
+
+  // === « Répéter la ligne » : le bouton de la barre d'un tableau (js/floating-toolbars.js) ===
+  // La ligne de tableau que vise la sélection : la position de son nœud, ou null quand la sélection touche plusieurs lignes, ou aucune (le tableau entier, un texte
+  // qui en sort).
+  function selectedRowStart(editorState) {
+    const starts = [];
+    editorState.selection.ranges.forEach(range => [range.$from, range.$to].forEach(($pos) => {
+      const depth = nearestDepth($pos, ZONE_NODES.row);
+      const start = depth === -1 ? -1 : $pos.before(depth);
+      if (starts.indexOf(start) === -1) starts.push(start);
+    }));
+    return starts.length === 1 && starts[0] !== -1 ? starts[0] : null;
+  }
+  // Les bulles variable dont la ligne `row` (`start` : sa position) est la plus proche, dans l'ordre du document : celles d'un tableau posé dans une de ses cases
+  // se répètent avec la ligne de ce tableau-là.
+  function rowVariables(doc, start, row) {
+    const found = [];
+    row.descendants((child, rel) => {
+      if (child.type.name !== 'varBadge') return true;
+      const pos = start + 1 + rel;
+      const $pos = doc.resolve(pos);
+      if ($pos.before(nearestDepth($pos, ZONE_NODES.row)) === start) found.push({ pos, node: child });
+      return false;
+    });
+    return found;
+  }
+  // Ce que fait « Répéter la ligne » de la ligne que vise la sélection : { active, enabled, title, pos } - `pos` : la bulle dont la fenêtre s'ouvre. Une ligne déjà
+  // répétée allume le bouton (`pos` : la bulle qui la répète). Sinon c'est la première bulle de la ligne qui peut la répéter - celles qui ont des lignes rattachées
+  // d'abord, puis celles qui parcourent toute leur table, puis celles qui n'ont qu'une boucle « dans la cellule » (la fenêtre s'ouvre sur « La ligne du tableau »,
+  // qu'« Enregistrer » pose à sa place) ; les autres bulles de la ligne suivent la ligne. Grisé, avec sa raison : plusieurs lignes sélectionnées, une case fusionnée qui
+  // traverse la ligne, aucune variable dans la ligne, ou aucune qui puisse la répéter.
+  function rowStatus(editor) {
+    const state = editor.state;
+    const grey = key => ({ active: false, enabled: false, title: I18n.t(key) });
+    const start = selectedRowStart(state);
+    if (start == null) return grey('table.rowRepeatOne');
+    const row = state.doc.nodeAt(start);
+    const owner = zoneOwner(state.doc, start, row, 'row');
+    if (owner) return { active: true, enabled: true, title: I18n.t('table.rowRepeatOn'), pos: owner.pos };
+    const $row = state.doc.resolve(start);
+    if (TableMerge.rowCrossedByMerge($row.parent, $row.index())) return grey('table.rowRepeatMerged');
+    const variables = rowVariables(state.doc, start, row);
+    let best = null;
+    variables.forEach(({ pos, node }) => {
+      if (placeOf(state, pos, false).repeats.indexOf('row') === -1) return;
+      const found = sourcesAt(state, pos, node);
+      if (!found.source) return;
+      const rank = found.existing ? 2 : found.linked ? 0 : 1;
+      if (!best || rank < best.rank) best = { pos, rank };
+    });
+    if (!best) return grey(variables.length ? 'table.rowRepeatNoSource' : 'table.rowRepeatNone');
+    return { active: false, enabled: true, title: I18n.t('table.rowRepeat'), pos: best.pos };
+  }
+  // « Répéter la ligne » : ouvre la fenêtre de la bulle que rowStatus retient, sur « La ligne du tableau ». Faux, sans rien ouvrir, quand le bouton est grisé.
+  function openRow(editor) {
+    const row = rowStatus(editor);
+    if (!row.enabled) return false;
+    openAt(editor, row.pos, { repeat: 'row' });
+    return isOpen();
   }
 
   // === Libellés ===
@@ -126,17 +307,37 @@ const VariableLoop = (function () {
     const intro = el('p', 'var-modal-intro');
 
     const sourceLabel = el('div', 'var-loop-label');
+    sourceLabel.id = 'var-loop-source-label';
+    // « Rattachées à la ligne affichée » / « Toutes les lignes de la table » : là seulement quand la bulle a les deux (renderSourceMode). Son propre nom de
+    // classe, pour que `.var-loop-seg` reste le seul choix « Répéter » de la fenêtre.
+    const sourceMode = el('div', 'var-loop-source-seg');
+    sourceMode.setAttribute('role', 'group');
+    sourceMode.setAttribute('aria-labelledby', 'var-loop-source-label');
     const sourceText = el('span');
     const sourceEdit = el('button', 'var-loop-link');
     sourceEdit.type = 'button';
+    // La colonne qui rattache les lignes à celles de la zone englobante, quand plusieurs y mènent (renderWithin).
+    const sourceBy = el('select');
+    sourceBy.id = 'var-loop-by';
+    const sourceByBox = el('span', 'var-loop-by');
+    sourceByBox.appendChild(sourceBy);
+    // Toutes les lignes de la table de la page : celles de la vue Grist, ou toute la table (renderAll).
+    const scopeSelect = el('select');
+    scopeSelect.id = 'var-loop-scope';
+    const scopeBox = el('span', 'var-loop-scope');
+    scopeBox.appendChild(scopeSelect);
     const sourceBox = el('div', 'var-loop-source');
-    sourceBox.append(sourceText, sourceEdit);
+    sourceBox.append(sourceText, sourceByBox, scopeBox, sourceEdit);
 
     const repeatLabelEl = el('div', 'var-loop-label');
     repeatLabelEl.id = 'var-loop-repeat-label';
     const repeatSeg = el('div', 'var-loop-seg');
     repeatSeg.setAttribute('role', 'group');
     repeatSeg.setAttribute('aria-labelledby', 'var-loop-repeat-label');
+    // Dans une ligne de tableau, « La variable, dans sa cellule » laisse les autres variables de la ligne telles quelles : la note le dit (renderRepeat).
+    const repeatNote = el('div', 'var-loop-row-note');
+    repeatNote.setAttribute('aria-live', 'polite');
+    repeatNote.hidden = true;
     const separators = VariableModal.separatorFields('var-loop', (key, text) => { if (state) state.working[key] = text; });
 
     const filterLabel = el('div', 'var-loop-label');
@@ -159,29 +360,54 @@ const VariableLoop = (function () {
     emptyCol.append(emptyLabelEl, emptySelect);
     const two = el('div', 'var-loop-two');
     two.append(sortCol, emptyCol);
-    const emptyText = VariableModal.labelledInput('var-loop-empty-text');
+    // Le texte « Si aucune ligne » : un champ à variables, le même que le « Sinon afficher » d'une valeur (js/field-editor.js, monté par mountEmptyField). L'élément `input` n'est
+    // qu'un <div> qui en reprend l'interface (`value`, `placeholder`, évènement `input`) : le reste de la fenêtre le traite comme le champ de texte d'avant.
+    const emptyText = { label: el('label'), input: el('div', 'var-loop-empty-field') };
+    emptyText.label.id = 'var-loop-empty-text-label';
+    emptyText.label.htmlFor = 'var-loop-empty-text';
+    emptyText.input.id = 'var-loop-empty-text';
+    emptyText.input.setAttribute('aria-labelledby', emptyText.label.id);
+    emptyText.input.spellcheck = false;
     const emptyTextRow = el('div', 'var-loop-empty-text');
     emptyTextRow.append(emptyText.label, emptyText.input);
 
     const { box: previewArea, lines: [currentLine, statsLine] } = VariableModal.previewBox(2);
     const { first: removeBtn, cancel: cancelBtn, ok: saveBtn } = win.addButtons('var-modal-danger');
 
-    win.body.append(intro, sourceLabel, sourceBox, repeatLabelEl, repeatSeg, separators.row, filterLabel, filterBox, two, emptyTextRow, previewArea);
+    win.body.append(intro, sourceLabel, sourceMode, sourceBox, repeatLabelEl, repeatSeg, repeatNote, separators.row, filterLabel, filterBox, two, emptyTextRow, previewArea);
     refs = {
-      title: win.title, intro, sourceLabel, sourceText, sourceEdit, repeatLabelEl, repeatSeg, separators, filterLabel, filterBox, sortLabel, sortColumn, sortDirection,
-      emptyLabelEl, emptySelect, emptyTextRow, emptyText, currentLine, statsLine, removeBtn, cancelBtn, saveBtn,
+      title: win.title, intro, sourceLabel, sourceMode, sourceText, sourceEdit, sourceBy, sourceByBox, scopeSelect, scopeBox, repeatLabelEl, repeatSeg, repeatNote, separators, filterLabel, filterBox, sortLabel,
+      sortColumn, sortDirection, emptyLabelEl, emptySelect, emptyTextRow, emptyText, currentLine, statsLine, removeBtn, cancelBtn, saveBtn,
     };
 
     wireModal();
   }
 
+  // Monte le champ du texte « Si aucune ligne » : à la première ouverture, quand les classes de TipTap sont chargées (le document dont la fenêtre règle une boucle a déjà chargé
+  // l'éditeur). Son texte s'écrit à la place de la zone répétée : ses variables lisent la ligne du tour des zones qui l'entourent - celle de cette boucle exceptée, qui n'a ici aucune
+  // ligne -, comme le « Sinon afficher » d'une valeur (js/variable-condition.js:mountTextFields).
+  function mountEmptyField() {
+    const libs = Editor.loadedLibraries();
+    if (!libs || refs.emptyMounted) return;
+    const editor = FieldEditor.attach(refs.emptyText.input, libs, { hostWindow: 'loop', windowEl: win.overlay, keepSpaces: true });
+    setContext(editor.schema, () => (state ? zonesAt(state.editor.state, state.pos).filter(z => z.outer || z.owner.pos !== state.pos) : []));
+    refs.emptyMounted = true;
+  }
+
   // Les réactions de la fenêtre.
   function wireModal() {
-    const { sourceEdit, sortColumn, sortDirection, emptySelect, emptyText, removeBtn, cancelBtn, saveBtn } = refs;
+    const { sourceEdit, sourceBy, scopeSelect, sortColumn, sortDirection, emptySelect, emptyText, removeBtn, cancelBtn, saveBtn } = refs;
     sourceEdit.addEventListener('click', async () => {
       if (!state) return;
       const changed = await Variables.editLinkRule(state.source.table);
       if (changed && state) { renderSource(); previewRun.schedule(); }
+    });
+    sourceBy.addEventListener('change', () => { if (state) state.working.by = sourceBy.value; });
+    scopeSelect.addEventListener('change', () => {
+      if (!state) return;
+      state.working.scope = scopeSelect.value === 'table' || scopeSelect.value === 'linked' ? scopeSelect.value : 'view';
+      state.source = activeSource();
+      renderSort();
     });
     sortColumn.addEventListener('change', () => {
       if (!state) return;
@@ -203,6 +429,9 @@ const VariableLoop = (function () {
     win.box.addEventListener('change', previewRun.schedule);
   }
 
+  function renderTitle() {
+    refs.title.textContent = I18n.t('varLoop.title', { table: state.source.table });
+  }
   function renderIntro() {
     const badge = el('span', 'var-badge', VariableModal.badgeText(state.node));
     const inline = state.working.repeat === 'inline';
@@ -210,16 +439,128 @@ const VariableLoop = (function () {
     refs.intro.replaceChildren(badge, document.createTextNode(' ' + I18n.t(inline ? 'varLoop.intro.inline' : 'varLoop.intro.zone', { table: state.source.table })));
   }
   // « Lignes de « Lignes » trouvées via Lignes.Facture · Modifier le lien » : le lien de la table (un par table et par document, js/variables.js), ou
-  // la colonne Liste de références qui fournit les lignes (rien à modifier : c'est la cellule de la page).
+  // la colonne Liste de références qui fournit les lignes (rien à modifier : c'est la cellule de la page, ou celle de la ligne de la zone englobante),
+  // ou - dans une zone répétée - la colonne Référence qui rattache chaque ligne à celle de la zone, ou toutes les lignes de la table (renderAll).
   function renderSource() {
-    const { sourceText, sourceEdit } = refs;
-    const { table, via } = state.source;
-    sourceEdit.hidden = !!via;
+    const { sourceText, sourceEdit, sourceByBox, scopeBox } = refs;
+    const { table, via, within, all } = state.source;
+    renderSourceMode();
+    sourceEdit.hidden = !!(via || within || all);
+    sourceByBox.hidden = true;
+    scopeBox.hidden = true;
+    if (all) { renderAll(); return; }
+    if (within) { renderWithin(); return; }
     if (via) { sourceText.textContent = I18n.t('varLoop.source.refList', { table, via: via.table + '.' + via.column }); return; }
     const rule = GristAPI.getLinkRule(table);
     if (!rule) sourceText.textContent = I18n.t('varLoop.source.noLink', { table });
     else if (rule.mode === 'singleton') sourceText.textContent = I18n.t('varLoop.source.singleton', { table });
     else sourceText.textContent = I18n.t('varLoop.source.link', { table, via: Variables.describeLinkVia(table, rule, GristAPI.getCurrentTableId()) });
+  }
+  // « Rattachées à la ligne affichée » / « Toutes les lignes de la table » : le choix de la source, là seulement quand la bulle a les deux (une variable
+  // d'une table liée, la colonne Liste de références de la page ; jamais dans une zone répétée par une autre bulle, qui ne parcourt que ses lignes).
+  function renderSourceMode() {
+    const seg = refs.sourceMode;
+    seg.hidden = !(state.linked && state.allSource);
+    seg.replaceChildren();
+    if (seg.hidden) return;
+    ['linked', 'all'].forEach(mode => {
+      const on = mode === state.working.mode;
+      const btn = el('button', on ? 'is-on' : '', I18n.t(mode === 'all' ? 'varLoop.source.pickAll' : 'varLoop.source.pickLinked'));
+      btn.type = 'button';
+      btn.dataset.source = mode;
+      btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+      btn.addEventListener('click', () => setSourceMode(mode));
+      seg.appendChild(btn);
+    });
+  }
+  // La source qui est choisie : les lignes rattachées, ou toutes les lignes de la table de la bulle - la vue Grist ou toute la table pour la table de la page
+  // (`working.scope`), toute la table pour une autre.
+  function activeSource() {
+    if (state.working.mode !== 'all') return state.linked;
+    const table = state.allSource.table;
+    return { table, via: null, all: table === GristAPI.getCurrentTableId() ? state.working.scope : 'table' };
+  }
+  // Une autre source, une autre table peut-être (une colonne Liste de références parcourt la table qu'elle désigne, toutes les lignes celle de la bulle) :
+  // le filtre et le tri parlaient de l'ancienne, ils repartent de zéro ; sur la même table ils restent.
+  function setSourceMode(mode) {
+    if (!state || state.working.mode === mode) return;
+    const before = state.source.table;
+    state.working.mode = mode;
+    state.source = activeSource();
+    if (state.source.table !== before) {
+      Object.assign(state.working, { filterMode: 'all', rules: [], sortColumn: '', sortDirection: 'asc' });
+    }
+    state.working.by = byColumn(state.source);
+    renderTitle();
+    renderIntro();
+    renderSource();
+    renderFilter();
+    renderSort();
+    previewRun.schedule();
+    const pressed = refs.sourceMode.querySelector('button[aria-pressed="true"]');
+    if (pressed) pressed.focus();
+  }
+  // Toutes les lignes de la table : celles du widget (son filtre et son tri), celles de la vue d'à côté à laquelle il est relié par « Sélectionner par » (ses filtres et son
+  // tri enregistrés) ou toute la table pour la table de la page, toute la table pour une autre (Grist ne donne la vue que de son propre bloc).
+  function renderAll() {
+    const { sourceText, scopeSelect, scopeBox } = refs;
+    const { table, all } = state.source;
+    if (table !== GristAPI.getCurrentTableId()) { sourceText.textContent = I18n.t('varLoop.source.allTable', { table }); return; }
+    sourceText.textContent = I18n.t('varLoop.source.allPage', { table });
+    const choices = [option('view', I18n.t('varLoop.scope.view'))];
+    const linked = linkedScopeOption();
+    if (linked) choices.push(linked);
+    choices.push(option('table', I18n.t('varLoop.scope.table')));
+    scopeSelect.replaceChildren(...choices);
+    scopeSelect.value = all;
+    scopeSelect.setAttribute('aria-label', I18n.t('varLoop.scope.aria'));
+    scopeBox.hidden = false;
+  }
+  // Pourquoi la vue d'à côté ne se lit pas, en quelques mots (`unreadable` de ViewSource.linkedRows).
+  const linkedWhy = reason => I18n.t('varLoop.scope.why.' + reason);
+  // Le nom d'une vue dans la liste du choix : entier tant qu'il tient, sinon raccourci (le nom entier est dans l'info-bulle) - une liste ne coupe pas le texte qu'elle montre.
+  const LINKED_NAME_MAX = 24;
+  // « Comme la vue « Clients de Lyon » liée au widget » : proposée quand le widget est relié par « Sélectionner par » à un tableau de la même table (`state.linkedView`, cherché à
+  // l'ouverture), et toujours quand la boucle l'a déjà choisie - une vue qui n'est plus reliée ou ne se lit plus reste dans la liste plutôt que d'être remplacée en silence. Grisée tant qu'elle
+  // ne se lit pas : la boucle prendrait alors les lignes du widget. Choisie, son texte reste court (la liste se ferme dessus) et l'aperçu dit pourquoi ; grisée, elle le dit elle-même
+  // (ce texte-là ne se lit que dans la liste ouverte).
+  function linkedScopeOption() {
+    const found = state.linkedView;
+    const chosen = state.working.scope === 'linked';
+    if (!found && !chosen) return null;
+    // La recherche n'a pas encore répondu (`undefined`) : la boucle avait choisi cette vue, son nom viendra avec la réponse.
+    if (found === undefined) return option('linked', I18n.t('varLoop.scope.linkedAny'));
+    if (found && !found.unreadable) {
+      const choice = option('linked', I18n.t('varLoop.scope.linked', { name: shorten(found.name, LINKED_NAME_MAX) }));
+      if (found.name.length > LINKED_NAME_MAX) choice.title = found.name;
+      return choice;
+    }
+    const choice = option('linked', found ? I18n.t(chosen ? 'varLoop.scope.linkedUnreadable' : 'varLoop.scope.linkedUnreadableWhy', { why: linkedWhy(found.unreadable) }) : I18n.t('varLoop.scope.linkedNone'));
+    choice.disabled = !chosen;
+    return choice;
+  }
+  // Cherche la vue d'à côté sans évaluer aucune ligne (js/view-source.js : la liste de lignes est vide) : son nom, et si ses réglages se lisent. Rend la main à la liste quand elle répond.
+  async function probeLinkedView(forState) {
+    const found = await ViewSource.linkedRows(forState.allSource.table, []);
+    if (state !== forState) return;
+    forState.linkedView = found;
+    if (forState.source.all) renderAll();
+  }
+  // Une boucle dans une zone répétée pour `within` : aucun lien à régler, la colonne Référence de la table qui désigne `within` suffit ; une liste avec
+  // recherche pour choisir quand plusieurs y mènent.
+  function renderWithin() {
+    const { sourceText, sourceBy, sourceByBox } = refs;
+    const { table, within } = state.source;
+    const columns = LoopRules.referenceColumnsTo(table, within);
+    if (!columns.length) { sourceText.textContent = I18n.t('varLoop.source.withinLost', { table, within }); return; }
+    if (columns.length === 1) { sourceText.textContent = I18n.t('varLoop.source.within', { table, within, via: table + '.' + columns[0] }); return; }
+    sourceText.textContent = I18n.t('varLoop.source.withinPick', { table, within });
+    sourceBy.replaceChildren();
+    columns.forEach(c => ConditionFields.appendColumnOption(sourceBy, c, table, c));
+    sourceBy.value = state.working.by;
+    sourceBy.setAttribute('aria-label', I18n.t('varLoop.source.byAria'));
+    try { SearchSelect.attachColumns(sourceBy, { inline: true, hintInTrigger: false }).sync(); } catch (e) { console.warn('[VariableLoop] recherche de colonne indisponible, liste native conservée', e); }
+    sourceByBox.hidden = false;
   }
   // « La ligne du tableau » grisée (aria-disabled : le survol, qui dit pourquoi, reste) quand une case fusionnée traverse la ligne ; une boucle déjà
   // posée sur une telle ligne reste lisible.
@@ -240,6 +581,17 @@ const VariableLoop = (function () {
       repeatSeg.appendChild(btn);
     });
     separators.row.hidden = state.working.repeat !== 'inline';
+    renderRepeatNote();
+  }
+  // « La variable, dans sa cellule » dans une ligne de tableau qui porte d'autres variables : elles ne suivent pas, seule cette cellule est répétée. La note le dit
+  // et montre le choix qui les fait suivre, sauf quand une case fusionnée interdit « La ligne du tableau ».
+  function renderRepeatNote() {
+    const { repeatNote } = refs;
+    const others = state.working.repeat === 'inline' && state.place.kind === 'table' ? state.place.rowOthers : 0;
+    repeatNote.hidden = !others;
+    if (!others) { repeatNote.textContent = ''; return; }
+    const how = state.place.rowMerged ? '' : ' ' + I18n.t('varLoop.repeat.rowOthersHow', { row: I18n.t('varLoop.repeat.row') });
+    repeatNote.textContent = I18n.t('varLoop.repeat.rowOthers', { count: others }) + how;
   }
   function setRepeat(repeat) {
     if (!state || state.working.repeat === repeat || repeatBlocked(repeat)) return;
@@ -255,7 +607,8 @@ const VariableLoop = (function () {
     if (pressed) pressed.focus();
   }
   // Sans condition : le bouton d'ajout et « toutes les lignes liées ». Avec : « Garder les lignes où toutes / au moins une les conditions sont
-  // remplies », puis les lignes Colonne / Opérateur / Valeur sur les colonnes de la table parcourue.
+  // remplies », puis les lignes Colonne / Opérateur / Valeur sur les colonnes de la table parcourue, et des groupes (« + Groupe ») pour mêler « et » et
+  // « ou » : « A et (B ou C) » (ConditionFields.renderItems ; `working.rules` porte les règles et les groupes).
   function renderFilter() {
     const { filterBox } = refs;
     const rules = state.working.rules;
@@ -263,7 +616,7 @@ const VariableLoop = (function () {
     filterBox.replaceChildren();
     if (!rules.length) {
       const row = el('div', 'var-loop-filter-empty');
-      row.append(ConditionFields.buildAddRuleButton(filterBox, rules, redraw), el('span', 'var-loop-hint', I18n.t('varLoop.filter.none')));
+      row.append(ConditionFields.buildAddRuleButton(filterBox, rules, redraw), el('span', 'var-loop-hint', I18n.t(state.source.all ? 'varLoop.filter.noneAll' : 'varLoop.filter.none')));
       filterBox.appendChild(row);
       return;
     }
@@ -278,20 +631,28 @@ const VariableLoop = (function () {
     });
     modeRow.append(el('span', null, I18n.t('varLoop.filter.before')), modeSelect, el('span', null, I18n.t('varCond.modeAfter')));
     const rulesBox = el('div', 'var-condition-rules');
-    rules.forEach((rule, index) => {
-      rulesBox.appendChild(ConditionFields.buildRuleRow(rule, index, {
-        mode: state.working.filterMode,
-        options: { table: state.source.table },
-        onRemove: () => { rules.splice(index, 1); redraw(); },
-      }));
+    ConditionFields.renderItems(rulesBox, {
+      items: rules,
+      mode: state.working.filterMode,
+      // « Et » / « Ou » devant une ligne : un clic relie toutes les lignes du niveau par l'autre mot, la liste « toutes / au moins une » du haut suit pour le filtre
+      // entier ; le focus revient au bouton retracé (`root` : `filterBox` reste en place quand `rulesBox` est remplacée).
+      setMode: next => { state.working.filterMode = next; },
+      buildRow: (rule, row) => ConditionFields.buildRuleRow(rule, row.index, Object.assign({}, row, { options: { table: state.source.table } })),
+      removeItem: index => { rules.splice(index, 1); redraw(); },
+      redraw,
+      root: filterBox,
     });
-    rulesBox.appendChild(ConditionFields.buildAddRuleButton(filterBox, rules, redraw));
+    // « + Groupe » : les parenthèses d'un filtre, « A et (B ou C) » (js/condition-fields.js:renderItems).
+    const foot = el('div', 'var-condition-foot');
+    foot.append(ConditionFields.buildAddRuleButton(filterBox, rules, redraw), ConditionFields.buildAddGroupButton(filterBox, rules, () => state.working.filterMode, redraw));
+    rulesBox.appendChild(foot);
     filterBox.append(modeRow, rulesBox);
   }
   function renderSort() {
     const { sortColumn } = refs;
     const table = state.source.table;
-    const tableOrder = option('', I18n.t(state.source.via ? 'varLoop.sort.listOrder' : 'varLoop.sort.tableOrder'));
+    const orderKey = state.source.via ? 'varLoop.sort.listOrder' : state.source.all === 'view' || state.source.all === 'linked' ? 'varLoop.sort.viewOrder' : 'varLoop.sort.tableOrder';
+    const tableOrder = option('', I18n.t(orderKey));
     tableOrder.dataset.placeholder = 'false'; // un vrai choix de la liste avec recherche, pas un « rien » grisé
     sortColumn.replaceChildren(tableOrder);
     GristAPI.getVisibleColumns(table).forEach(c => ConditionFields.appendColumnOption(sortColumn, c, table, c));
@@ -320,14 +681,16 @@ const VariableLoop = (function () {
     emptySelect.replaceChildren(...LoopRules.EMPTY_MODES[repeat].map(mode => option(mode, emptyLabel(mode, repeat, state.place))));
     emptySelect.value = state.working.empty;
     emptyTextRow.hidden = state.working.empty !== 'text';
-    if (document.activeElement !== emptyText.input) emptyText.input.value = state.working.emptyText;
+    if (!emptyText.input.contains(document.activeElement)) emptyText.input.value = state.working.emptyText;
   }
 
   // Boucle telle qu'elle sera enregistrée : seulement les champs utiles à sa zone (js/loop-rules.js:normalizeLoop complète le reste à la lecture).
   function workingLoop() {
     const w = state.working;
     const loop = { repeat: w.repeat, table: state.source.table };
-    if (state.source.via) loop.via = { table: state.source.via.table, column: state.source.via.column };
+    if (state.source.all) loop.all = state.source.all;
+    else if (state.source.via) loop.via = { table: state.source.via.table, column: state.source.via.column };
+    else if (state.source.within) { loop.within = state.source.within; if (w.by) loop.by = w.by; }
     const filter = ConditionRules.plainCondition({ mode: w.filterMode, rules: w.rules });
     if (filter) loop.filter = filter;
     if (w.sortColumn || w.sortDirection === 'desc') loop.sort = { column: w.sortColumn, direction: w.sortDirection };
@@ -345,18 +708,45 @@ const VariableLoop = (function () {
     if (GristAPI.getColumnType(table, column) === 'Attachments') return I18n.t('varCond.debug.imageValue');
     return Variables.resolveVariable(table, column, tableId, record, format, { loop: LoopRules.itemBinding(loop, item, null) });
   }
-  // Le début de la ligne d'aperçu : combien de lignes liées, combien le filtre en garde.
-  function summaryHead(loop, record, result) {
+  // La table de la zone répétée qui entoure la boucle (la ligne d'exemple de l'aperçu est alors une ligne de cette table), null pour une boucle de la page.
+  const outerOf = loop => LoopRules.enclosingOf(loop, GristAPI.getCurrentTableId());
+  // Quand la boucle a choisi la vue d'à côté mais qu'elle ne s'est pas lue (plus de lien, dates relatives, filtre d'un autre widget) : elle prend les lignes du widget, que l'aperçu
+  // dit sans le vert des aperçus qui vont bien.
+  const linkedFallback = (loop, result) => loop.all === 'linked' && !!result.linked && !!(result.linked.absent || result.linked.unreadable);
+  // Le début de la ligne d'aperçu d'une boucle sur toutes les lignes : celles du widget (sur combien la table en compte), de la vue d'à côté ou de toute la table, puis
+  // combien le filtre de la boucle en garde.
+  function allHead(loop, result) {
     const count = result.items.length;
     const total = result.total;
-    if (!total) return I18n.t('varLoop.preview.noneLinked', { id: record.id });
-    if (!count) return I18n.t('varLoop.preview.noneKept', { id: record.id, total });
-    if (loop.filter) return I18n.t('varLoop.preview.kept', { id: record.id, count, total });
-    return I18n.t('varLoop.preview.linked', { id: record.id, count });
+    const vars = { table: loop.table, count, total, tableTotal: result.tableTotal };
+    let scope = loop.all === 'table' ? 'table' : 'view';
+    let lead = '';
+    if (loop.all === 'linked' && result.linked) {
+      const linked = result.linked;
+      if (linked.absent || linked.unreadable) {
+        lead = (linked.absent ? I18n.t('varLoop.preview.all.linkedAbsent') : I18n.t('varLoop.preview.all.linkedUnreadable', { why: linkedWhy(linked.unreadable) })) + ' ';
+      } else { scope = 'linked'; vars.name = linked.name; }
+    }
+    if (!total) return lead + I18n.t('varLoop.preview.all.' + scope + 'None', vars);
+    if (!count) return lead + I18n.t('varLoop.preview.all.noneKept', vars);
+    return lead + I18n.t('varLoop.preview.all.' + scope + (loop.filter ? 'Kept' : ''), vars);
+  }
+  // Le début de la ligne d'aperçu : combien de lignes liées, combien le filtre en garde.
+  function summaryHead(loop, record, result) {
+    if (loop.all) return allHead(loop, result);
+    const count = result.items.length;
+    const total = result.total;
+    const within = outerOf(loop);
+    const key = name => 'varLoop.preview.' + (within ? 'nested.' : '') + name;
+    if (!total) return I18n.t(key('noneLinked'), { id: record.id, within });
+    if (!count) return I18n.t(key('noneKept'), { id: record.id, within, total });
+    if (loop.filter) return I18n.t(key('kept'), { id: record.id, within, count, total });
+    return I18n.t(key('linked'), { id: record.id, within, count });
   }
   async function currentSummary(loop, tableId, record, result) {
     const count = result.items.length;
     const head = summaryHead(loop, record, result);
+    const good = !linkedFallback(loop, result);
     if (!count) return { text: head + ' ' + emptyEffect(loop, state.place), good: false };
     if (loop.repeat === 'inline') {
       const values = [];
@@ -364,9 +754,9 @@ const VariableLoop = (function () {
         const value = await badgeValue(loop, item, tableId, record);
         if (value !== '' && value != null) values.push(String(value));
       }
-      if (!values.length) return { text: head + ' ' + emptyEffect(loop, state.place), good: true };
+      if (!values.length) return { text: head + ' ' + emptyEffect(loop, state.place), good };
       const text = LoopRules.joinValues(values, loop.separator, loop.lastSeparator);
-      return { text: head + ' ' + I18n.t('varLoop.preview.inline', { text: shorten(text, 240) }), good: true };
+      return { text: head + ' ' + I18n.t('varLoop.preview.inline', { text: shorten(text, 240) }), good };
     }
     const shown = [];
     for (const item of result.items.slice(0, PREVIEW_VALUES)) {
@@ -375,7 +765,19 @@ const VariableLoop = (function () {
     }
     const values = shown.join(', ') + (count > PREVIEW_VALUES ? ', …' : '');
     const key = loop.repeat === 'paragraph' && state.place.kind === 'heading' ? 'varLoop.preview.heading' : 'varLoop.preview.' + loop.repeat;
-    return { text: head + ' ' + I18n.t(key, { count, values }), good: true };
+    return { text: head + ' ' + I18n.t(key, { count, values }), good };
+  }
+  // Le texte « Si aucune ligne » tel que la Lecture l'écrira pour la ligne d'exemple, celui que citent les phrases de l'aperçu : ses variables lues comme celles du document
+  // (ReaderMode.preview : formats, « Avant » / « Après », condition), le reste tel quel. Sans variable ni puce, il n'y a rien à lire : le texte, tout de suite.
+  async function emptyShown(loop, tableId, record) {
+    if (loop.empty !== 'text' || !loop.emptyText) return '';
+    const items = FieldCodec.itemsOf(loop.emptyText);
+    if (items.every(FieldCodec.isText)) return FieldCodec.serializePlain(items);
+    try {
+      return shorten(Dom.inertTemplate(await ReaderMode.preview('<p>' + FieldCodec.itemsHtml(items) + '</p>', tableId, record)).content.textContent, 240);
+    } catch (e) {
+      return FieldCodec.serializePlain(items);
+    }
   }
   async function statsSummary(loop, tableId, ctx, stale) {
     const rows = await ctx.fetchRows(tableId);
@@ -408,20 +810,37 @@ const VariableLoop = (function () {
     const stale = () => outdated() || !state;
     const { currentLine, statsLine } = refs;
     const loop = LoopRules.normalizeLoop(workingLoop());
-    const tableId = GristAPI.getCurrentTableId();
-    const record = GristAPI.getCurrentRecord();
+    const outer = outerOf(loop);
+    const tableId = outer || GristAPI.getCurrentTableId();
+    let record = outer ? null : GristAPI.getCurrentRecord();
     setLine(statsLine, '', false);
-    if (!record || !tableId) { setLine(currentLine, I18n.t('varCond.debug.noRecord'), false); return; }
+    if (!tableId || (!record && !outer)) { setLine(currentLine, I18n.t('varCond.debug.noRecord'), false); return; }
     setLine(currentLine, I18n.t('varCond.debug.computing'), false);
     try {
       const ctx = LoopRules.createContext();
+      if (outer) {
+        // Dans une zone répétée, la ligne d'exemple est une ligne de la table de la zone : la première qui a des lignes rattachées, à défaut la première.
+        const rows = await ctx.fetchRows(outer);
+        if (stale()) return;
+        if (!rows.length) { setLine(currentLine, I18n.t('linkConfig.previewTableEmpty', { table: outer }), false); return; }
+        record = rows[0];
+        for (const row of rows) {
+          const found = await LoopRules.iterate(loop, outer, row, ctx);
+          if (found.error || found.total) { record = row; break; }
+        }
+      }
       const result = await LoopRules.iterate(loop, tableId, record, ctx);
       if (stale()) return;
-      if (result.error) { setLine(currentLine, I18n.t('varLoop.preview.noSource', { id: record.id }), false); return; }
-      const current = await currentSummary(loop, tableId, record, result);
+      if (result.error) { setLine(currentLine, I18n.t(outer ? 'varLoop.preview.nested.noSource' : 'varLoop.preview.noSource', { id: record.id, within: outer }), false); return; }
+      // Les phrases de l'aperçu citent le texte « Si aucune ligne » tel que la ligne d'exemple l'écrira : sa copie en porte les variables lues.
+      const shown = Object.assign({}, loop, { emptyText: await emptyShown(loop, tableId, record) });
+      if (stale()) return;
+      const current = await currentSummary(shown, tableId, record, result);
       if (stale()) return;
       setLine(currentLine, current.text, current.good);
-      const stats = await statsSummary(loop, tableId, ctx, stale);
+      // Toutes les lignes : la même liste pour chaque ligne de la page, rien à compter ligne par ligne - seulement prévenir quand elle est très longue.
+      if (loop.all) { setLine(statsLine, result.items.length > MANY_ROWS ? I18n.t('varLoop.stats.many', { count: result.items.length }) : '', false); return; }
+      const stats = await statsSummary(shown, tableId, ctx, stale);
       if (stale() || !stats) return;
       setLine(statsLine, stats, false);
     } catch (e) {
@@ -446,16 +865,30 @@ const VariableLoop = (function () {
     VariableModal.closeWindow(win, state && state.editor, previewRun, () => { state = null; });
   }
 
-  // Une boucle déplacée depuis (d'un tableau vers un paragraphe, par exemple) reprend le premier choix permis de son nouvel endroit.
-  function repeatFor(existing, place) {
-    return existing && place.repeats.indexOf(existing.repeat) !== -1 ? existing.repeat : place.repeats.find(r => !(r === 'row' && place.rowMerged));
+  // `asked` : le choix demandé à l'ouverture (la barre du tableau demande « La ligne du tableau »), quand la place de la bulle l'offre : il passe devant la boucle « dans
+  // la cellule » que la bulle porte déjà, « Enregistrer » la remplace. Sinon, une boucle déplacée depuis (d'un tableau vers un paragraphe, par exemple) reprend le premier
+  // choix permis de son nouvel endroit.
+  function repeatFor(existing, place, asked) {
+    const allowed = repeat => place.repeats.indexOf(repeat) !== -1 && !(repeat === 'row' && place.rowMerged);
+    if (asked && allowed(asked)) return asked;
+    return existing && place.repeats.indexOf(existing.repeat) !== -1 ? existing.repeat : place.repeats.find(allowed);
   }
-  // La copie de travail de la fenêtre : la boucle déjà posée (`existing`, normalisée), ou les choix par défaut de l'endroit.
-  function workingCopy(existing, repeat, place) {
+  // La colonne qui rattache les lignes d'une boucle imbriquée à celles de la zone englobante : celle déjà choisie tant qu'elle y mène, sinon la première.
+  function byColumn(source) {
+    const columns = source.within ? LoopRules.referenceColumnsTo(source.table, source.within) : [];
+    return columns.indexOf(source.by) !== -1 ? source.by : columns[0] || '';
+  }
+  // La copie de travail de la fenêtre : la boucle déjà posée (`existing`, normalisée), ou les choix par défaut de l'endroit. `mode` : la source choisie
+  // ('linked' : les lignes rattachées, 'all' : toutes les lignes de la table) ; `scope` : pour toutes les lignes de la table de la page, celles du widget
+  // ('view', par défaut), celles de la vue d'à côté à laquelle il est relié ('linked') ou toute la table ('table').
+  function workingCopy(existing, repeat, place, source) {
     const keepEmpty = existing && LoopRules.EMPTY_MODES[repeat].indexOf(existing.empty) !== -1;
     const filter = existing && existing.filter;
     return {
       repeat,
+      mode: source.all ? 'all' : 'linked',
+      scope: source.all === 'table' || source.all === 'linked' ? source.all : 'view',
+      by: byColumn(source),
       filterMode: filter ? filter.mode : 'all',
       rules: filter ? JSON.parse(JSON.stringify(filter.rules)) : [],
       sortColumn: existing ? existing.sort.column : '',
@@ -468,17 +901,24 @@ const VariableLoop = (function () {
   }
 
   // `pos` : position de la bulle dans le document, capturée au clic sur l'icône (la sélection de l'éditeur est une NodeSelection sur elle).
-  function open(editor, pos) {
+  // `options.inlineOnly` : la bulle d'un champ texte, cf. placeOf. `options.repeat` : le choix « Ce qui se répète » demandé, cf. repeatFor.
+  function openAt(editor, pos, options) {
     const node = editor && editor.state.doc.nodeAt(pos);
     if (!node || node.type.name !== 'varBadge') return;
-    const existing = LoopRules.normalizeLoop(node.attrs.loop);
-    const source = existing ? { table: existing.table, via: existing.via } : LoopRules.sourceFor(node.attrs, GristAPI.getCurrentTableId());
+    const found = sourcesAt(editor.state, pos, node);
+    const { existing, source } = found;
     if (!source) return;
     ensureModal();
-    const place = placeOf(editor.state, pos);
-    state = { editor, pos, node, place, source, had: !!existing, working: workingCopy(existing, repeatFor(existing, place), place) };
+    mountEmptyField();
+    const place = placeOf(editor.state, pos, !!(options && options.inlineOnly));
+    // La vue d'à côté ne se cherche que pour la table de la page (le widget n'a de vue que d'elle) : `undefined` tant que la recherche (probeLinkedView) n'a pas répondu.
+    const probing = !!(found.all && found.all.table === GristAPI.getCurrentTableId());
+    state = {
+      editor, pos, node, place, source, linked: found.linked, allSource: found.all, had: !!existing, linkedView: probing ? undefined : null,
+      working: workingCopy(existing, repeatFor(existing, place, options && options.repeat), place, source),
+    };
     const r = refs;
-    r.title.textContent = I18n.t('varLoop.title', { table: source.table });
+    renderTitle();
     r.sourceLabel.textContent = I18n.t('varLoop.section.source');
     r.sourceEdit.textContent = I18n.t('varCond.linkHint.edit');
     r.repeatLabelEl.textContent = I18n.t('varLoop.section.repeat');
@@ -492,6 +932,8 @@ const VariableLoop = (function () {
     r.emptyLabelEl.textContent = I18n.t('varLoop.section.empty');
     r.emptyText.label.textContent = I18n.t('varLoop.empty.textLabel');
     r.emptyText.input.placeholder = I18n.t('varLoop.empty.textPlaceholder');
+    r.emptyText.input.title = I18n.t('varLoop.empty.textTitle');
+    r.emptyText.label.title = I18n.t('varLoop.empty.textTitle');
     r.emptyText.input.value = state.working.emptyText;
     r.removeBtn.textContent = I18n.t('varLoop.remove');
     r.removeBtn.hidden = !state.had;
@@ -508,7 +950,8 @@ const VariableLoop = (function () {
     EditorCore.hideFloatingContextToolbars();
     win.show(() => r.repeatSeg.querySelector('button[aria-pressed="true"]'));
     updatePreview();
+    if (probing) probeLinkedView(state);
   }
 
-  return { open, isOpen, status, loopTableAt };
+  return { openAt, isOpen, status, rowStatus, openRow, loopTablesAt, setContext, zonesAt, nestableAt, nestableInFedZoneAt, feedsAt };
 })();

@@ -7,12 +7,12 @@ const VariableModal = (function () {
   const badgeText = node => Variables.triggerChar() + (node.attrs.key || '');
   const shorten = (text, max) => (text.length > max ? text.slice(0, max - 1) + '…' : text);
 
-  // Un champ et son libellé, reliés par `id`. Le texte du libellé se pose à l'ouverture, dans la langue du moment.
+  // Un champ et son libellé, reliés par `id`. Le texte du libellé se pose à l'ouverture, dans la langue du moment. `type` 'textarea' : un champ de plusieurs lignes.
   function labelledInput(id, className, type = 'text') {
     const label = el('label');
     label.htmlFor = id;
-    const input = el('input', className);
-    input.type = type;
+    const input = el(type === 'textarea' ? 'textarea' : 'input', className);
+    if (type !== 'textarea') input.type = type;
     input.id = id;
     return { label, input };
   }
@@ -56,7 +56,7 @@ const VariableModal = (function () {
       const icon = el('span');
       icon.setAttribute('aria-hidden', 'true');
       icon.style.cssText = 'flex:none; display:inline-flex; width:14px; height:14px; margin-top:2px;';
-      icon.innerHTML = Icons.svg('acceptAll');
+      Dom.setMarkup(icon, Icons.svg('acceptAll'));
       line.appendChild(icon);
     }
     line.appendChild(el('span', null, text));
@@ -90,11 +90,14 @@ const VariableModal = (function () {
   }
 
   // Le nœud dont la fenêtre est ouverte, retrouvé à la position capturée au clic, ou null s'il a bougé ou disparu depuis - alerte `lostKey`, rien
-  // n'est écrit. Une bulle doit encore porter la même variable. `tag` : le module, pour le journal.
+  // n'est écrit. Une bulle doit encore porter la même variable, une pastille « @ » la même fiche (table et ligne) et la même colonne. `tag` : le module, pour le journal.
   function nodeAtOrigin({ editor, pos, node: original }, lostKey, tag) {
     const node = editor.state.doc.nodeAt(pos);
-    const same = node && node.type.name === original.type.name
-      && (original.type.name !== 'varBadge' || (node.attrs.table === original.attrs.table && node.attrs.column === original.attrs.column));
+    const name = original.type.name;
+    const sameAttrs = keys => keys.every(key => node.attrs[key] === original.attrs[key]);
+    const same = node && node.type.name === name
+      && (name !== 'varBadge' || sameAttrs(['table', 'column']))
+      && (name !== 'mention' || sameAttrs(['table', 'row', 'column']));
     if (same) return node;
     console.warn('[' + tag + '] nœud introuvable à sa position d\'origine - rien n\'est écrit.');
     alert(I18n.t(lostKey));

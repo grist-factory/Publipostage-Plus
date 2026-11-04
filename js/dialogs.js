@@ -1,13 +1,14 @@
 // Saisies et confirmations du widget : deux fenêtres à la place de window.prompt et window.confirm, sur la base commune (js/modal-base.js : titre et
 // boutons fixes, Tab et Échap tenus, thème).
-//  Dialogs.prompt({ title, label?, message?, value?, placeholder?, confirmLabel? }) -> Promise<string | null> (null : annulé ; '' : champ laissé
-//  vide)
+//  Dialogs.prompt({ title, label?, message?, value?, placeholder?, confirmLabel?, secret? }) -> Promise<string | null> (null : annulé ; '' : champ laissé
+//  vide ; `secret` : le champ masque ce qui s'y tape, un mot de passe)
 //  Dialogs.confirm({ title, message, confirmLabel?, danger? }) -> Promise<boolean>
 //  Dialogs.choose({ title, message, choices, cancelLabel? }) -> Promise<string | null> (`value` du choix cliqué ; null : annulé, Échap compris)
 //    choices : [{ value, label, primary? }] dans l'ordre d'affichage, à droite de « Annuler » (qui reste le premier bouton) ; le focus arrive sur le
 //    choix `primary`, à défaut sur « Annuler ».
+//  Dialogs.notice({ title, message, closeLabel? }) -> Promise<void> (une information, un seul bouton qui ferme ; Échap aussi ; le focus arrive sur lui)
 // Ne s'appelle qu'avec `await` : la fenêtre n'arrête pas le script comme la boîte du navigateur. Une seule fenêtre, réutilisée : une demande qui
-// arrive pendant qu'une autre est ouverte annule la première (résolue comme un clic sur Annuler). Aucun texte ici sauf « Annuler » et « Valider » par
+// arrive pendant qu'une autre est ouverte annule la première (résolue comme un clic sur Annuler). Aucun texte ici sauf « Annuler », « Valider » et « Fermer » par
 // défaut ; titre, libellé et verbe du bouton viennent de l'appelant.
 // Clavier : Entrée valide depuis le champ (pas pendant une composition de texte), Échap annule, Tab tourne entre le champ et les deux boutons. Le
 // focus arrive sur le champ (texte sélectionné) ou sur « Valider » ; pour une confirmation destructrice (`danger`), sur « Annuler », pour qu'un
@@ -57,6 +58,7 @@ const Dialogs = (function () {
     label.hidden = !isPrompt || !opts.label;
     input.hidden = !isPrompt;
     input.value = isPrompt && opts.value != null ? String(opts.value) : '';
+    input.type = opts.secret ? 'password' : 'text';
     input.placeholder = opts.placeholder || '';
     // Le champ est nommé par son libellé, sinon par le titre ; la fenêtre est décrite par le message quand il y en a un.
     input.setAttribute('aria-labelledby', opts.label ? 'pp-dialog-input-label' : 'pp-dialog-title');
@@ -87,8 +89,9 @@ const Dialogs = (function () {
     return new Promise(resolve => {
       const { input, cancel, ok } = refs;
       const isPrompt = kind === 'prompt';
+      const isNotice = kind === 'notice';
       const choices = kind === 'choose' ? (opts.choices || []) : null;
-      const cancelValue = isPrompt || choices ? null : false;
+      const cancelValue = isPrompt || choices ? null : (isNotice ? undefined : false);
       let done = false;
       const finish = value => {
         if (done) return;
@@ -99,10 +102,11 @@ const Dialogs = (function () {
         resolve(value);
       };
       current = { finish, cancelValue };
-      fill(opts, isPrompt, !!choices);
+      // Une information n'a qu'un bouton, « Fermer » : celui d'« Annuler », sous son nom ; « Valider » est caché comme pour un choix.
+      fill(isNotice ? Object.assign({}, opts, { cancelLabel: opts.closeLabel || I18n.t('common.close') }) : opts, isPrompt, !!choices || isNotice);
       cancel.onclick = () => finish(cancelValue);
       ok.onclick = () => finish(isPrompt ? input.value : true);
-      const firstFocus = choices ? addChoices(choices, finish) : (isPrompt ? input : (opts.danger ? cancel : ok));
+      const firstFocus = choices ? addChoices(choices, finish) : (isPrompt ? input : (isNotice || opts.danger ? cancel : ok));
       input.onkeydown = event => {
         if (event.key !== 'Enter' || event.isComposing) return;
         event.preventDefault();
@@ -117,5 +121,6 @@ const Dialogs = (function () {
     prompt: opts => ask(opts || {}, 'prompt'),
     confirm: opts => ask(opts || {}, 'confirm'),
     choose: opts => ask(opts || {}, 'choose'),
+    notice: opts => ask(opts || {}, 'notice'),
   };
 })();

@@ -10,6 +10,9 @@ const ExportCommon = (function () {
     bodyPt: 10.5,
     headingPt: { H1: 24, H2: 20, H3: 16, H4: 14, H5: 13, H6: 12 },
     lineHeight: 1.42,
+    // La ligne « simple » : le rapport entre la hauteur de ligne et le corps de la police de l'éditeur (Roboto). L'interligne se dit en multiples d'elle, comme dans Word et
+    // PowerPoint (js/paragraph-format.js, js/pptx-export.js, js/pptx-import.js).
+    naturalLine: 1.172,
     linkColor: '#0563c1',
     codePt: 9.5,
     codeFontRatio: 1.1328,
@@ -66,11 +69,13 @@ const ExportCommon = (function () {
 
   // Charge un script CDN (`integrity` : SRI sha384, avec `crossOrigin`) ou un fichier du dépôt (sans SRI : même origine que la page), sous réserve de
   // scriptRefusal. Résolu au `load`, rejeté si le script est refusé ou ne charge pas ; l'appelant mémorise sa propre promesse pour ne charger qu'une fois.
+  // `lib.type: 'module'` : le fichier assemblé d'une extension de GFS (js/extensions.js:loadModuleLibrary) est un module, que seule une balise charge avec son empreinte.
   function loadScriptOnce(lib) {
     return new Promise((resolve, reject) => {
       const refusal = scriptRefusal(lib);
       if (refusal) { reject(new Error('Script refusé (' + refusal + ') : ' + (lib && lib.src))); return; }
       const s = document.createElement('script');
+      if (lib.type) s.type = lib.type;
       s.src = lib.src;
       if (lib.integrity) { s.integrity = lib.integrity; s.crossOrigin = 'anonymous'; }
       s.onload = () => resolve();
@@ -91,9 +96,9 @@ const ExportCommon = (function () {
   // Télécharge un Blob par un <a download> synthétique : window.location.href se comporte moins bien dans l'iframe sandboxée d'un widget Grist.
   function downloadBlob(blob, filename) {
     const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url; a.download = filename;
-    document.body.appendChild(a); a.click(); a.remove();
+    const link = document.createElement('a');
+    link.href = url; link.download = filename;
+    document.body.appendChild(link); link.click(); link.remove();
     URL.revokeObjectURL(url);
   }
 
@@ -102,10 +107,19 @@ const ExportCommon = (function () {
   // .tiptap { min-height: 200px } (zone cliquable de l'éditeur vide), qui plafonnerait à 200 px la hauteur mesurée. Renvoie la fonction qui retire
   // `root`.
   function attachMeasureHost(root, widthPx, ...extraClasses) {
+    // Le rond ou le numéro de chaque point de liste a la couleur et la taille du début de son texte, comme à l'écran (js/list-markers.js) : les mesures et `getComputedStyle(li, '::marker')` le voient.
+    ListMarkers.apply(root);
     root.classList.add(...extraClasses, 'tiptap');
     root.style.cssText = 'position:absolute; left:-99999px; top:0; visibility:hidden; width:' + widthPx + 'px; min-height:0; padding:0; margin:0; box-sizing:border-box;';
     document.body.appendChild(root);
     return () => { if (root.parentNode) root.parentNode.removeChild(root); };
+  }
+
+  // Un bloc vide (`<p></p>`, une case sans texte) n'a aucune hauteur dans un hôte de mesure, alors que l'éditeur lui laisse sa ligne (le <br> de fin que ProseMirror
+  // pose) et que Word et le PDF l'écrivent comme une ligne vide : sans un <br>, une zone aux lignes vides se mesurerait trop basse, et Word, qui les écrit toutes,
+  // descendrait le corps de la page (js/docx-export.js:measureZoneHeightTwip).
+  function fillEmptyBlocks(root) {
+    root.querySelectorAll('p, h1, h2, h3, h4, h5, h6, li, blockquote, td, th').forEach(el => { if (!el.hasChildNodes()) el.appendChild(document.createElement('br')); });
   }
 
   // Les <tr> d'un tableau dans l'ordre du document, les <td>/<th> d'une ligne, et le colspan ou rowspan d'une case (au moins 1).
@@ -121,15 +135,15 @@ const ExportCommon = (function () {
     const placed = [];
     let width = 0;
     rows.forEach((tr, r) => {
-      let c = 0;
+      let column = 0;
       cellsOf(tr).forEach((el) => {
-        while (taken[r] && taken[r][c]) c += 1;
+        while (taken[r] && taken[r][column]) column += 1;
         const colspan = spanOf(el, 'colspan');
         const rowspan = Math.min(rows.length - r, spanOf(el, 'rowspan'));
-        for (let dr = 1; dr < rowspan; dr += 1) for (let dc = 0; dc < colspan; dc += 1) (taken[r + dr] = taken[r + dr] || [])[c + dc] = true;
-        placed.push({ el, row: r, col: c, rowspan, colspan });
-        c += colspan;
-        width = Math.max(width, c);
+        for (let dr = 1; dr < rowspan; dr += 1) for (let dc = 0; dc < colspan; dc += 1) (taken[r + dr] = taken[r + dr] || [])[column + dc] = true;
+        placed.push({ el, row: r, col: column, rowspan, colspan });
+        column += colspan;
+        width = Math.max(width, column);
       });
     });
     return { placed, width };
@@ -160,6 +174,55 @@ const ExportCommon = (function () {
     for (let col = 0; col < columnCount; col += 1) widths.push(single[col] !== undefined ? single[col] : merged[col] ? perColumnPx(merged[col].cell, merged[col].span) : 0);
     return widths;
   }
+
+  // Les largeurs mesurées (`measured`, dans l'unité de l'appelant : points pour le PDF, twips pour le Word) sur le total visé `usable` : celles du tableau
+  // tel quel s'il y tient (un tableau rétréci reste rétréci à l'export), ramenées au prorata au-delà. Aucune colonne sous `floor` : ce que le plancher
+  // ajoute est retiré aux colonnes plus larges, au prorata. Un seul calcul pour le PDF et le Word, pour qu'un tableau plus large que la page y prenne
+  // les mêmes proportions.
+  function fitColumnWidths(measured, usable, floor) {
+    const sum = measured.reduce((total, w) => total + w, 0);
+    const widths = measured.map(w => (w / sum) * Math.min(sum, usable));
+    const flooredTotal = widths.reduce((total, w) => total + Math.max(floor, w), 0);
+    if (flooredTotal > usable) {
+      const deficit = flooredTotal - usable;
+      const aboveFloorTotal = widths.reduce((total, w) => total + (w > floor ? w : 0), 0) || 1;
+      return widths.map(w => (w > floor ? Math.max(floor, w - deficit * (w / aboveFloorTotal)) : floor));
+    }
+    return widths.map(w => Math.max(floor, w));
+  }
+
+  // La place d'un tableau qui se trouve dans une colonne de zone à deux colonnes (`el` : le tableau, ou ce qui l'enveloppe dans l'éditeur) : le texte de la colonne,
+  // sa boîte sans bordure ni remplissage, en pixels de mise en page (`clientWidth` ne suit pas la réduction de la feuille). C'est pour lui ce que la page est pour un
+  // tableau du texte courant. 0 : pas dans une colonne, dans une case (un tableau de case se règle sur sa case), ou une colonne sans mise en page (éditeur masqué,
+  // zone détachée) : l'appelant garde alors la page.
+  function zoneColumnWidthPx(el) {
+    const column = el && el.closest ? el.closest('.two-columns-column') : null;
+    if (!column) return 0;
+    const cell = el.closest('td, th');
+    if (cell && column.contains(cell)) return 0;
+    const cs = getComputedStyle(column);
+    return Math.max(0, column.clientWidth - (parseFloat(cs.paddingLeft) || 0) - (parseFloat(cs.paddingRight) || 0));
+  }
+
+  // Un item de liste ou une citation qui porte un tableau (le bouton Tableau le pose dans l'item ou la citation où se trouve le curseur) : un tableau
+  // n'est pas du texte, lu comme tel il perd ses cases (« Un itemL1AL1BL2A »).
+  const hasTableChild = node => Array.from(node.children).some(child => child.tagName === 'TABLE');
+
+  // Les enfants d'un item de liste ou d'une citation, coupés à chaque tableau et dans l'ordre : des suites de nœuds (le texte, les sous-listes) et les
+  // tableaux eux-mêmes ({ nodes } ou { table }). Le texte d'avant un tableau porte la puce ou le numéro de l'item, celui d'après le continue.
+  function segmentsAroundTables(node) {
+    const segments = [];
+    let run = null;
+    Array.from(node.childNodes).forEach(child => {
+      if (child.nodeType === Node.ELEMENT_NODE && child.tagName === 'TABLE') { run = null; segments.push({ table: child }); return; }
+      if (!run) { run = { nodes: [] }; segments.push(run); }
+      run.nodes.push(child);
+    });
+    return segments;
+  }
+
+  // Un morceau de texte qui ne montre rien : des espaces entre deux blocs, pas un paragraphe vide (une ligne que la personne a laissée).
+  const isBlankSegment = segment => !!segment.nodes && segment.nodes.every(node => node.nodeType !== Node.ELEMENT_NODE && !(node.nodeValue || '').trim());
 
   // Résout les #Variable et les chips des quatre fragments d'en-tête et de pied (ReaderMode.preview) au même niveau que le corps : les exporteurs
   // restent appelables avec du HTML déjà résolu, sans enregistrement Grist en dessous. Les quatre zones sont des lectures indépendantes (aucune
@@ -224,13 +287,37 @@ const ExportCommon = (function () {
     };
   }
 
-  // Les bords de chaque case d'un tableau de grille, tels que l'éditeur les montre (js/table-borders.js : un trait que deux cases se partagent n'a
-  // qu'une valeur, quoi que dise le HTML) : une Map case -> { top, right, bottom, left } (null = trait fin gris de départ, 'none' = pas de trait,
-  // '#rrggbb'). Lue sur les `data-border-*`, jamais sur le style calculé, qui suit le thème sombre. null quand aucune case n'en porte (tout tableau
-  // de document, la plupart des grilles) : le PDF et l'Excel gardent alors leur trait de départ.
+  // Le quadrillage de départ d'une grille est-il masqué ? (`data-grid-lines="off"` sur le tableau, js/grid-editor.js : la Lecture, le PDF, le Word et
+  // l'Excel le lisent au même endroit.)
+  function gridLinesHidden(table) { return table.getAttribute('data-grid-lines') === 'off'; }
+
+  // La hauteur minimale d'une ligne en px (`data-row-height`, js/grid-editor.js) ; null pour une ligne que personne n'a réglée : elle a la hauteur de
+  // son texte. Lue sur la marque de l'enregistrement, comme l'alignement vertical d'une case : le PDF et le Word s'accordent sur ce qu'ils lisent.
+  function rowHeightPx(tr) {
+    const px = parseFloat(tr.getAttribute('data-row-height'));
+    return px > 0 ? px : null;
+  }
+
+  // L'alignement vertical d'une case : 'top', 'middle' ou 'bottom' (`data-valign`, js/grid-editor.js, ou son `vertical-align` en ligne), null quand
+  // personne n'en a posé : la case reste en haut, comme dans l'éditeur.
+  const VALIGNS = ['top', 'middle', 'bottom'];
+  function cellVerticalAlign(cell) {
+    const mark = String(cell.getAttribute('data-valign') || '').toLowerCase();
+    if (VALIGNS.includes(mark)) return mark;
+    const inline = String(cell.style.verticalAlign || '').toLowerCase();
+    return VALIGNS.includes(inline) ? inline : null;
+  }
+
+  // Les bords de chaque case d'un tableau réglé (grille ou tableau de document), tels que l'éditeur les montre (js/table-borders.js : un trait que deux
+  // cases se partagent n'a qu'une valeur, quoi que dise le HTML) : une Map case -> { top, right, bottom, left } (null = trait fin gris de départ,
+  // 'none' = pas de trait, '#rrggbb'), ce qu'il faut dessiner : quand le quadrillage est masqué, le trait de départ que la personne n'a pas posé devient
+  // « pas de trait » (TableBorders.drawn). Lue sur les `data-border-*`, jamais sur le style calculé, qui suit le thème sombre. null quand aucune case
+  // ne porte de bord et que le quadrillage est montré (tout tableau que personne n'a réglé, la plupart des grilles) : le PDF, le Word et l'Excel
+  // gardent alors leur trait de départ.
   function cellBorderSides(table) {
     const rows = tableRows(table);
     const { placed, width } = placeCells(rows);
+    const gridShown = !gridLinesHidden(table);
     let any = false;
     placed.forEach((cell) => {
       TableBorders.SIDES.forEach((side) => {
@@ -238,9 +325,9 @@ const ExportCommon = (function () {
         if (cell[side]) any = true;
       });
     });
-    if (!any) return null;
+    if (!any && gridShown) return null;
     const sides = TableBorders.resolve({ width, height: rows.length, cells: placed });
-    return new Map(placed.map((cell, i) => [cell.el, sides[i]]));
+    return new Map(placed.map((cell, i) => [cell.el, TableBorders.drawn(sides[i], gridShown)]));
   }
 
   // Les tranches d'une grille que ses sauts de page découpent (`data-page-break-before` sur une ligne : js/grid-editor.js), une par page du PDF et
@@ -289,6 +376,11 @@ const ExportCommon = (function () {
   function unreadImageCount() { return unreadImages.size; }
   function resetUnreadImages() { unreadImages.clear(); }
 
-  return { EDITOR_STYLE, hexOf, cssColorHex, scriptRefusal, loadScriptOnce, ensureJsZipLoaded, downloadBlob, attachMeasureHost, tableRows, cellsOf, spanOf, placeCells, measuredColumnWidthsPx, shownImageWidthPx, cellBorderSides, gridRowSegments, resolveHeaderFooterVariables,
-    resolveRecord, codeLinesOf, calloutMetricsPx, headerRowCount, noteUnreadImage, noteImageWithoutSource, unreadImageCount, resetUnreadImages };
+  // Une image que le modèle lie à une donnée au lieu de lui donner une adresse : une pièce jointe de la ligne (data-var-*), un graphique de la page (data-chart-*) ou un code QR dont le
+  // texte cite une colonne (data-qr-text, sans adresse). La Lecture et les exports la dessinent pour la ligne (js/reader-mode.js). Partagé par l'export Markdown d'un modèle, qui l'écrit
+  // en HTML en ligne, et par son import, qui la reprend telle quelle.
+  const isMergeImage = img => img.hasAttribute('data-var-table') || img.hasAttribute('data-chart-section') || img.hasAttribute('data-chart-spec') || (img.hasAttribute('data-qr-text') && !(img.getAttribute('src') || '').trim());
+
+  return { EDITOR_STYLE, hexOf, cssColorHex, scriptRefusal, loadScriptOnce, ensureJsZipLoaded, downloadBlob, attachMeasureHost, fillEmptyBlocks, tableRows, cellsOf, spanOf, placeCells, measuredColumnWidthsPx, zoneColumnWidthPx, shownImageWidthPx, gridLinesHidden, rowHeightPx, cellVerticalAlign, cellBorderSides, gridRowSegments, fitColumnWidths, hasTableChild, segmentsAroundTables, isBlankSegment, resolveHeaderFooterVariables,
+    resolveRecord, codeLinesOf, calloutMetricsPx, headerRowCount, noteUnreadImage, noteImageWithoutSource, unreadImageCount, resetUnreadImages, isMergeImage };
 })();

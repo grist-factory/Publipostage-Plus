@@ -2,9 +2,10 @@
 // Réglages > Raccourcis (js/shortcuts-panel.js).
 //
 // Une action « fait ce que fait son bouton » : elle clique le bouton de la barre d'outils (ou la ligne de menu) et passe donc par les mêmes gardes
-// que la souris : droits par personne et mode Lecture (`pp-access-locked`, js/main.js:wireAccessLockGuard), grille (js/grid-editor.js). Le grisé
-// `v2-hf-locked` (e-mail, en-tête, macro-modèle) n'est que du CSS (`pointer-events: none`) qu'un clic par programme ne voit pas : `usable()` le relit
-// avant chaque clic.
+// que la souris : droits par personne et mode Lecture (`pp-access-locked`, js/main.js:wireAccessLockGuard), grille (js/grid-editor.js). Un contrôle grisé
+// qui dit pourquoi (`data-pp-lock-blocks`, js/lock-reasons.js : e-mail, en-tête, macro-modèle, grille...) a son clic arrêté en capture, qui écrit la raison dans le
+// coin d'état ; un grisé sans raison (`v2-hf-locked` d'une barre flottante) n'est que du CSS (`pointer-events: none`) qu'un clic par programme ne voit pas :
+// `usable()` relit les deux avant chaque clic, pour qu'une touche n'écrive pas une raison à la place d'un geste.
 //
 // Les touches qui existent déjà (Ctrl+B, Ctrl+K, Ctrl+S, Ctrl+Z...) restent traitées par l'éditeur ou js/main.js tant qu'on n'y touche pas : ce
 // module n'intervient qu'une fois la touche d'une action changée ou retirée. Son écouteur, posé en capture sur le document avant tous les autres
@@ -12,7 +13,8 @@
 // au gras.
 //
 // Une combinaison s'écrit « Mod+Alt+Shift+k » (Mod = Ctrl sous Windows et Linux, ⌘ sous macOS), la même d'une plateforme à l'autre. Les choix sont
-// par navigateur (localStorage), comme la langue et le thème, et ne valent que focus dans le widget (un iframe ne reçoit rien d'autre).
+// par navigateur (js/person-store.js : le navigateur, ou GFS quand elle héberge le widget), comme le thème, et ne valent que focus dans le widget (un iframe ne reçoit rien d'autre).
+// Changer, retirer ou rétablir une touche dans Réglages se défait par Ctrl + Z (js/shortcuts-panel.js, js/settings-history.js) : `chosen` rend les choix tels qu'ils sont, `restore` les remet.
 const Shortcuts = (function () {
   const STORAGE = 'pp_shortcuts';
 
@@ -61,7 +63,7 @@ const Shortcuts = (function () {
     }
 
     // { combo, altGr } ; combo = null quand l'événement n'est qu'un modificateur ou une touche sans nom. `altGr` : Ctrl+Alt sous Windows et Linux,
-    // c'est AltGr, qui écrit des caractères (« @ », « # » sur un clavier AZERTY) : jamais un raccourci.
+    // c'est AltGr, qui écrit des caractères (« @ », « # » sur un clavier AZERTY) : jamais un raccourci (la seule Ctrl+Alt+lettre prise l'est par `isAltGr`, plus bas).
     function fromEvent(event) {
       const key = keyOf(event);
       if (!key) return { combo: null, altGr: false };
@@ -180,11 +182,12 @@ const Shortcuts = (function () {
 
     const byId = id => document.getElementById(id);
 
-    // Un clic de souris pourrait-il atteindre cet élément ? Faux pour un bouton désactivé, grisé (`v2-hf-locked`, `pp-access-locked`, ou tout autre
+    // Un clic de souris pourrait-il atteindre cet élément ? Faux pour un bouton désactivé, grisé (`v2-hf-locked`, `pp-access-locked`, `data-pp-lock-blocks`, ou tout autre
     // `pointer-events: none` hérité) ou masqué. Une ligne de menu au survol (`.v2-hover-flyout`) est toujours fermée, donc sans dimensions : seul le
-    // reste compte pour elle.
+    // reste compte pour elle. Une ligne grisée dont le clic explique (`data-explains` : la fonction d'une extension de Grist Factory Suite absente, js/main-toolbar.js:syncChartRow) reste
+    // utilisable : la touche fait le même geste que la souris et ouvre la même fenêtre.
     function usable(el) {
-      if (!el || el.disabled || el.getAttribute('aria-disabled') === 'true' || el.closest('[hidden], .v2-hf-locked, .pp-access-locked')) return false;
+      if (!el || el.disabled || (el.getAttribute('aria-disabled') === 'true' && !el.hasAttribute('data-explains')) || el.closest('[hidden], .v2-hf-locked, .pp-access-locked, [data-pp-lock-blocks]')) return false;
       if (getComputedStyle(el).pointerEvents === 'none') return false;
       return !!el.closest('.v2-hover-flyout') || el.getClientRects().length > 0;
     }
@@ -259,7 +262,10 @@ const Shortcuts = (function () {
     // d'une sélection de cases : elle passe par le bouton quand des cases sont sélectionnées, ou par la fonction que `cells` donne quand le bouton ne
     // bascule pas comme la touche), aliases (autres touches d'origine traitées de même), scope ('editor' : ne vaut pas dans un champ de saisie ; 'app'
     // : vaut partout), repeat (la touche enfoncée se répète), hint (sélecteur de l'élément qui montre la touche : infobulle, ligne ou titre de menu),
-    // aria (sélecteur de l'élément qui la dit aux lecteurs d'écran, `hint` par défaut), run }.
+    // aria (sélecteur de l'élément qui la dit aux lecteurs d'écran, `hint` par défaut), anywhere (une action native que l'éditeur seul traite quand il a le focus et que ce module traite
+    // aussi quand le focus est ailleurs, hors d'un champ où l'on tape : Annuler et Rétablir, après un clic sur un bouton ou une fermeture de fenêtre qui a laissé le focus sur le corps de la page, ou après le réglage
+    // d'une liste ou d'une glissière de la barre flottante, dont le focus reste sur le contrôle), ctrlAlt (la touche d'origine est une Ctrl+Alt+lettre que ce module prend lui-même, la touche de Google
+    // Docs : sous Windows et Linux c'est de l'AltGr, jamais prise - sauf quand la touche a écrit la lettre elle-même, `plainCtrlAlt`), run }.
     const tip = id => '#' + id;
     const ACTIONS = [
       // Modèles
@@ -269,7 +275,7 @@ const Shortcuts = (function () {
       { id: 'setDefault', group: 'templates', label: 'shortcuts.action.setDefault', key: '', scope: 'app', hint: tip('btn-set-default-template'), run: click('btn-set-default-template') },
       { id: 'templates', group: 'templates', label: 'shortcuts.action.templates', key: 'Alt+m', scope: 'app', aria: '#v2-title-cluster .tts-trigger', run: templatesList },
       { id: 'delete', group: 'templates', label: 'shortcuts.action.delete', key: '', scope: 'app', hint: tip('btn-delete'), run: click('btn-delete') },
-      { id: 'exportPdf', group: 'templates', label: 'toolbar.exportPdf', key: 'Alt+p', scope: 'app', hint: '#v2-export-pdf-flyout .v2-hover-flyout-label', aria: tip('btn-export-pdf'), run: click('btn-export-pdf') },
+      { id: 'exportPdf', group: 'templates', label: 'toolbar.export', key: 'Alt+p', scope: 'app', hint: '#v2-export-pdf-flyout .v2-hover-flyout-label:not([data-export-for])', aria: tip('btn-export-pdf'), run: click('btn-export-pdf') },
       // Affichage
       { id: 'modeEdit', group: 'view', label: 'toolbar.modeEdit', key: 'Alt+e', scope: 'app', hint: tip('btn-mode-edit'), run: editMode },
       { id: 'modeRead', group: 'view', label: 'toolbar.modeRead', key: 'Alt+l', scope: 'app', hint: '#v2-read-flyout .v2-hover-flyout-label', aria: tip('btn-mode-read'), run: click('btn-mode-read') },
@@ -280,8 +286,12 @@ const Shortcuts = (function () {
       // Mise en forme
       { id: 'bold', group: 'format', label: 'fmt.bold', key: 'Mod+b', native: true, scope: 'editor', hint: tip('v2-btn-bold'), run: click('v2-btn-bold') },
       { id: 'italic', group: 'format', label: 'fmt.italic', key: 'Mod+i', native: true, scope: 'editor', hint: tip('v2-btn-italic'), run: click('v2-btn-italic') },
-      { id: 'underline', group: 'format', label: 'fmt.underline', key: 'Mod+u', native: true, scope: 'editor', hint: tip('v2-btn-underline'), run: click('v2-btn-underline') },
+      { id: 'underline', group: 'format', label: 'fmt.underline', key: 'Mod+u', native: true, scope: 'editor', hint: tip('v2-underline-single'), aria: tip('v2-btn-underline') + ', ' + tip('v2-underline-single'), run: click('v2-btn-underline') },
       { id: 'strike', group: 'format', label: 'fmt.strike', key: 'Mod+Shift+s', native: true, scope: 'editor', hint: tip('v2-btn-strike'), run: click('v2-btn-strike') },
+      // Exposant et indice (js/script-marks.js) : les touches de Google Docs, traitées par l'éditeur. Les deux icônes du menu « Aa » les montrent dans leur
+      // infobulle. Souligné : la touche est dite par le bouton et par la première ligne de son menu (le soulignement classique).
+      { id: 'superscript', group: 'format', label: 'fmt.superscript', key: 'Mod+.', native: true, scope: 'editor', hint: tip('v2-btn-superscript'), run: click('v2-btn-superscript') },
+      { id: 'subscript', group: 'format', label: 'fmt.subscript', key: 'Mod+,', native: true, scope: 'editor', hint: tip('v2-btn-subscript'), run: click('v2-btn-subscript') },
       { id: 'alignLeft', group: 'format', label: 'align.left', key: 'Mod+Shift+l', native: true, scope: 'editor', hint: tip('v2-btn-align-left'), run: click('v2-btn-align-left') },
       { id: 'alignCenter', group: 'format', label: 'align.center', key: 'Mod+Shift+e', native: true, scope: 'editor', hint: tip('v2-btn-align-center'), run: click('v2-btn-align-center') },
       { id: 'alignRight', group: 'format', label: 'align.right', key: 'Mod+Shift+r', native: true, scope: 'editor', hint: tip('v2-btn-align-right'), run: click('v2-btn-align-right') },
@@ -297,30 +307,34 @@ const Shortcuts = (function () {
       { id: 'highlight', group: 'format', label: 'color.highlight.tip', key: 'Alt+Shift+h', scope: 'editor', hint: tip('v2-btn-highlight'), run: mouseDown('v2-btn-highlight') },
       // Le pinceau (js/format-painter.js) : la touche fait ce que fait son bouton - copie la mise en forme et arme le pinceau, ou l'arrête s'il est
       // armé. « Appliquer » pose ce qui a été copié sur la sélection du moment, faite au clavier ou à la souris ; sans rien de copié, ni sélection de
-      // texte, elle ne fait rien.
-      { id: 'formatPainter', group: 'format', label: 'fmt.painter.tip', key: 'Alt+Shift+c', scope: 'editor', hint: tip('v2-btn-format-painter'), run: click('v2-btn-format-painter') },
+      // texte, elle ne fait rien. Le bouton ouvre un menu au survol (les mises en forme gardées) : comme Tableau et Image, c'est l'intitulé du menu qui dit le bouton et sa touche.
+      { id: 'formatPainter', group: 'format', label: 'fmt.painter.tip', key: 'Alt+Shift+c', scope: 'editor', hint: '#v2-painter-flyout .v2-hover-flyout-label', aria: tip('v2-btn-format-painter'), run: click('v2-btn-format-painter') },
       { id: 'formatPaste', group: 'format', label: 'shortcuts.action.formatPaste', key: 'Alt+Shift+v', scope: 'editor', run: () => typeof FormatPainter !== 'undefined' && FormatPainter.apply() },
       { id: 'heading1', group: 'format', label: 'heading.level1', key: 'Alt+Shift+1', aliases: ['Mod+Alt+1'], scope: 'editor', hint: '#v2-heading-flyout .v2-hover-row[data-level="1"]', run: headingRow(1) },
       { id: 'heading2', group: 'format', label: 'heading.level2', key: 'Alt+Shift+2', aliases: ['Mod+Alt+2'], scope: 'editor', hint: '#v2-heading-flyout .v2-hover-row[data-level="2"]', run: headingRow(2) },
       { id: 'heading3', group: 'format', label: 'heading.level3', key: 'Alt+Shift+3', aliases: ['Mod+Alt+3'], scope: 'editor', hint: '#v2-heading-flyout .v2-hover-row[data-level="3"]', run: headingRow(3) },
       // Insertion
-      { id: 'table', group: 'insert', label: 'insert.table', key: '', scope: 'editor', hint: tip('v2-btn-table'), run: click('v2-btn-table') },
+      { id: 'table', group: 'insert', label: 'insert.table', key: '', scope: 'editor', hint: '#v2-table-flyout .v2-hover-flyout-label', aria: tip('v2-btn-table'), run: click('v2-btn-table') },
       { id: 'twoColumns', group: 'insert', label: 'insert.twoColumns', key: '', scope: 'editor', hint: tip('v2-btn-two-columns'), run: click('v2-btn-two-columns') },
       { id: 'image', group: 'insert', label: 'shortcuts.action.image', key: '', scope: 'editor', hint: '#v2-image-flyout .v2-hover-flyout-label', aria: tip('v2-btn-image'), run: click('v2-btn-image') },
       { id: 'pageBreak', group: 'insert', label: 'insert.pageBreak.tip', key: 'Alt+Enter', scope: 'editor', hint: tip('v2-btn-page-break'), run: click('v2-btn-page-break') },
       { id: 'toc', group: 'insert', label: 'insert.toc.tip', key: '', scope: 'editor', hint: tip('v2-btn-toc'), run: click('v2-btn-toc') },
-      { id: 'comment', group: 'insert', label: 'insert.comment.tip', key: 'Alt+Shift+m', scope: 'editor', hint: tip('v2-btn-comment'), run: click('v2-btn-comment') },
+      // Commenter : Ctrl+Alt+M (⌥⌘M sur Mac), la touche de Google Docs, depuis le 03/11, à la place d'Alt+Maj+M. Ce module la prend lui-même (`ctrlAlt`), et non l'éditeur comme Ctrl+Alt+C : Commenter agit aussi dans la
+      // Lecture et dans un document en lecture seule, où l'éditeur est caché.
+      { id: 'comment', group: 'insert', label: 'insert.comment.tip', key: 'Mod+Alt+m', ctrlAlt: true, scope: 'editor', hint: tip('v2-btn-comment'), run: click('v2-btn-comment') },
       { id: 'link', group: 'insert', label: 'insert.link.row', key: 'Mod+k', native: true, scope: 'editor', aria: '#v2-btn-link, #v2-row-link', run: click('v2-btn-link') },
       { id: 'citation', group: 'insert', label: 'insert.citation.tip', key: 'Mod+Shift+b', native: true, cells: true, scope: 'editor', hint: tip('v2-btn-citation'), run: click('v2-btn-citation') },
       { id: 'codeBlock', group: 'insert', label: 'insert.codeBlock.tip', key: 'Mod+Alt+c', native: true, scope: 'editor', hint: tip('v2-btn-code-block'), run: click('v2-btn-code-block') },
       { id: 'callout', group: 'insert', label: 'insert.callout.row', key: '', scope: 'editor', hint: tip('v2-btn-callout'), run: click('v2-btn-callout') },
       { id: 'signature', group: 'insert', label: 'insert.signature.tip', key: '', scope: 'editor', hint: tip('v2-btn-signature'), run: click('v2-btn-signature') },
       { id: 'qrCode', group: 'insert', label: 'insert.qr.row', key: '', scope: 'editor', hint: tip('v2-btn-qr'), run: click('v2-btn-qr') },
+      { id: 'chartBlock', group: 'insert', label: 'insert.chart.row', key: '', scope: 'editor', hint: tip('v2-btn-chart'), run: click('v2-btn-chart') },
+      { id: 'chartMake', group: 'insert', label: 'insert.chart.make.row', key: '', scope: 'editor', hint: tip('v2-btn-chart-make'), run: click('v2-btn-chart-make') },
       { id: 'variable', group: 'insert', label: 'insert.variable.tip', key: '', scope: 'editor', hint: tip('v2-btn-insert-variable'), run: click('v2-btn-insert-variable') },
       { id: 'today', group: 'insert', label: 'chips.date', key: 'Alt+Shift+d', scope: 'editor', run: () => insertTodayChip() },
       // Historique et suivi
-      { id: 'undo', group: 'history', label: 'history.undo', key: 'Mod+z', native: true, scope: 'editor', repeat: true, hint: tip('v2-btn-undo'), run: click('v2-btn-undo') },
-      { id: 'redo', group: 'history', label: 'history.redo', key: 'Mod+y', aliases: ['Mod+Shift+z'], native: true, scope: 'editor', repeat: true, hint: tip('v2-btn-redo'), run: click('v2-btn-redo') },
+      { id: 'undo', group: 'history', label: 'history.undo', key: 'Mod+z', native: true, anywhere: true, scope: 'editor', repeat: true, hint: tip('v2-btn-undo'), run: click('v2-btn-undo') },
+      { id: 'redo', group: 'history', label: 'history.redo', key: 'Mod+y', aliases: ['Mod+Shift+z'], native: true, anywhere: true, scope: 'editor', repeat: true, hint: tip('v2-btn-redo'), run: click('v2-btn-redo') },
       { id: 'trackChanges', group: 'history', label: 'trackChanges.toggle.tip', key: '', scope: 'editor', hint: tip('v2-btn-track-changes'), run: click('v2-btn-track-changes') },
       { id: 'acceptAll', group: 'history', label: 'trackChanges.acceptAll.tip', key: '', scope: 'editor', hint: tip('v2-btn-accept-all'), run: click('v2-btn-accept-all') },
       { id: 'rejectAll', group: 'history', label: 'trackChanges.rejectAll.tip', key: '', scope: 'editor', hint: tip('v2-btn-reject-all'), run: click('v2-btn-reject-all') },
@@ -332,27 +346,29 @@ const Shortcuts = (function () {
   ACTIONS.forEach(action => { BY_ID[action.id] = action; });
 
   const {
-    readStorage, writeStorage, isCustomized, defaultOf, currentKey, actionOf, keyFor, defaultKeyFor, label, isChanged, ownerOf, freedBy, check,
+    readStorage, validChoices, writeStorage, isCustomized, defaultOf, currentKey, actionOf, keyFor, defaultKeyFor, label, isChanged, ownerOf, freedBy, check,
   } = (function () {
     // Touches choisies (par navigateur)
 
-    function readStorage() {
+    // Les choix de `raw` qui valent encore : une action disparue ou une combinaison abîmée est ignorée. Les actions sont rangées par nom : deux états égaux s'écrivent de même.
+    function validChoices(raw) {
       const found = {};
-      try {
-        const raw = JSON.parse(localStorage.getItem(STORAGE) || '{}');
-        Object.keys(raw || {}).forEach(id => {
-          const value = raw[id];
-          if (!BY_ID[id] || typeof value !== 'string') return;
-          if (value === '' || (parse(value) && formProblem(value) === '')) found[id] = value;
-        });
-      } catch (e) { /* stockage illisible ou indisponible : les touches d'origine */ }
+      Object.keys(raw || {}).sort().forEach(id => {
+        const value = raw[id];
+        if (!BY_ID[id] || typeof value !== 'string') return;
+        if (value === '' || (parse(value) && formProblem(value) === '')) found[id] = value;
+      });
       return found;
     }
-    function writeStorage() {
+    function readStorage() {
       try {
-        if (Object.keys(custom).length) localStorage.setItem(STORAGE, JSON.stringify(custom));
-        else localStorage.removeItem(STORAGE);
-      } catch (e) { /* stockage indisponible : le choix ne survivra pas au rechargement */ }
+        return validChoices(JSON.parse(PersonStore.get(STORAGE) || '{}'));
+      } catch (e) { return {}; /* stockage illisible ou indisponible : les touches d'origine */ }
+    }
+    function writeStorage() {
+      // Non retenu (stockage indisponible) : le choix ne survivra pas au rechargement.
+      if (Object.keys(custom).length) PersonStore.set(STORAGE, JSON.stringify(custom));
+      else PersonStore.remove(STORAGE);
     }
 
     const isCustomized = action => Object.prototype.hasOwnProperty.call(custom, action.id);
@@ -363,10 +379,10 @@ const Shortcuts = (function () {
     const nativeKeys = action => (action.native ? [defaultOf(action)] : []).concat(action.aliases || []);
 
     function actionOf(id) { return BY_ID[id] || null; }
-    function keyFor(id) { const a = actionOf(id); return a ? currentKey(a) : ''; }
-    function defaultKeyFor(id) { const a = actionOf(id); return a ? defaultOf(a) : ''; }
+    function keyFor(id) { const action = actionOf(id); return action ? currentKey(action) : ''; }
+    function defaultKeyFor(id) { const action = actionOf(id); return action ? defaultOf(action) : ''; }
     function label(id) { return format(keyFor(id)); }
-    function isChanged(id) { const a = actionOf(id); return !!a && isCustomized(a); }
+    function isChanged(id) { const action = actionOf(id); return !!action && isCustomized(action); }
 
     // L'action qui a cette combinaison comme touche actuelle (hors `exceptId`).
     function ownerOf(combo, exceptId) {
@@ -393,17 +409,16 @@ const Shortcuts = (function () {
       if (holder) return { problem: 'duplicate', other: holder };
       return { problem: '' };
     }
-    return { readStorage, writeStorage, isCustomized, defaultOf, currentKey, actionOf, keyFor, defaultKeyFor, label, isChanged, ownerOf, freedBy, check };
+    return { readStorage, validChoices, writeStorage, isCustomized, defaultOf, currentKey, actionOf, keyFor, defaultKeyFor, label, isChanged, ownerOf, freedBy, check };
   })();
   custom = readStorage(); // lu au stockage une fois ses fonctions rangées (l'état lui-même est déclaré en tête)
 
-  const { decorate, changed, setKey, resetKey, resetAll } = (function () {
+  const { decorate, changed, setKey, resetKey, resetAll, chosen, restore } = (function () {
     // Infobulles et lecteurs d'écran, changement de touche, remise à zéro
 
     // La touche se montre là où le bouton se nomme : `data-keytip` (« (Ctrl+B) ») après le texte de l'infobulle d'un bouton [data-tip], `data-keyhint`
     // (« Ctrl+B ») à droite d'une ligne de menu ou après le titre d'un menu - css/shortcuts.css les lit - et se dit aux lecteurs d'écran
-    // (`aria-keyshortcuts`). Des attributs à eux, qu'aucun changement de langue ne réécrit : un « (Ctrl+B) » ajouté au data-tip s'effacerait au premier
-    // applyTranslations().
+    // (`aria-keyshortcuts`). Des attributs à eux : le texte de l'infobulle (data-tip) n'est jamais touché, css/shortcuts.css y ajoute la touche à l'affichage.
     function setAttr(el, name, value) { if (value) el.setAttribute(name, value); else el.removeAttribute(name); }
     function decorate() {
       ACTIONS.forEach(action => {
@@ -441,10 +456,14 @@ const Shortcuts = (function () {
       return { problem: '' };
     }
     function resetAll() { custom = {}; writeStorage(); changed(); }
-    return { decorate, changed, setKey, resetKey, resetAll };
+    // Les touches choisies telles qu'elles sont ({ action: combinaison | '' }, les actions changées seulement), et de quoi les rendre : c'est ce que garde Annuler / Rétablir (js/settings-history.js, js/shortcuts-panel.js) pour défaire
+    // un changement, un retrait ou une remise à zéro.
+    function chosen() { const found = {}; Object.keys(custom).sort().forEach(id => { found[id] = custom[id]; }); return found; }
+    function restore(choices) { custom = validChoices(choices); writeStorage(); changed(); }
+    return { decorate, changed, setKey, resetKey, resetAll, chosen, restore };
   })();
 
-  const { onKeydown } = (function () {
+  const { onKeydown, isAltGr } = (function () {
     // Le clavier
 
     function modalOpen() {
@@ -454,8 +473,16 @@ const Shortcuts = (function () {
     function inTextField() {
       const el = document.activeElement;
       if (!el || el === document.body) return false;
-      if (el.closest && el.closest('.ProseMirror')) return false;
+      // Un champ texte à bulles (js/field-editor.js) est un éditeur ProseMirror, mais pas celui du document : ces touches n'y ont rien à faire non plus.
+      if (el.closest && el.closest('.ProseMirror') && !el.closest('.pp-field-editor')) return false;
       return /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName) || el.isContentEditable;
+    }
+    // Un contrôle où l'on ne tape rien - liste, glissière, case à cocher, bouton radio, couleur, fichier - : Ctrl+Z n'y défait aucune frappe. Une liste ou une glissière de la barre flottante (décimales d'un nombre,
+    // heure d'une date, opacité d'une image) garde le focus après son réglage : Annuler et Rétablir (`anywhere`) partent de là comme d'un bouton.
+    const NO_TYPING = /^(range|checkbox|radio|button|submit|reset|image|color|file)$/;
+    function typesNothing() {
+      const el = document.activeElement;
+      return !!el && (el.tagName === 'SELECT' || (el.tagName === 'INPUT' && NO_TYPING.test(el.type)));
     }
 
     function onCellSelection() {
@@ -463,14 +490,37 @@ const Shortcuts = (function () {
       return !!editor && EditorCore.isCellSelection(editor.state.selection);
     }
 
+    // L'éditeur du document est à l'écran (pas dans la Lecture, qui le cache) sans avoir le focus : le focus est sur le corps de la page, un bouton, une ligne de menu. Là, une touche native de
+    // l'éditeur ne va nulle part (`anywhere`). Le résumé d'un macro-modèle, qui prend la place de l'éditeur, compte comme lui : son historique (la page, la composition) est celui de l'éditeur caché. Un PDF lu dans la
+    // Lecture aussi (js/pdf-reading.js) : ses commentaires se défont par l'historique de l'éditeur caché, comme les actions de la bibliothèque (js/action-history.js).
+    // Sauf dans un composant qui la traite lui-même et garde le focus sur ses boutons (`data-own-undo` : le panneau Rechercher / Remplacer, où Ctrl + Z sur « Remplacer » défait le remplacement
+    // sans quitter le bouton).
+    function editorOnScreenWithoutFocus() {
+      const editor = typeof EditorCore !== 'undefined' && EditorCore.getEditor();
+      if (!editor || editor.isDestroyed) return false;
+      const summary = document.getElementById('macro-summary-container');
+      const pdf = typeof PdfReading !== 'undefined' && PdfReading.isActive();
+      if (!editor.view.dom.getClientRects().length && !(summary && summary.getClientRects().length) && !pdf) return false;
+      const active = document.activeElement;
+      return !active || !active.closest || !active.closest('.ProseMirror, [data-own-undo]');
+    }
+
+    // Une fenêtre est ouverte et le focus n'est pas dans un champ où l'on écrit (un bouton, une case, une liste de la fenêtre) : Annuler et Rétablir (`anywhere`) n'y partent pas - la fenêtre a ses
+    // boutons - et le navigateur ne les fait pas non plus. Le Ctrl + Z natif de Chrome défait sinon, derrière la fenêtre et sans qu'on le voie, la dernière frappe du document (et Ctrl + Y la rend). Seule
+    // la touche est prise : les écouteurs d'après la voient encore. Dans un champ de la fenêtre elle garde son sens de texte, elle y défait la frappe.
+    function holdBehindWindow(event, action) {
+      if (action.anywhere && (!inTextField() || typesNothing())) event.preventDefault();
+    }
+
     // La touche est celle d'une action : la fait partir, sauf quand l'éditeur ou une fenêtre la garde.
     function runOwnerKey(event, owner, combo) {
       // À sa touche d'origine, une action native est déjà prise en charge par l'éditeur ou js/main.js : rien à faire ici - sauf sur une sélection de
       // cases pour une action qui le demande (`cells`) : l'éditeur ne traiterait que la case de tête, le bouton les traite toutes (ou la fonction que
-      // `cells` donne, quand le bouton ne fait pas comme la touche d'origine).
-      const originalKey = owner.native && !isCustomized(owner) && defaultOf(owner) === combo;
-      if (originalKey && !(owner.cells && onCellSelection())) return;
-      if (modalOpen() || (owner.scope === 'editor' && inTextField())) return;
+      // `cells` donne, quand le bouton ne fait pas comme la touche d'origine) - et pour une action `anywhere` quand l'éditeur n'a pas le focus.
+      const originalKey = owner.native && !isCustomized(owner) && (defaultOf(owner) === combo || (owner.aliases || []).indexOf(combo) !== -1);
+      if (originalKey && !(owner.cells && onCellSelection()) && !(owner.anywhere && editorOnScreenWithoutFocus())) return;
+      if (modalOpen()) { holdBehindWindow(event, owner); return; }
+      if (owner.scope === 'editor' && inTextField() && !(owner.anywhere && typesNothing())) return;
       event.preventDefault();
       event.stopImmediatePropagation();
       if (event.repeat && !owner.repeat) return;
@@ -482,7 +532,23 @@ const Shortcuts = (function () {
     function swallowFreedKey(event, combo) {
       // Mais dans un champ de saisie autre que l'éditeur elle garde son sens de texte (Ctrl+Z y défait la frappe).
       const freed = freedBy(combo);
-      if (freed && !modalOpen() && !(freed.scope === 'editor' && inTextField())) { event.preventDefault(); event.stopImmediatePropagation(); }
+      if (!freed) return;
+      // Sous une fenêtre ouverte elle reste à la page (les écouteurs d'après la voient), sauf la touche d'origine d'Annuler ou de Rétablir : le navigateur ne défait pas derrière la fenêtre.
+      if (modalOpen()) { holdBehindWindow(event, freed); return; }
+      if (!(freed.scope === 'editor' && inTextField())) { event.preventDefault(); event.stopImmediatePropagation(); }
+    }
+
+    // Ctrl+Alt+lettre sous Windows et Linux est de l'AltGr tant que la touche écrit un autre caractère (« µ » pour AltGr+M sur un clavier allemand ou américain international) : jamais un raccourci, la
+    // frappe reste au texte. Quand la touche a écrit la lettre elle-même (`event.key`), AltGr n'a rien écrit : c'est bien Ctrl+Alt, la touche de Google Docs. Seule une Ctrl+Alt+lettre qui est la touche
+    // d'origine d'une action qui le demande (`ctrlAlt` : Commenter la sélection) est prise ainsi - qu'elle l'ait gardée ou non : toute autre combinaison Ctrl+Alt reste à l'éditeur (Ctrl+Alt+C) ou au texte.
+    function plainCtrlAlt(event, combo) {
+      return !!combo && ACTIONS.some(action => action.ctrlAlt === true && defaultOf(action) === combo)
+        && typeof event.key === 'string' && event.key.toLowerCase() === combo.split('+').pop();
+    }
+    // Ce que l'écouteur ci-dessous et l'écoute de Réglages (js/shortcuts-panel.js) refusent comme AltGr : `fromEvent(event).altGr`, sauf pour cette Ctrl+Alt+lettre.
+    function isAltGr(event) {
+      const { combo, altGr } = fromEvent(event);
+      return altGr && !plainCtrlAlt(event, combo);
     }
 
     function onKeydown(event) {
@@ -495,28 +561,30 @@ const Shortcuts = (function () {
       }
       if (event.defaultPrevented) return;
       const { combo, altGr } = fromEvent(event);
-      if (!combo || altGr) return;
-      const owner = ownerOf(combo);
+      if (!combo || (altGr && !plainCtrlAlt(event, combo))) return;
+      // Une autre touche d'origine d'une action `anywhere` (Ctrl+Maj+Z, qui rétablit) en est la touche tant qu'elle n'a pas changé de touche.
+      const owner = ownerOf(combo) || ACTIONS.find(action => action.anywhere && !isCustomized(action) && (action.aliases || []).indexOf(combo) !== -1);
       if (owner) runOwnerKey(event, owner, combo);
       else swallowFreedKey(event, combo);
     }
-    return { onKeydown };
+    return { onKeydown, isAltGr };
   })();
   document.addEventListener('keydown', onKeydown, true);
 
-  if (typeof I18n !== 'undefined') I18n.onChange(() => changed());
   window.addEventListener('storage', event => { if (event.key === STORAGE || event.key === null) { custom = readStorage(); changed(); } });
+  // Hébergé par GFS, les touches choisies viennent de l'espace de l'app, qui arrive avec le contexte (js/person-store.js) : relues à ce moment-là si le contexte n'était pas encore là au chargement de ce fichier.
+  PersonStore.onLoaded(() => { custom = readStorage(); changed(); });
   decorate();
 
   return {
     GROUPS, ACTIONS,
-    action: actionOf, keyFor, defaultKeyFor, label, isChanged, check, setKey, resetKey, resetAll, 
-    fromEvent, format, ariaKeys, formProblem,
+    action: actionOf, keyFor, defaultKeyFor, label, isChanged, check, setKey, resetKey, resetAll, chosen, restore,
+    fromEvent, isAltGr, format, ariaKeys, formProblem,
     setRecorder: fn => { recorder = typeof fn === 'function' ? fn : null; },
     isRecording: () => !!recorder,
     onChange: fn => { if (typeof fn === 'function') listeners.push(fn); },
     setPlatform: value => { platformOverride = value || null; changed(); },
     reload: () => { custom = readStorage(); changed(); },
-    run: id => { const a = actionOf(id); return !!a && a.run(); },
+    run: id => { const action = actionOf(id); return !!action && action.run(); },
   };
 })();

@@ -2,9 +2,11 @@
 // fait ensuite la reçoit, puis le pinceau se range. Un double-clic le garde armé pour peindre plusieurs endroits, Échap ou un nouveau clic l'arrête.
 // Au clavier (js/shortcuts.js) : « Reproduire la mise en forme » (Alt+Maj+C, le même geste que le bouton) puis « Appliquer la mise en forme »
 // (Alt+Maj+V) sur la sélection voulue, faite au clavier ou à la souris.
+// Le bouton ouvre un menu au survol (#v2-painter-group, js/format-slots-menu.js) : trois mises en forme gardées dans le modèle et trois partagées par le document, que js/format-slots.js
+// garde à partir de `capture` et repose par `paint` - la même copie, la même peinture, en une transaction.
 //
 // Copié depuis la source (le premier caractère de la sélection, ou le curseur) :
-//  - la mise en forme du caractère : gras, italique, souligné, barré, police, taille, couleur, surlignage. Elle remplace celle du texte peint
+//  - la mise en forme du caractère : gras, italique, souligné, barré, exposant, indice, police, taille, couleur, surlignage. Elle remplace celle du texte peint
 //    (peindre un texte ordinaire efface celle de la cible, comme dans Word). Un lien, un commentaire, une marque du suivi des modifications sont du
 //    contenu, pas de la mise en forme : jamais touchés ;
 //  - celle du paragraphe (alignement, niveau de titre) quand la source est un curseur ou un paragraphe entier, comme le « ¶ » de Word : une sélection
@@ -16,7 +18,7 @@ const FormatPainter = (function () {
   const BUTTON_ID = 'v2-btn-format-painter';
   const ARMED_CLASS = 'pp-format-painting'; // posée sur <html> tant que le pinceau attend : css/format-painter.css y met le curseur
   // Les marques de la mise en forme d'un caractère : `textStyle` porte la police, la taille, la couleur et le surlignage (js/editor-nodes.js).
-  const FORMAT_MARKS = ['bold', 'italic', 'underline', 'strike', 'textStyle'];
+  const FORMAT_MARKS = ['bold', 'italic', 'underline', 'strike', 'superscript', 'subscript', 'textStyle'];
   const PARAGRAPH_TYPES = ['paragraph', 'heading'];
   const MULTI_CLICK_MS = 700; // un clic qui suit de moins que cela le double-clic qui vient de peindre un mot en est le troisième : le triple-clic
 
@@ -59,15 +61,16 @@ const FormatPainter = (function () {
     let marks = null;
     let block = null;
     let whole = false;
+    let indentable = true;
     if (selection.empty) {
       marks = state.storedMarks || selection.$from.marks();
-      if (selection.$from.parent.isTextblock) { block = selection.$from.parent; whole = true; }
+      if (selection.$from.parent.isTextblock) { block = selection.$from.parent; whole = true; indentable = ParagraphFormat.indentableAt(selection.$from); }
     } else {
       selection.ranges.some(range => {
         const from = range.$from.pos;
         const to = range.$to.pos;
         doc.nodesBetween(from, to, (node, pos) => {
-          if (!block && node.isTextblock) { block = node; whole = coversBlock(from, to, pos, node); }
+          if (!block && node.isTextblock) { block = node; whole = coversBlock(from, to, pos, node); indentable = ParagraphFormat.indentableAt(doc.resolve(pos)); }
           if (!marks && node.isInline) marks = node.marks;
           return !(block && marks);
         });
@@ -75,7 +78,7 @@ const FormatPainter = (function () {
       });
     }
     const paragraph = block && whole && PARAGRAPH_TYPES.indexOf(block.type.name) !== -1
-      ? { type: block.type.name, level: block.attrs.level || null, align: block.attrs.textAlign || null }
+      ? { type: block.type.name, level: block.attrs.level || null, align: block.attrs.textAlign || null, spacing: spacingOf(block, indentable) }
       : null;
     return { marks: formatMarksOf(marks), block: paragraph };
   }
@@ -105,6 +108,15 @@ const FormatPainter = (function () {
       const want = snap.block;
       const attrs = Object.assign({}, node.attrs);
       attrs.textAlign = want.align; // null = pas d'alignement posé : une source à gauche remet à gauche un paragraphe centré
+      // L'interligne, les espaces avant et après et les retraits (« Paragraphe… », js/paragraph-format.js) suivent de même : une source sans réglage les retire à la cible. Seul un paragraphe en
+      // porte ; une légende garde sa mise en page fixe. Les retraits ne se posent que hors d'une liste et d'une citation : là, ceux que la cible garde endormis ne bougent pas.
+      if (!node.attrs.caption && want.type === 'paragraph') {
+        Object.assign(attrs, want.spacing);
+        if (!ParagraphFormat.indentableAt(tr.doc.resolve(pos))) {
+          attrs.indentLeft = node.attrs.indentLeft;
+          attrs.indentFirst = node.attrs.indentFirst;
+        }
+      }
       let type = node.type;
       const wantedType = schema.nodes[want.type];
       const $pos = tr.doc.resolve(pos);
@@ -118,6 +130,14 @@ const FormatPainter = (function () {
     });
     return { tr, reachable };
   }
+
+  // Les cinq réglages « Paragraphe… » d'un bloc : { lineHeight, spaceBefore, spaceAfter, indentLeft, indentFirst }, null pour ce qui n'est pas réglé (un titre n'en a aucun). Les deux retraits ne
+  // comptent que dans un paragraphe hors d'une liste et d'une citation (`indentable`) : ailleurs ils dorment, et la source n'en montre aucun.
+  const settingOf = (block, key) => (block.attrs[key] == null ? null : block.attrs[key]);
+  const spacingOf = (block, indentable) => ({
+    lineHeight: settingOf(block, 'lineHeight'), spaceBefore: settingOf(block, 'spaceBefore'), spaceAfter: settingOf(block, 'spaceAfter'),
+    indentLeft: indentable ? settingOf(block, 'indentLeft') : null, indentFirst: indentable ? settingOf(block, 'indentFirst') : null,
+  });
 
   function refresh() {
     document.documentElement.classList.toggle(ARMED_CLASS, armed);
@@ -159,6 +179,17 @@ const FormatPainter = (function () {
     if (tr.docChanged || tr.selectionSet) editor.view.dispatch(tr);
     editor.view.focus();
     if (armed && !sticky) disarm();
+    return true;
+  }
+
+  // Pose `snap` (la forme que rend `capture`) sur la sélection de l'éditeur `ed`, en une seule transaction : un Ctrl+Z la défait. Les mises en forme gardées (js/format-slots.js) passent par là, comme le pinceau.
+  // Vrai quand il y avait du texte à mettre en forme (même s'il l'était déjà) ; faux, sans rien changer, sur une sélection vide ou sans texte.
+  function paint(ed, snap) {
+    if (!ed || !snap || !ed.isEditable) return false;
+    const { tr, reachable } = paintTransaction(ed.state, snap, null);
+    if (!reachable) return false;
+    if (tr.docChanged || tr.selectionSet) ed.view.dispatch(tr);
+    ed.view.focus();
     return true;
   }
 
@@ -224,12 +255,16 @@ const FormatPainter = (function () {
     document.addEventListener('mousedown', onMouseDown, true);
     document.addEventListener('mouseup', onMouseUp, true);
     document.addEventListener('keydown', onKeyDown);
-    new MutationObserver(stopWhenGreyed).observe(button, { attributes: true, attributeFilter: ['class', 'disabled', 'hidden'] });
+    // Le grisé se pose sur le bouton ou, depuis que son menu des mises en forme gardées l'entoure (#v2-painter-group), sur ce groupe : les deux sont suivis.
+    const greyed = new MutationObserver(stopWhenGreyed);
+    greyed.observe(button, { attributes: true, attributeFilter: ['class', 'disabled', 'hidden'] });
+    const group = button.closest('.v2-hover-group');
+    if (group) greyed.observe(group, { attributes: true, attributeFilter: ['class', 'hidden'] });
     refresh();
   }
 
   return {
-    wire, copy, apply, arm, disarm,
+    wire, copy, apply, arm, disarm, capture, paint, isUsable,
     isArmed: () => armed,
     isSticky: () => armed && sticky,
     hasCopy: () => !!snapshot,

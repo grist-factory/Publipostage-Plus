@@ -1,0 +1,801 @@
+// Graphique de la page : un graphique que la personne a réglé dans Grist (type, colonnes, tri, filtres : le panneau de Grist, rien n'est recopié ici) posé
+// dans le document. Grist ne laisse pas un widget afficher ou capturer un autre widget de la page, et un cadre ne sort ni en PDF ni en Word : le graphique
+// est donc redessiné d'après ses réglages (chart-source.js les lit, chart-plot.js trace avec le même moteur que Grist). C'est une image
+// `img.editor-image` comme les autres (taille, alignement, calque, opacité, exports PDF et Word : rien de nouveau), qui porte en plus ses références :
+// `data-chart-section` (le numéro de la section de Grist), `data-chart-scope` (« linked » : les lignes liées à la ligne du document, par la règle de liaison
+// des tables ; « all » : toute la table) et `data-chart-name` (le nom montré dans le cadre) - attributs `chartSection`, `chartScope` et `chartName` du nœud,
+// js/editor-nodes.js. Le nœud n'a pas d'image : le graphique est dessiné à la Lecture et à l'export pour la ligne affichée (resolveImage, appelé par
+// js/reader-mode.js), jamais enregistré dans le modèle. Le document suit donc le graphique de Grist : changer son type ou ses colonnes là-bas change le
+// document ; un graphique supprimé laisse « [Graphique indisponible] ». Sans ligne à tracer, il disparaît comme une image sans pièce jointe.
+// Dans l'éditeur, le cadre pointillé (comme celui d'une image de variable) est remplacé par le même dessin dès qu'il est prêt (paintFrame), à l'écran
+// seulement : « toute la table » ne dépend d'aucune ligne, « lignes liées » est tracé pour la ligne que Grist affiche et redessiné quand elle change.
+// La fenêtre « Graphique de la page… » s'ouvre depuis le menu « Lien et blocs de contenu » (index.html, js/main-toolbar.js) ; styles dans
+// extensions/graphique/chart-block.css.
+// Le graphique CRÉÉ dans le modèle (« Créer un graphique… », chart-make.js et chart-make-ui.js) suit le même chemin : son nœud porte `data-chart-spec` (sa définition) à la place de `data-chart-section`,
+// `drawMade` lit ses lignes et le trace avec ECharts, et le cadre, la Lecture et les exports le traitent comme celui de la page. Il en tire aussi le modèle d'Office (chart-office.js), que la Lecture et l'export posent dans l'attribut `data-chart-office` de
+// l'image : Word le refait en graphique natif et modifiable (js/docx-export.js), l'image PNG restant celle de tout le reste.
+// Ce fichier fait partie de l'extension « graphique » (extensions/graphique/), que Grist Factory Suite active ou non : le reste du widget ne l'appelle jamais directement mais par
+// js/chart-entry.js, qui garde la forme du graphique (le nœud, la taille du cadre, le grisé) et répond aussi quand l'extension est absente.
+const ChartBlock = (function () {
+  const el = Dom.el;
+
+  const DEFAULT_WIDTH_PX = ChartEntry.DEFAULT_WIDTH_PX;
+  const DEFAULT_HEIGHT_PX = ChartEntry.DEFAULT_HEIGHT_PX;
+  const PREVIEW_DELAY_MS = 120;
+  const TYPE_KEYS = ['bar', 'line', 'area', 'scatter', 'pie', 'donut', 'kaplan_meier', 'custom'];
+
+  // Le dessin
+  function problem(kind, message) {
+    const error = new Error(message);
+    error.kind = kind;
+    return error;
+  }
+
+  // Les dessins déjà faits. Un dessin ne dépend que de ce qui le décrit : la définition (ou la figure) du graphique, les valeurs qu'il trace, sa taille et la langue de l'interface (qui écrit les nombres et les
+  // noms des marches). Tant que ces quatre-là sont les mêmes, le PNG est le même octet pour octet (police du système, échelle fixe), et le refaire coûte 100 ms et plus par graphique (ECharts ou Plotly, puis
+  // l'encodage du PNG à 3 pixels par pixel). L'éditeur, la Lecture, le diaporama, le retour en édition et les exports le redemandent chacun : ils lisent toujours les lignes de Grist d'aujourd'hui (un graphique
+  // dont les données ont bougé a une autre clé et se redessine), mais ne repassent par le moteur de dessin que pour un dessin qu'on n'a pas. Les dessins gardés sont les derniers demandés, au plus DRAWN_MAX ;
+  // un dessin raté n'est jamais gardé.
+  const DRAWN_MAX = 64;
+  const DRAWN_CHARS_MAX = 40000000;   // le poids des adresses `data:` gardées (un caractère chacune) : une présentation de grands graphiques n'en garde pas des dizaines de Mo
+  const drawings = new Map();   // clé -> { promise, size }, le plus récemment demandé en dernier
+  // Un résumé de 64 bits d'un texte (cyrb53), pour que la clé reste courte quelles que soient les valeurs tracées.
+  function digest(text) {
+    let h1 = 0xdeadbeef ^ text.length;
+    let h2 = 0x41c6ce57 ^ text.length;
+    for (let i = 0; i < text.length; i++) {
+      const code = text.charCodeAt(i);
+      h1 = Math.imul(h1 ^ code, 2654435761);
+      h2 = Math.imul(h2 ^ code, 1597334677);
+    }
+    h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+    h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+    return (h2 >>> 0).toString(36) + (h1 >>> 0).toString(36) + '.' + text.length.toString(36);
+  }
+  // Les plus anciens s'en vont quand il y en a plus de DRAWN_MAX ou qu'ils pèsent plus que DRAWN_CHARS_MAX ; le dernier demandé reste toujours.
+  function trimDrawings() {
+    let total = 0;
+    drawings.forEach((entry) => { total += entry.size; });
+    while (drawings.size > 1 && (drawings.size > DRAWN_MAX || total > DRAWN_CHARS_MAX)) {
+      const oldest = drawings.keys().next().value;
+      total -= drawings.get(oldest).size;
+      drawings.delete(oldest);
+    }
+  }
+  // Le dessin de ce que décrit `parts` : celui qu'on a gardé, ou celui que `make` fait (une promesse de { uri, office? } ou { empty: true }). Chacun reçoit sa copie de la réponse.
+  function once(parts, make) {
+    let key;
+    try { key = digest(JSON.stringify(parts)); } catch (e) { return make(); }
+    let kept = drawings.get(key);
+    if (kept) drawings.delete(key);
+    else {
+      kept = { size: 0, promise: null };
+      kept.promise = make().then((result) => {
+        kept.size = result && typeof result.uri === 'string' ? result.uri.length : 0;
+        trimDrawings();
+        return result;
+      }, (error) => {
+        if (drawings.get(key) === kept) drawings.delete(key);
+        throw error;
+      });
+    }
+    drawings.set(key, kept);
+    trimDrawings();
+    return kept.promise.then(result => Object.assign({}, result));
+  }
+  // Oublie tous les dessins gardés : un essai qui compte les appels au moteur de dessin, ou qui le fait échouer, repart d'une mémoire vide.
+  function forgetDrawings() { drawings.clear(); }
+
+  // Dessine le graphique de la section `id` pour la ligne `record` : { uri } (le PNG, adresse `data:`) ou { empty: true } quand il n'y a aucune ligne à
+  // tracer. Lève une erreur dont `kind` dit ce qui manque : « chart » (graphique supprimé ou plus redessinable), « rows » (lignes illisibles), sinon la
+  // bibliothèque ou le dessin.
+  // Le dessin se fait en deux temps : la lecture (ce que Grist dit du graphique et de ses lignes : des allers-retours qui ne prennent pas le fil principal) et le dessin (le moteur, qui le prend). Le cadre de l'éditeur
+  // lance la lecture de tous ses graphiques d'un coup (paintAll) : elle part avant son tour de dessin.
+  async function foundRows(spec, scope, tableId, record) {
+    try { return await ChartSource.rows(spec, scope, tableId, record); }
+    catch (e) { throw problem('rows', e && e.message ? e.message : 'Lignes illisibles'); }
+  }
+  async function readPlot(id, scope, tableId, record) {
+    const spec = await ChartSource.read(id);
+    if (!spec) throw problem('chart', 'Graphique introuvable : ' + id);
+    if (spec.unsupported) throw problem('chart', 'Graphique non redessiné : ' + spec.unsupported);
+    return { spec, found: await foundRows(spec, scope, tableId, record) };
+  }
+  async function readMade(def, scope, tableId, record) {
+    const spec = def && await ChartSource.made(def);
+    if (!spec) throw problem('chart', 'Graphique créé illisible ou sans table : ' + (def ? def.table : ''));
+    return { spec, found: await foundRows(spec, scope, tableId, record) };
+  }
+  function drawPlot(read, width, height) {
+    if (!read.found.length) return { empty: true };
+    const figure = ChartPlot.figure(read.spec.type, ChartSource.series(read.spec, read.found), read.spec.options);
+    return once(['plot', I18n.getLang(), figure, width, height], async () => ({ uri: await ChartPlot.toImage(figure, width, height) }));
+  }
+  function drawMadeFrom(def, read, width, height) {
+    if (!read.found.length) return { empty: true };
+    const series = ChartSource.series(read.spec, read.found);
+    return once(['made', I18n.getLang(), def, series, width, height], async () => {
+      const made = { uri: await ChartMake.toImage(ChartMake.option(def, series, { width, height }), width, height) };
+      // Le modèle d'Office du même graphique (chart-office.js) : ce que Word, PowerPoint et Excel refont en graphique natif et modifiable. Un graphique qu'il ne sait pas dire (un nuage dont l'abscisse est du texte, plus de
+      // 2 000 étiquettes) n'en a pas : il sort en image, et un modèle qui ne se construit pas ne gâte jamais le dessin.
+      try { made.office = ChartOffice.model(def, series); } catch (e) { console.warn('[ChartBlock] modèle d\'Office impossible', e); }
+      return made;
+    });
+  }
+  async function draw(id, scope, tableId, record, width, height) {
+    return drawPlot(await readPlot(id, scope, tableId, record), width, height);
+  }
+
+  // Dessine le graphique CRÉÉ `def` (chart-make.js) pour la ligne `record` : { uri } ou { empty: true }, avec les mêmes erreurs que `draw` (`kind` « chart » : la définition est illisible ou sa table, une de
+  // ses colonnes n'existe plus).
+  async function drawMade(def, scope, tableId, record, width, height) {
+    return drawMadeFrom(def, await readMade(def, scope, tableId, record), width, height);
+  }
+
+  // À la Lecture et à l'export
+  // Dessine le graphique de `img` (un cadre sans image du modèle) pour la ligne `record`. Dans une zone répétée il n'est pas lié à la ligne du tour (il n'est pas
+  // dans BOUND_SELECTOR de js/loop-rules.js) : à chaque tour, c'est le graphique de la ligne affichée.
+  // Sans ligne à tracer il disparaît ; supprimé, illisible ou sans bibliothèque, il laisse une note dans la langue de l'interface (la Lecture et les exports
+  // écrivent ce message, pas une image cassée).
+  async function resolveImage(img, tableId, record) {
+    if (!ChartEntry.needsImage(img)) return;
+    const size = ChartEntry.sizeOf(img);
+    const scope = img.getAttribute('data-chart-scope') === 'all' ? 'all' : 'linked';
+    const made = img.getAttribute('data-chart-spec');
+    let drawn;
+    try {
+      drawn = made ? await drawMade(ChartMake.parse(made), scope, tableId, record, size.width, size.height)
+        : await draw(Number(img.getAttribute('data-chart-section')), scope, tableId, record, size.width, size.height);
+    } catch (e) {
+      console.warn('[ChartBlock] graphique indisponible', e);
+      ChartEntry.noteInPlaceOf(img, 'chart.doc.unavailable');
+      return;
+    }
+    if (drawn.empty) { img.remove(); return; }
+    img.setAttribute('src', drawn.uri);
+    // Le modèle d'Office voyage avec l'image jusqu'aux exports (Word, PowerPoint, Excel le lisent sur l'attribut : ils reçoivent le HTML en texte) ; le HTML, le Markdown et le PDF ne le copient pas.
+    if (drawn.office) img.setAttribute('data-chart-office', JSON.stringify(drawn.office));
+    // Le PNG a exactement les proportions réglées : sans hauteur fixe, un graphique plus large que sa case rétrécit sans se déformer.
+    img.style.width = size.width + 'px';
+    img.style.height = '';
+    img.style.setProperty('aspect-ratio', size.width + ' / ' + size.height);
+  }
+
+  // Dans l'éditeur
+  // Le cadre : son dessin
+  // Le cadre d'un graphique (js/editor-nodes.js, applyImageAttrs) montre le dessin dès qu'il est prêt : « toute la table » ne dépend d'aucune ligne, « liées » est
+  // tracé pour la ligne que Grist affiche. Le dessin n'est que l'`src` de l'<img> du cadre à l'écran, jamais un attribut du nœud : le modèle reste sans image et le
+  // document suit toujours le graphique de Grist. Quand il n'y a rien à dessiner (aucune ligne sélectionnée pour « liées », rien à tracer, graphique supprimé ou
+  // illisible, bibliothèque absente), le cadre pointillé reste. Rien ne prévient le widget quand les données d'une autre table changent : le dessin est refait à
+  // l'ouverture du modèle, au changement de taille, au changement de ligne (« liées »), aux valeurs de la ligne qui changent (tous), au clic sur le cadre et au
+  // retour en édition ; la Lecture, elle, redessine toujours.
+  // Seuls les cadres qu'on voit, ou qu'on verra tout de suite, se dessinent : ceux qui sont dans le champ de l'éditeur ou à deux écrans de lui (`near`, IntersectionObserver), et ceux dont une copie de l'éditeur
+  // a besoin (`asked` : les miniatures de la bande des diapositives et les vues de diapositive, par `demand`). Une présentation de douze graphiques en dessinait douze à l'ouverture (une seconde de travail, des
+  // dizaines de Mo) pour en montrer un ou deux ; les autres se dessinent quand on s'en approche. Sans IntersectionObserver, ou hors de l'éditeur, tous les cadres sont « tout près », comme avant.
+  // Un dessin prend le fil principal 30 à 80 ms : il ne se fait jamais pendant un défilement (molette, clavier, barre, miniature : `moving`), il attend que la page soit calme (SCROLL_QUIET_MS sans défilement) ; c'est
+  // pour cela qu'on dessine deux écrans d'avance, dans les pauses du défilement, plutôt qu'un seul écran d'avance au moment d'y arriver (3 à 6 à-coups de 65 à 200 ms à la molette dans une présentation). Les
+  // lectures de Grist de tous les cadres à dessiner partent ensemble (chacune attendait celle du cadre d'avant : 300 ms de latence, cinq graphiques prêts en 1,9 s au lieu de 0,6 s), puis les dessins se font
+  // un par tâche, les cadres qu'on voit en premier.
+  // Au repos (la page n'a pas défilé depuis IDLE_DRAW_AFTER_MS et n'a reçu ni frappe, ni clic, ni toucher depuis quelques secondes), les cadres loin du champ se dessinent aussi, un à la fois, les plus proches de la vue d'abord, IDLE_DRAW_GAP_MS entre
+  // deux dessins et quand le navigateur n'a rien d'autre à faire (requestIdleCallback) : la première Lecture, le diaporama et les exports les trouvent dans la mémoire des dessins au lieu de les dessiner (de 0,3 à
+  // 0,5 s de plus à la première Lecture de « Présentation commerciale »). Un geste ou un défilement arrête la file après le dessin en cours ; elle repart au prochain repos.
+  const FRAME_DELAY_MS = 120;
+  const FRAME_DRAW_LIMIT_MS = 20000;
+  const FRAME_AHEAD = '200% 0px';   // deux écrans de plus au-dessus et au-dessous du champ de l'éditeur
+  const SCROLL_QUIET_MS = 150;      // le temps sans défilement avant un dessin (une animation de défilement dure moins)
+  const SCROLL_PATIENCE_MS = 8000;  // ce qu'un défilement continu retient les dessins, au plus
+  const IDLE_DRAW_AFTER_MS = 2000;  // le repos qu'il faut à la page (ni défilement, ni geste) avant de dessiner ce que personne ne voit
+  const IDLE_DRAW_GAP_MS = 250;     // et le temps laissé au navigateur entre deux de ces dessins
+  const IDLE_RECHECK_MS = 1000;     // le temps entre deux coups d'œil pour voir si le dernier geste (frappe, clic, toucher) est assez ancien
+  const frames = new Set();   // les cadres vivants (l'objet `view` de js/editor-nodes.js : wrap, img, chart)
+  const watched = new Map();   // l'élément du cadre (`wrap`) -> son `view`, pour ceux que l'observateur suit
+  let nearObserver = null;
+  let nearRoot = null;
+  let frameTimer = 0;
+  let frameRunning = false;
+  let frameAgain = false;
+  let framesListen = false;
+  let lastMoveAt = -Infinity;   // l'heure du dernier défilement (ou coup de molette) vu dans la page
+  let moveStartedAt = -Infinity;   // et celle du début de ce défilement
+  let idleDrawing = true;   // le dessin au repos est-il permis (setIdleDrawing)
+  let idleTimer = 0;
+  let idleRunning = false;
+  let lastRowId;
+
+  // Ce que le nœud demande : { id, spec, def, scope, width, height }, ou null quand ce n'est pas un graphique sans image. Un graphique de la page a le numéro de sa section (`id`) ; un graphique créé
+  // sa définition (`spec`, le texte du nœud, et `def`, lue ; nulle quand elle est illisible).
+  function wantedOf(attrs) {
+    if (!attrs || attrs.src) return null;
+    const spec = attrs.chartSpec ? String(attrs.chartSpec) : '';
+    const id = spec ? 0 : Number(attrs.chartSection);
+    if (!spec && !id) return null;
+    const size = ChartEntry.sizeOfAttrs(attrs);
+    return { id, spec, def: spec ? ChartMake.parse(spec) : null, scope: attrs.chartScope === 'all' ? 'all' : 'linked', width: size.width, height: size.height };
+  }
+  // Le dessin dépend de la section (ou de la définition), des lignes, de la taille et, pour « liées », de la ligne affichée.
+  const keyOf = (want, record) => [want.spec || want.id, want.scope, want.width, want.height, want.scope === 'linked' && record ? record.id : ''].join('|');
+  const isShown = view => view.wrap.isConnected && view.wrap.getClientRects().length > 0;
+  // Le cadre est-il à dessiner maintenant : dans le champ de l'éditeur (ou à un écran de lui), ou demandé par une copie ? `near` vaut null tant que l'observateur n'a pas dit où il est (au départ, et au retour
+  // en édition, où le champ vient de se rouvrir) : on ne sait pas, le cadre n'est ni dessiné ni oublié.
+  const isWanted = view => !!view.chart && (view.chart.near === true || view.chart.asked);
+
+  const nextTask = () => new Promise(resolve => setTimeout(resolve, 0));
+  function withLimit(work, ms) {
+    let timer;
+    const limit = new Promise((resolve, reject) => { timer = setTimeout(() => reject(new Error('Dessin trop long')), ms); });
+    return Promise.race([work, limit]).finally(() => clearTimeout(timer));
+  }
+  // La page défile-t-elle (la molette, la barre, le clavier, une miniature qu'on a cliquée) ? Les événements `scroll` et `wheel` de toute la page, vus à la capture (`scroll` ne remonte pas). Un défilement qui dure
+  // plus de SCROLL_PATIENCE_MS d'affilée (ou des événements de défilement qui ne s'arrêtent pas) ne retient pas les dessins pour toujours : ils se font quand même.
+  const noteMove = () => {
+    const now = performance.now();
+    if (now - lastMoveAt >= SCROLL_QUIET_MS) moveStartedAt = now;
+    lastMoveAt = now;
+  };
+  const moving = () => {
+    const now = performance.now();
+    return now - lastMoveAt < SCROLL_QUIET_MS && now - moveStartedAt < SCROLL_PATIENCE_MS;
+  };
+  // Rend la main quand la page ne défile plus depuis SCROLL_QUIET_MS.
+  async function quiet() {
+    while (moving()) await new Promise(resolve => setTimeout(resolve, SCROLL_QUIET_MS - (performance.now() - lastMoveAt) + 1));
+  }
+
+  // `force` : les dessins sont refaits d'après les lignes d'aujourd'hui même si rien n'a changé (chaque cadre le garde jusqu'à son tour, quand il est loin).
+  function scheduleFrames(force, delay) {
+    if (force) frames.forEach((view) => { if (view.chart) view.chart.forced = true; });
+    clearTimeout(frameTimer);
+    frameTimer = setTimeout(runFrames, delay === undefined ? FRAME_DELAY_MS : delay);
+  }
+
+  // Le suivi du champ de l'éditeur : un cadre est suivi dès qu'il est affiché dans #editor-container (son `wrap` n'y est pas encore quand le nœud le crée). Sans IntersectionObserver, ou dans un autre
+  // conteneur, il est « tout près » une fois pour toutes.
+  function watchNear(view) {
+    const state = view.chart;
+    if (!state || state.watched) return;
+    state.watched = true;
+    const root = view.wrap.closest('#editor-container');
+    if (typeof IntersectionObserver !== 'function' || !root || (nearRoot && nearRoot !== root)) { state.near = true; return; }
+    if (!nearObserver) { nearRoot = root; nearObserver = new IntersectionObserver(onNear, { root, rootMargin: FRAME_AHEAD }); }
+    watched.set(view.wrap, view);
+    nearObserver.observe(view.wrap);
+  }
+  function unwatch(view) {
+    if (!watched.delete(view.wrap) || !nearObserver) return;
+    nearObserver.unobserve(view.wrap);
+  }
+  // Des cadres entrent dans le champ (ou en sortent, ou l'observateur dit enfin où ils sont) : ceux qui arrivent se dessinent après une courte pause, pas pendant un défilement rapide (chaque changement repousse
+  // la minuterie), ceux qui s'éloignent et dont le dessin n'est plus d'aujourd'hui sont oubliés (`forget`).
+  function onNear(entries) {
+    let changed = false;
+    entries.forEach((entry) => {
+      const view = watched.get(entry.target);
+      if (!view || !view.chart) return;
+      if (view.chart.near !== entry.isIntersecting) changed = true;
+      view.chart.near = entry.isIntersecting;
+    });
+    if (changed) scheduleFrames(false);
+  }
+  // Le cadre montre-t-il le dessin d'aujourd'hui (celui de sa clé, qu'aucune ligne ni aucune valeur n'a changé depuis) ?
+  const isCurrent = view => !!view.chart && !!view.chart.want && !!view.chart.uri && !view.chart.forced
+    && view.chart.key === keyOf(view.chart.want, view.chart.want.scope === 'linked' ? GristAPI.getCurrentRecord() : null);
+  // Un cadre loin du champ n'est pas redessiné quand une ligne ou des valeurs changent : il ne garde pas pour autant le dessin d'avant, qu'on verrait un instant en y arrivant. Il redevient le cadre pointillé
+  // (rien n'est visible : il est loin), et se dessine quand on y arrive. Jamais un cadre dont on ne sait pas encore où il est (`near` null) : il peut être à l'écran, et garde son image jusqu'à son tour.
+  function forget(view) {
+    const state = view.chart;
+    if (!state || state.near !== false || !state.uri || isCurrent(view)) return;
+    state.uri = '';
+    state.key = '';
+    if (state.repaint) state.repaint();
+  }
+  // Une copie de l'éditeur va montrer ce que porte `root` (un bloc de l'éditeur : la miniature d'une diapositive dans la bande, la vue d'une diapositive) : les graphiques qui n'y sont pas encore dessinés le
+  // sont, et la copie se refait quand leur dessin arrive (ChartEntry.PAINTED_EVENT).
+  function demand(root) {
+    let due = false;
+    frames.forEach((view) => {
+      const state = view.chart;
+      if (!state || !root.contains(view.wrap)) return;
+      state.asked = true;
+      if (!isCurrent(view)) due = true;
+    });
+    if (due) scheduleFrames(false, 0);
+  }
+
+  // Une ligne arrive de Grist : une autre ligne change les graphiques « liées » (la clé du dessin), la même ligne a de nouvelles valeurs.
+  function onRow(record) {
+    const id = record ? record.id : undefined;
+    const moved = id !== lastRowId;
+    lastRowId = id;
+    if (frames.size) scheduleFrames(!moved);
+  }
+
+  async function runFrames() {
+    if (frameRunning) { frameAgain = true; return; }
+    frameRunning = true;
+    try {
+      do {
+        // Pas pendant un défilement : un dessin fige la page, il attend l'arrêt. Les cadres qu'on a dépassés en défilant n'ont plus à se dessiner : ce qui est à dessiner se calcule après l'attente.
+        await quiet();
+        frameAgain = false;
+        // Un éditeur caché (la Lecture) ne dessine rien ; le retour en édition (refreshEditor) rattrape. Les cadres affichés sont suivis ; seuls ceux qu'on voit ou qui sont demandés se dessinent.
+        const shown = Array.from(frames).filter(isShown);
+        shown.forEach(watchNear);
+        const due = shown.filter(isWanted);
+        shown.forEach((view) => { if (!isWanted(view)) forget(view); });
+        if (due.length) await paintAll(due);
+      } while (frameAgain);
+    } finally { frameRunning = false; scheduleIdle(); }
+  }
+
+  // Les cadres, ceux qu'on voit d'abord : par leur distance au champ de l'éditeur (zéro dans le champ), dans l'ordre du document à distance égale.
+  function byDistance(list) {
+    const root = nearRoot ? nearRoot.getBoundingClientRect() : null;
+    const distance = new Map(list.map((view) => {
+      if (!root) return [view, 0];
+      const box = view.wrap.getBoundingClientRect();
+      return [view, box.bottom < root.top ? root.top - box.bottom : (box.top > root.bottom ? box.top - root.bottom : 0)];
+    }));
+    return list.slice().sort((a, b) => distance.get(a) - distance.get(b));
+  }
+
+  // Le dessin de `due`, en trois temps : les lectures de Grist de tous les cadres partent ensemble (une table ne se lit qu'une fois dans le rendu, et le premier cadre ne fait plus attendre les autres) ; puis un dessin par
+  // tâche, la main rendue entre deux (cinq dessins de 80 ms ne font pas une tâche de 400 ms qui fige la page) ; un défilement qui reprend arrête la file, refaite à son arrêt.
+  async function paintAll(due) {
+    const tableId = GristAPI.getCurrentTableId();
+    const plans = await GristAPI.withReadPass(async () => {
+      const made = byDistance(due).map(view => planOf(view, tableId)).filter(Boolean);
+      await Promise.all(made.map(plan => plan.reading && plan.reading.catch(() => null)));
+      return made;
+    });
+    for (let i = 0; i < plans.length; i++) {
+      if (moving()) { plans.slice(i).forEach(undoPlan); frameAgain = true; return; }
+      if (!frames.has(plans[i].view) || !isWanted(plans[i].view)) { undoPlan(plans[i]); continue; }
+      if (await finishOne(plans[i])) await nextTask();
+    }
+  }
+
+  // Le dessin au repos. `needsDrawing` : le cadre n'a pas le dessin d'aujourd'hui (la règle de `planOf`, sans rien consommer) ; `idleTargets` : ceux que le champ n'atteint pas (l'observateur les dit loin), affichés,
+  // que rien ne demande. Le repos : le dessin est permis, la page est visible et sans défilement ni geste depuis IDLE_DRAW_AFTER_MS.
+  function needsDrawing(view) {
+    const state = view.chart;
+    const want = state && state.want;
+    if (!want) return false;
+    return state.forced || state.key !== keyOf(want, want.scope === 'linked' ? GristAPI.getCurrentRecord() : null);
+  }
+  const idleTargets = () => Array.from(frames).filter(view => isShown(view) && view.chart && view.chart.near === false && !isWanted(view) && needsDrawing(view));
+  // Combien de dessins de plus la mémoire des dessins peut garder pour cette page : une présentation de plus de DRAWN_MAX graphiques ne les garde pas tous, et un dessin de plus ferait partir le plus ancien (que
+  // la Lecture refait). Le dessin au repos s'arrête donc quand les cadres de la page en ont autant que la mémoire en garde, et ne prend plus de place quand elle pèse près de DRAWN_CHARS_MAX.
+  function idleRoom() {
+    let held = 0;
+    let chars = 0;
+    frames.forEach((view) => {
+      const state = view.chart;
+      if (state && state.key && state.uri) { held += 1; chars += state.uri.length; }
+    });
+    return chars > DRAWN_CHARS_MAX * 0.8 ? 0 : Math.max(0, DRAWN_MAX - held);
+  }
+  // Les gestes (frappe, clic, toucher) : l'activation de l'utilisateur du navigateur (`navigator.userActivation`, vraie pendant quelques secondes après chacun) les dit sans écouteur sur la page. Trois écouteurs de
+  // frappe et de clic (keydown, pointerdown, input) posés sur `document` ajoutaient 25 ms à chaque touche tapée dans une présentation de 39 diapositives (la touche et la saisie, 3 ms et 0 ms avant) : ils sont proscrits ici.
+  // Un navigateur sans `userActivation` (Firefox avant 120) ne dessine rien au repos : il garde le dessin à la demande.
+  const canRest = () => typeof navigator !== 'undefined' && !!navigator.userActivation;
+  const gestured = () => !!(navigator.userActivation && navigator.userActivation.isActive);
+  const atRest = () => idleDrawing && canRest() && document.visibilityState !== 'hidden' && !gestured() && performance.now() - lastMoveAt >= IDLE_DRAW_AFTER_MS;
+  // Rend la main quand le navigateur n'a rien d'autre à faire (sans requestIdleCallback : à la tâche suivante). Sans délai maximal : une page qui ne souffle jamais ne dessine pas ce que personne ne voit.
+  const idleSlot = () => new Promise(resolve => (typeof requestIdleCallback === 'function' ? requestIdleCallback(() => resolve()) : setTimeout(resolve, 0)));
+  const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
+  function scheduleIdle(delay) {
+    clearTimeout(idleTimer);
+    if (idleDrawing && canRest() && frames.size) idleTimer = setTimeout(runIdle, delay === undefined ? IDLE_DRAW_AFTER_MS : delay);
+  }
+  async function runIdle() {
+    if (idleRunning || frameRunning || !idleDrawing) return;
+    if (!atRest()) {
+      // Pas encore au repos (un geste ou un défilement vient d'avoir lieu) : on revient voir un peu plus tard ; page cachée : au retour (visibilitychange).
+      if (idleDrawing && canRest() && document.visibilityState !== 'hidden') scheduleIdle(gestured() ? IDLE_RECHECK_MS : Math.max(200, IDLE_DRAW_AFTER_MS - (performance.now() - lastMoveAt)));
+      return;
+    }
+    idleRunning = true;
+    try {
+      // Les plus proches de la vue d'abord, pas plus que la mémoire des dessins n'en garde.
+      const room = idleRoom();
+      const far = room > 0 ? byDistance(idleTargets()).slice(0, room) : [];
+      if (far.length) await paintIdle(far);
+    } catch (e) { console.warn('[ChartBlock] dessin au repos', e); }
+    finally { idleRunning = false; }
+    // Ce qui reste (la file arrêtée par un geste, un cadre de plus) reprend au prochain repos.
+    if (idleRoom() > 0 && idleTargets().length) scheduleIdle();
+  }
+  // Comme `paintAll` : les lectures de Grist de tous ces cadres (`far`, déjà par distance) partent ensemble, puis un dessin à la fois, mais chacun attend un moment où le navigateur n'a rien d'autre à faire et la page
+  // encore au repos, et laisse IDLE_DRAW_GAP_MS derrière lui. Un cadre qu'on approche en défilant (il devient « à dessiner ») est laissé à la file ordinaire.
+  async function paintIdle(far) {
+    const tableId = GristAPI.getCurrentTableId();
+    const plans = await GristAPI.withReadPass(async () => {
+      const made = far.map(view => planOf(view, tableId)).filter(Boolean);
+      await Promise.all(made.map(plan => plan.reading && plan.reading.catch(() => null)));
+      return made;
+    });
+    for (let i = 0; i < plans.length; i++) {
+      await idleSlot();
+      const view = plans[i].view;
+      if (!atRest() || idleRoom() <= 0) { plans.slice(i).forEach(undoPlan); return; }
+      if (!frames.has(view) || !isShown(view) || isWanted(view)) { undoPlan(plans[i]); continue; }
+      await finishOne(plans[i]);
+      await pause(IDLE_DRAW_GAP_MS);
+    }
+  }
+  // Permet ou coupe le dessin au repos (les essais le coupent pour ne regarder que le dessin à la demande ; un réglage pourra le faire).
+  function setIdleDrawing(on) {
+    idleDrawing = !!on;
+    if (idleDrawing) scheduleIdle(); else clearTimeout(idleTimer);
+  }
+
+  // Le plan du dessin du cadre `view` s'il n'est pas à jour (sinon null) : sa clé, et sa lecture de Grist, déjà partie. « Liées » sans ligne sélectionnée : rien à tracer (pas de lecture), le cadre reste jusqu'à la prochaine ligne.
+  function planOf(view, tableId) {
+    const state = view.chart;
+    const want = state && state.want;
+    if (!want) return null;
+    const force = state.forced;
+    state.forced = false;
+    const record = want.scope === 'linked' ? GristAPI.getCurrentRecord() : null;
+    const key = keyOf(want, record);
+    if (!force && state.key === key) return null;
+    const token = ++state.token;
+    let reading = null;
+    if (want.scope === 'all' || record) {
+      reading = withLimit(want.spec ? readMade(want.def, want.scope, tableId, record) : readPlot(want.id, want.scope, tableId, record), FRAME_DRAW_LIMIT_MS);
+      reading.catch(() => {});   // l'erreur se dit au dessin du cadre (finishOne) ; un cadre qu'on ne dessine pas finalement n'en fait pas une erreur non gérée
+    }
+    return { view, state, want, force, key, token, reading };
+  }
+  // Un plan qu'on ne suit pas (le cadre n'est plus à voir, ou le défilement a repris) : la demande de redessin qu'il avait consommée reste à faire.
+  function undoPlan(plan) {
+    if (plan.force && plan.view.chart === plan.state) plan.state.forced = true;
+  }
+  // Dessine le cadre du plan : vrai quand il y a eu un dessin à faire (ou à relire dans la mémoire des dessins).
+  async function finishOne(plan) {
+    const { view, state, want, key, token } = plan;
+    let uri = '';
+    if (plan.reading) {
+      try {
+        const read = await plan.reading;
+        const drawn = await withLimit(want.spec ? drawMadeFrom(want.def, read, want.width, want.height) : drawPlot(read, want.width, want.height), FRAME_DRAW_LIMIT_MS);
+        uri = drawn.uri || '';
+      } catch (e) {
+        // Un graphique supprimé ou que le widget ne redessine pas garde son cadre sans bruit ; le reste (lignes illisibles, bibliothèque, dessin) se signale.
+        if (!e || e.kind !== 'chart') console.warn('[ChartBlock] cadre sans dessin', e);
+      }
+    }
+    // Le cadre a changé ou disparu pendant le dessin : le résultat n'est plus le sien.
+    if (token !== state.token || !frames.has(view)) return true;
+    Object.assign(state, { key, uri, id: want.id, spec: want.spec, scope: want.scope });
+    if (state.repaint) state.repaint();
+    return true;
+  }
+
+  // Appelée par applyImageAttrs à chaque mise à jour du cadre `view` d'un graphique : retient le cadre, demande son dessin quand il n'est pas à jour et rend
+  // l'adresse du dessin actuel ('' tant qu'il n'y en a pas, ou quand c'est celui d'un autre graphique) ; `repaint` remet le cadre à jour quand le dessin arrive.
+  function paintFrame(view, attrs, repaint) {
+    const want = wantedOf(attrs);
+    if (!want) { releaseFrame(view); return ''; }
+    const state = view.chart || (view.chart = { key: '', uri: '', id: 0, spec: '', scope: '', token: 0, attrs: null, want: null, repaint: null, near: null, asked: false, forced: false, watched: false });
+    state.attrs = attrs;
+    state.want = want;
+    state.repaint = repaint;
+    if (!frames.has(view)) {
+      frames.add(view);
+      if (!framesListen) {
+        framesListen = true;
+        GristAPI.onRecord(onRow);
+        document.addEventListener('scroll', noteMove, { capture: true, passive: true });
+        document.addEventListener('wheel', noteMove, { capture: true, passive: true });
+        document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') scheduleIdle(); });
+      }
+    }
+    if (state.key !== keyOf(want, want.scope === 'linked' ? GristAPI.getCurrentRecord() : null)) scheduleFrames(false, 0);
+    return state.id === want.id && state.spec === want.spec && state.scope === want.scope ? state.uri : '';
+  }
+  function releaseFrame(view) {
+    frames.delete(view);
+    unwatch(view);
+    if (view.chart) { view.chart.token += 1; view.chart.repaint = null; delete view.chart; }
+  }
+  // Le clic sur un cadre : son dessin est refait d'après les données d'aujourd'hui.
+  function refreshFrame(view) {
+    if (!view.chart || !frames.has(view)) return;
+    view.chart.key = '';
+    view.chart.asked = true;   // sélectionné : on le voit, même si l'observateur ne l'a pas encore dit
+    scheduleFrames(false, 0);
+  }
+  // Le retour en édition (js/main.js, switchMode) : la Lecture a pu changer de ligne ou de données pendant que les cadres étaient cachés.
+  // Le champ de l'éditeur s'est refermé avec lui (l'observateur disait « loin » de tous les cadres) : chaque cadre est « on ne sait pas » jusqu'à ce que l'observateur, relancé, dise où il est ; ceux qu'on voit gardent
+  // leur image en attendant, puis elle est refaite d'après les lignes d'aujourd'hui (la mémoire des dessins la rend), sans repasser par le cadre pointillé.
+  const refreshEditor = () => {
+    if (!frames.size) return;
+    frames.forEach((view) => { if (view.chart) view.chart.near = null; });
+    if (nearObserver) watched.forEach((view, wrap) => { nearObserver.unobserve(wrap); nearObserver.observe(wrap); });
+    scheduleFrames(true, 0);
+  };
+
+  // La fenêtre
+  let win = null;
+  let refs = null;
+  let state = null;
+  let picker = null;
+  let previewToken = 0;
+  let previewTimer = 0;
+
+  const radioOf = (name, value, onPick) => {
+    const label = el('label', 'pp-chart-option');
+    const input = el('input');
+    input.type = 'radio';
+    input.name = name;
+    input.value = value;
+    input.addEventListener('change', () => { if (input.checked) onPick(value); });
+    const text = el('span', 'pp-chart-option-name');
+    const detail = el('span', 'pp-chart-option-detail');
+    label.append(input, text, detail);
+    return { label, input, text, detail };
+  };
+
+  function ensure() {
+    if (win) return;
+    // restoreFocus: false : le focus revient à l'éditeur (closeWindow), pas à la ligne du menu - la sélection y est restée.
+    win = ModalBase.create({ id: 'pp-chart-modal', titleId: 'pp-chart-title', size: 'lg', boxClass: 'pp-chart-box', actionsClass: 'var-modal-actions', onEscape: () => closeWindow(), restoreFocus: false });
+    const grid = el('div', 'pp-chart-grid');
+    const form = el('div', 'pp-chart-form');
+    const pickLabel = el('label', 'pp-dialog-label');
+    pickLabel.htmlFor = 'pp-chart-pick';
+    const select = el('select', 'pp-chart-select');
+    select.id = 'pp-chart-pick';
+    select.setAttribute('aria-describedby', 'pp-chart-hint pp-chart-error');
+    const hint = el('p', 'pp-chart-note');
+    hint.id = 'pp-chart-hint';
+    const rows = el('fieldset', 'pp-chart-rows');
+    const rowsLegend = el('legend', 'pp-dialog-label');
+    const linked = radioOf('pp-chart-rows', 'linked', pickScope);
+    const all = radioOf('pp-chart-rows', 'all', pickScope);
+    rows.append(rowsLegend, linked.label, all.label);
+    const selectBy = el('p', 'pp-chart-note');
+    selectBy.hidden = true;
+    const error = el('p', 'pp-chart-note pp-chart-error');
+    error.id = 'pp-chart-error';
+    error.setAttribute('role', 'alert');
+    error.hidden = true;
+    form.append(pickLabel, select, hint, rows, selectBy, error);
+    const side = el('div', 'pp-chart-side');
+    const previewLabel = el('span', 'pp-dialog-label');
+    const paper = el('div', 'pp-chart-paper');
+    const image = el('img', 'pp-chart-image');
+    image.alt = '';
+    image.hidden = true;
+    const message = el('p', 'pp-chart-message');
+    paper.append(image, message);
+    const caption = el('p', 'pp-chart-note pp-chart-caption');
+    caption.hidden = true;
+    side.append(previewLabel, paper, caption);
+    grid.append(form, side);
+    win.body.appendChild(grid);
+
+    const { cancel, ok } = win.addButtons();
+    refs = { pickLabel, select, hint, rows, rowsLegend, linked, all, selectBy, error, previewLabel, paper, image, message, caption, cancel, ok };
+    try {
+      picker = SearchSelect.attachCharts(select);
+    } catch (e) {
+      console.warn('[ChartBlock] liste avec recherche indisponible', e);
+    }
+    select.addEventListener('change', pickChart);
+    cancel.addEventListener('click', () => closeWindow());
+    ok.addEventListener('click', apply);
+  }
+
+  function clearError() {
+    refs.error.hidden = true;
+    refs.error.textContent = '';
+    refs.select.removeAttribute('aria-invalid');
+  }
+  function showError(text) {
+    refs.error.textContent = text;
+    refs.error.hidden = false;
+    refs.select.setAttribute('aria-invalid', 'true');
+  }
+
+  // Le texte d'une ligne de la liste : le nom du graphique, puis (type · table).
+  function typeLabel(spec) { return TYPE_KEYS.indexOf(spec.type) === -1 ? spec.type : I18n.t('chart.type.' + spec.type); }
+  function hintOf(spec) { return spec.title ? typeLabel(spec) + ' · ' + spec.tableLabel : typeLabel(spec); }
+
+  // Les graphiques du document en lignes du <select>, rangés par page ; ceux que le widget ne sait pas redessiner sont grisés, avec la raison.
+  function fillList(specs, chosenId) {
+    const { select } = refs;
+    select.replaceChildren();
+    const placeholder = Dom.option('', I18n.t('chart.pick.placeholder'));
+    placeholder.disabled = true;
+    select.appendChild(placeholder);
+    let group = null;
+    let groupId = null;
+    specs.forEach((spec) => {
+      if (group === null || spec.pageId !== groupId) {
+        group = el('optgroup');
+        group.label = I18n.t('chart.pick.page', { name: spec.page });
+        groupId = spec.pageId;
+        select.appendChild(group);
+      }
+      const hint = hintOf(spec);
+      const option = Dom.option(String(spec.id), spec.name + ' (' + hint + ')');
+      option.dataset.name = spec.name;
+      option.dataset.hint = hint;
+      option.dataset.search = [spec.page, spec.tableLabel, typeLabel(spec), spec.title].join(' ');
+      if (spec.unsupported) option.dataset.unavailable = I18n.t(spec.unsupported);
+      group.appendChild(option);
+    });
+    select.value = chosenId != null && specs.some(spec => spec.id === chosenId) ? String(chosenId) : '';
+    if (picker) picker.sync();
+  }
+
+  // Le choix des lignes : « liées » demande un graphique d'une autre table que celle du document ; la liaison entre les deux tables se règle à la
+  // validation si elle ne l'est pas encore (comme une bulle d'une autre table).
+  const currentTable = () => GristAPI.getCurrentTableId();
+  function sameTable(spec) { return !!spec && spec.table === currentTable(); }
+  function needsLink(spec) { return !!spec && !sameTable(spec) && !GristAPI.getLinkRule(spec.table); }
+
+  function pickScope(value) {
+    state.scope = value;
+    clearError();
+    renderScope();
+    schedulePreview(0);
+  }
+  function renderScope() {
+    const { linked, all, selectBy } = refs;
+    const spec = state.spec;
+    // La table du graphique est celle du document : « liées » ne donnerait que la ligne affichée, un seul point ; seule « toute la table » a un sens.
+    const off = !!spec && sameTable(spec);
+    if (off && state.scope === 'linked') state.scope = 'all';
+    linked.input.checked = state.scope === 'linked';
+    all.input.checked = state.scope === 'all';
+    linked.input.disabled = off;
+    linked.label.classList.toggle('is-off', off);
+    linked.detail.textContent = !spec ? I18n.t('chart.rows.linked.detail') : (sameTable(spec) ? I18n.t('chart.rows.linked.sameTable') : (needsLink(spec) ? I18n.t('chart.rows.linked.needsLink') : I18n.t('chart.rows.linked.detail')));
+    selectBy.hidden = !(spec && spec.linkedInGrist);
+    selectBy.textContent = selectBy.hidden ? '' : I18n.t('chart.rows.selectBy');
+  }
+
+  // Un graphique choisi : le mode par défaut est « liées » dès qu'une règle de liaison existe entre les deux tables, sinon toute la table.
+  function pickChart() {
+    const spec = state.specs.get(Number(refs.select.value)) || null;
+    state.spec = spec;
+    state.scope = spec && !sameTable(spec) && GristAPI.getLinkRule(spec.table) ? 'linked' : 'all';
+    clearError();
+    renderScope();
+    schedulePreview(0);
+  }
+
+  // L'aperçu : le graphique pour la ligne en cours (toute la table en mode « toute la table ») ou, à la place, la raison pour laquelle il n'y en a pas.
+  function setPreview(kind, uri) {
+    const { image, message, paper, caption } = refs;
+    paper.dataset.state = kind;
+    const shown = kind === 'chart';
+    image.hidden = !shown;
+    if (shown) image.src = uri; else image.removeAttribute('src');
+    message.hidden = shown;
+    message.textContent = shown ? '' : I18n.t('chart.preview.' + kind, { table: state.spec ? state.spec.table : '' });
+    caption.hidden = !(shown && state.scope === 'linked');
+    caption.textContent = caption.hidden ? '' : I18n.t('chart.preview.row');
+    // Rien à insérer sans graphique redessinable ; une ligne sans valeur, une liaison encore à régler ou une bibliothèque qui n'a pas pu se charger n'empêchent
+    // rien (une autre ligne a des données, la liaison se règle à la validation, le graphique se dessine à la Lecture).
+    refs.ok.disabled = !state.spec || !!state.spec.unsupported;
+  }
+  function schedulePreview(delay) {
+    clearTimeout(previewTimer);
+    previewTimer = setTimeout(refreshPreview, delay === undefined ? PREVIEW_DELAY_MS : delay);
+  }
+  async function refreshPreview() {
+    const token = ++previewToken;
+    const spec = state.spec;
+    if (!spec) { setPreview('empty'); return; }
+    if (spec.unsupported) { setPreview('unsupported'); return; }
+    if (state.scope === 'linked') {
+      if (needsLink(spec)) { setPreview('needsLink'); return; }
+      if (!GristAPI.getCurrentRecord()) { setPreview('noRecord'); return; }
+    }
+    setPreview('loading');
+    try {
+      const drawn = await GristAPI.withReadPass(() => draw(spec.id, state.scope, currentTable(), GristAPI.getCurrentRecord(), DEFAULT_WIDTH_PX, DEFAULT_HEIGHT_PX));
+      if (token !== previewToken) return;
+      if (drawn.empty) setPreview('noRows'); else setPreview('chart', drawn.uri);
+    } catch (e) {
+      if (token !== previewToken) return;
+      console.warn('[ChartBlock] aperçu indisponible', e);
+      setPreview(e.kind === 'rows' ? 'unresolved' : (e.kind === 'chart' ? 'missing' : 'unavailable'));
+    }
+  }
+
+  function closeWindow() {
+    clearTimeout(previewTimer);
+    previewToken += 1;
+    if (win) win.hide();
+    EditorCore.focusEditor();
+  }
+
+  // Ouvre la fenêtre : pour changer le graphique sélectionné s'il y en a un, sinon pour en insérer un à la place du curseur. Faux quand l'éditeur n'est pas
+  // modifiable.
+  function open() {
+    const ed = EditorCore.getEditor();
+    if (!ed || !ed.isEditable) return false;
+    ensure();
+    const found = ChartEntry.selectedNode(ed, 'page');
+    state = {
+      editing: !!found, pos: found ? found.pos : null, specs: new Map(), spec: null,
+      scope: found && found.node.attrs.chartScope === 'all' ? 'all' : 'linked', chosenId: found ? Number(found.node.attrs.chartSection) : null,
+    };
+    const { pickLabel, hint, rowsLegend, linked, all, previewLabel, cancel, ok, select } = refs;
+    win.title.textContent = I18n.t(found ? 'chart.title.edit' : 'chart.title.new');
+    pickLabel.textContent = I18n.t('chart.pick.label');
+    hint.textContent = I18n.t('chart.pick.hint');
+    rowsLegend.textContent = I18n.t('chart.rows.label');
+    linked.text.textContent = I18n.t('chart.rows.linked');
+    all.text.textContent = I18n.t('chart.rows.all');
+    all.detail.textContent = I18n.t('chart.rows.all.detail');
+    previewLabel.textContent = I18n.t('chart.preview');
+    cancel.textContent = I18n.t('common.cancel');
+    ok.textContent = I18n.t(found ? 'common.confirm' : 'common.insert');
+    clearError();
+    renderScope();
+    setPreview('empty');
+    ok.disabled = true;
+    select.replaceChildren(Dom.option('', I18n.t('chart.pick.loading')));
+    select.disabled = true;
+    if (picker) picker.sync();
+    win.show(() => cancel);
+    load();
+    return true;
+  }
+
+  // Lit les graphiques de la page et remplit la liste. Une lecture qui échoue ou une page sans graphique le dit sous le champ.
+  async function load() {
+    const mine = state;
+    const { select } = refs;
+    let specs;
+    try { specs = await GristAPI.withReadPass(() => ChartSource.list()); }
+    catch (e) {
+      console.warn('[ChartBlock] graphiques illisibles', e);
+      if (state === mine) { select.replaceChildren(Dom.option('', I18n.t('chart.pick.placeholder'))); if (picker) picker.sync(); showError(I18n.t('chart.pick.error')); }
+      return;
+    }
+    if (state !== mine) return;
+    mine.specs = new Map(specs.map(spec => [spec.id, spec]));
+    select.disabled = !specs.length;
+    fillList(specs, mine.chosenId);
+    if (!specs.length) refs.hint.textContent = I18n.t('chart.pick.none');
+    const spec = mine.specs.get(mine.chosenId) || null;
+    if (mine.editing && !spec) showError(I18n.t('chart.pick.gone'));
+    mine.spec = spec;
+    // Un graphique déjà posé garde ses lignes ; un nouveau choix prend le mode par défaut (pickChart).
+    renderScope();
+    schedulePreview(0);
+    // Le focus passe à la liste, sauf si la personne est déjà allée ailleurs dans la fenêtre pendant la lecture.
+    if (document.activeElement === refs.cancel || !win.box.contains(document.activeElement)) win.show(() => select);
+  }
+
+  // « Insérer » : pose le graphique à la place du curseur (jamais à celle de ce qui est sélectionné : il s'ajoute derrière) ou change celui qui est
+  // sélectionné, qui garde sa taille, sa place et son habillage.
+  async function apply() {
+    const ed = EditorCore.getEditor();
+    const spec = state && state.spec;
+    if (!ed || !spec || spec.unsupported) return;
+    // Les lignes liées demandent la liaison entre la table du graphique et celle du document : réglée ici si elle ne l'est pas encore, comme à
+    // l'insertion d'une bulle d'une autre table ; refusée, la fenêtre reste ouverte.
+    if (state.scope === 'linked' && needsLink(spec) && !(await Variables.ensureLinkConfigured({ table: spec.table }))) return;
+    const attrs = { src: null, alt: I18n.t('chart.alt', { name: spec.name }), chartSection: String(spec.id), chartScope: state.scope, chartName: spec.name };
+    const current = state.editing ? ed.state.doc.nodeAt(state.pos) : null;
+    if (current && current.type.name === 'editorImage') {
+      EditorCore.patchNodeAndReselect(ed, state.pos, Object.assign({}, current.attrs, attrs));
+    } else {
+      const selection = ed.state.selection;
+      const chain = ed.chain().focus();
+      if (!selection.empty) chain.setTextSelection(selection.to);
+      chain.insertImage(Object.assign({ width: DEFAULT_WIDTH_PX + 'px', height: DEFAULT_HEIGHT_PX + 'px' }, attrs)).run();
+    }
+    closeWindow();
+  }
+
+  return { resolveImage, drawMade, paintFrame, releaseFrame, refreshFrame, refreshEditor, demand, open, forgetDrawings, setIdleDrawing };
+})();

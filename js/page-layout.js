@@ -7,6 +7,9 @@
 // - les quatre marges (mm) ;
 // - `orientation` : portrait ou paysage (absente = portrait). Les dimensions de la page courante se lisent par getPageSize*() et getContent*Mm() ;
 //   A4_WIDTH_MM / A4_HEIGHT_MM restent celles du A4 portrait ;
+// - `orientationAuto` : « Selon chaque modèle », le réglage d'un macro-modèle dont les pages suivent le sens de chaque modèle qu'il assemble (la clé n'existe que posée ;
+//   absente = le sens ci-dessus est imposé à tous les modèles, comme avant). `orientation` y reste portrait : le sens de chaque page est dit par le HTML assemblé
+//   (js/macro-templates.js, js/page-sections.js), les marges restent celles du macro-modèle et le format aussi, sauf pour une présentation assemblée, qui garde sa page de diapositive ;
 // - `format` : A3, A4, A5 ou A6 (absente = A4). FORMATS est la seule table des formats : millimètres (l'écran), points (pdfmake) et twips (Word) y
 //   sont écrits côte à côte, dans le sens portrait, avec le nom que pdfmake et jsPDF donnent au format ; un format de plus est une ligne de cette
 //   table ;
@@ -16,7 +19,13 @@
 //   assemblage avant impression) le suit sans autre changement. Une dimension égale à celle d'un format de FORMATS (21 x 29,7 cm) redevient ce format
 //   : le menu le coche, rien n'est enregistré en double ;
 // - `watermark` : un texte en travers de chaque page, propre au modèle (absent = pas de filigrane). Ce module le garde et le borne
-//   (normalizeWatermark) ; sa géométrie et son dessin sont à js/page-layer.js.
+//   (normalizeWatermark) ; sa géométrie et son dessin sont à js/page-layer.js ;
+// - `colors` : les couleurs personnalisées du modèle, la rangée « Couleurs du modèle » des menus de couleur (absente = aucune). Ce module les garde
+//   et les borne (normalizeCustomColors) ; js/color-store.js les ajoute et les retire, js/color-palette.js les montre ;
+// - `textFormats` : les mises en forme gardées du modèle, la rangée « Mises en forme du modèle » du menu du pinceau (absente = aucune). Ce module les
+//   garde et en borne la forme (normalizeCustomFormats) ; js/format-slots.js les juge, les ajoute et les retire, js/format-slots-menu.js les montre.
+// - `theme` : le thème d'une présentation, ses couleurs et ses polices (absent = pas de thème, la présentation d'avant). Ce module le garde, js/slide-theme.js le borne (SlideTheme.normalize), l'éditeur
+//   et les sorties le montrent ; la fenêtre « Thème… » de l'extension « diapositives » le règle.
 const PageLayout = (function () {
   // Les nombres de la page : A4, sens, unités (mm, pt, px, twip), marge par défaut, bandes réservées, planchers. Des constantes, sans état.
   const Units = (function () {
@@ -44,9 +53,17 @@ const PageLayout = (function () {
     const HEADER_FOOTER_GAP_PT = 10;
     const HEADER_FOOTER_GAP_PX = HEADER_FOOTER_GAP_PT * PT_TO_PX;
     const HEADER_FOOTER_BAND_PX = HEADER_FOOTER_ZONE_PX + HEADER_FOOTER_GAP_PX;
-    // Un fragment d'en-tête ou de pied montre quelque chose s'il a du texte (un numéro de page, une variable ou une puce en portent un) ou une image ;
-    // une zone vide ne réserve rien.
-    function hasZoneContent(html) { return !!html && (!!html.replace(/<[^>]*>/g, '').trim() || /<img[\s>]/i.test(html)); }
+    // La zone ne grandit jamais : ce que son contenu a de plus que ses 60 px est coupé net, dans l'éditeur, la Lecture, le PDF et le Word, et ne
+    // décale rien du corps de la page. Un pixel de tolérance : la hauteur d'un fragment mesurée dans le navigateur et celle qu'un moteur d'export compose
+    // ne s'accordent pas au pixel près. `zoneOverflowPx` rend de combien de pixels le contenu dépasse (0 s'il tient).
+    const HEADER_FOOTER_OVERFLOW_TOLERANCE_PX = 1;
+    function zoneOverflowPx(contentHeightPx) {
+      const over = contentHeightPx - HEADER_FOOTER_ZONE_PX;
+      return over > HEADER_FOOTER_OVERFLOW_TOLERANCE_PX ? Math.ceil(over) : 0;
+    }
+    // Un fragment d'en-tête ou de pied montre quelque chose s'il a du texte (un numéro de page, une variable ou une puce en portent un), une image, un tableau
+    // (même vide, son quadrillage se voit : « Terminer » ne le jette pas) ou une ligne horizontale (le trait se voit seul) ; une zone vide ne réserve rien.
+    function hasZoneContent(html) { return !!html && (!!html.replace(/<[^>]*>/g, '').trim() || /<(img|table|hr)[\s>/]/i.test(html)); }
     // Plancher de surface imprimable. Sans lui, deux marges opposées un peu généreuses (150 + 80 par exemple) donnent une largeur de contenu négative :
     // la zone de saisie s'effondre, les colonnes en mm deviennent absurdes et pdfmake reçoit une largeur de page négative. 20 mm, à peu près la largeur
     // d'une étiquette, ne gêne aucun usage réel et laisse le document manipulable.
@@ -61,13 +78,13 @@ const PageLayout = (function () {
     const HEADER_FOOTER_MIN_HEIGHT_MM = 80;
     return {
       A4_WIDTH_MM, A4_HEIGHT_MM, PORTRAIT, LANDSCAPE, PORTRAIT_SHEET_WIDTH_PX, MM_TO_PT, MM_TO_TWIP, PT_TO_PX, MM_TO_PX, DEFAULT_MARGIN_PT, DEFAULT_MARGIN_MM,
-      COLUMN_GAP_PX, HEADER_FOOTER_ZONE_PX, HEADER_FOOTER_GAP_PT, HEADER_FOOTER_GAP_PX, HEADER_FOOTER_BAND_PX, hasZoneContent, MIN_CONTENT_MM,
+      COLUMN_GAP_PX, HEADER_FOOTER_ZONE_PX, HEADER_FOOTER_GAP_PT, HEADER_FOOTER_GAP_PX, HEADER_FOOTER_BAND_PX, HEADER_FOOTER_OVERFLOW_TOLERANCE_PX, zoneOverflowPx, hasZoneContent, MIN_CONTENT_MM,
       SMALL_PAGE_MM, SMALL_PAGE_MARGIN_MM, HEADER_FOOTER_MIN_HEIGHT_MM,
     };
   })();
   const {
     A4_WIDTH_MM, A4_HEIGHT_MM, PORTRAIT, LANDSCAPE, PORTRAIT_SHEET_WIDTH_PX, MM_TO_PT, MM_TO_TWIP, PT_TO_PX, MM_TO_PX, DEFAULT_MARGIN_PT, DEFAULT_MARGIN_MM,
-    COLUMN_GAP_PX, HEADER_FOOTER_ZONE_PX, HEADER_FOOTER_GAP_PT, HEADER_FOOTER_GAP_PX, HEADER_FOOTER_BAND_PX, hasZoneContent, MIN_CONTENT_MM,
+    COLUMN_GAP_PX, HEADER_FOOTER_ZONE_PX, HEADER_FOOTER_GAP_PT, HEADER_FOOTER_GAP_PX, HEADER_FOOTER_BAND_PX, HEADER_FOOTER_OVERFLOW_TOLERANCE_PX, zoneOverflowPx, hasZoneContent, MIN_CONTENT_MM,
     SMALL_PAGE_MM, SMALL_PAGE_MARGIN_MM, HEADER_FOOTER_MIN_HEIGHT_MM,
   } = Units;
 
@@ -89,6 +106,18 @@ const PageLayout = (function () {
     const CUSTOM_MIN_MM = MIN_CONTENT_MM;
     const CUSTOM_MAX_MM = 558.8;
     const CUSTOM_ID = /^(\d{1,3}(?:\.\d)?)x(\d{1,3}(?:\.\d)?)$/;
+    // La page d'une diapositive (une présentation, js/slides-entry.js) : 19,05 x 33,87 cm, le 16:9 « grand écran » de PowerPoint (7,5 x 13,333 pouces), écrite comme un format libre, côté
+    // court d'abord : chaque moteur la suit sans autre changement, et une version qui ne connaît pas les présentations la lit à la même taille. Une présentation la pose en paysage ; les phrases
+    // de l'interface la nomment « 16:9 » (formatLabel), dans tout modèle qui a cette page.
+    const SLIDE_FORMAT = '190.5x338.7';
+    // Les rapports que le menu Page d'une présentation propose (js/orientation-toggle.js) : la page en paysage, largeur:hauteur, tous à la hauteur de SLIDE_FORMAT (19,05 cm, 7,5 pouces) pour que le texte garde sa taille d'un rapport
+    // à l'autre. 16:9 est SLIDE_FORMAT et 4:3 le « Standard » de PowerPoint (25,4 x 19,05 cm) ; chacun s'écrit comme un format libre, côté court d'abord, donc se lit, s'enregistre et s'exporte comme lui.
+    const SLIDE_RATIOS = [
+      { id: SLIDE_FORMAT, ratio: '16:9' },
+      { id: '190.5x254', ratio: '4:3' },
+      { id: '190.5x304.8', ratio: '16:10' },
+      { id: '190.5x190.5', ratio: '1:1' },
+    ];
 
     // Un côté de format libre : au dixième de millimètre, borné. `dimText` l'écrit sans zéro inutile (« 37 », « 70.5 ») : c'est ce texte, et lui seul,
     // qui entre dans l'identifiant.
@@ -104,10 +133,10 @@ const PageLayout = (function () {
       if (preset) return preset;
       const match = CUSTOM_ID.exec(raw.toLowerCase());
       if (match) {
-        const a = clampDim(Number(match[1]));
-        const b = clampDim(Number(match[2]));
-        const widthMm = Math.min(a, b);
-        const heightMm = Math.max(a, b);
+        const sideA = clampDim(Number(match[1]));
+        const sideB = clampDim(Number(match[2]));
+        const widthMm = Math.min(sideA, sideB);
+        const heightMm = Math.max(sideA, sideB);
         const same = FORMATS.find(f => f.widthMm === widthMm && f.heightMm === heightMm);
         if (same) return same;
         return {
@@ -119,13 +148,17 @@ const PageLayout = (function () {
     }
     function normalizeFormat(value) { return formatOf(value).id; }
     function isCustomFormat(value) { return !!formatOf(value).custom; }
+    // Le rapport (« 16:9 ») de la page d'une diapositive, ou '' pour tout autre format ; est-ce la page d'une diapositive ? (js/page-zoom.js et js/reader-mode.js la montrent en entier.)
+    function slideRatioOf(value) { const id = formatOf(value).id; const found = SLIDE_RATIOS.find(r => r.id === id); return found ? found.ratio : ''; }
+    function isSlideFormat(value) { return slideRatioOf(value) !== ''; }
+    function getSlideRatios() { return SLIDE_RATIOS.map(r => ({ id: r.id, ratio: r.ratio })); }
 
     // Les formats proposés (copie : le menu de la barre les lit ici, il n'en écrit aucun). Dimensions du portrait. Seuls ceux de FORMATS : le format
     // libre n'est pas une ligne de la table, il a sa propre ligne du menu (« Format libre… ») et sa fenêtre.
     function getFormats() { return FORMATS.map(f => ({ id: f.id, widthMm: f.widthMm, heightMm: f.heightMm })); }
-    return { DEFAULT_FORMAT, CUSTOM_MIN_MM, CUSTOM_MAX_MM, clampDim, dimText, formatOf, normalizeFormat, isCustomFormat, getFormats };
+    return { DEFAULT_FORMAT, CUSTOM_MIN_MM, CUSTOM_MAX_MM, SLIDE_FORMAT, clampDim, dimText, formatOf, normalizeFormat, isCustomFormat, slideRatioOf, isSlideFormat, getSlideRatios, getFormats };
   })();
-  const { DEFAULT_FORMAT, CUSTOM_MIN_MM, CUSTOM_MAX_MM, clampDim, dimText, formatOf, normalizeFormat, isCustomFormat, getFormats } = Formats;
+  const { DEFAULT_FORMAT, CUSTOM_MIN_MM, CUSTOM_MAX_MM, SLIDE_FORMAT, clampDim, dimText, formatOf, normalizeFormat, isCustomFormat, slideRatioOf, isSlideFormat, getSlideRatios, getFormats } = Formats;
 
   // La page dans chaque unité des moteurs, sans état, et le format dans les phrases de l'interface.
   const Sizes = (function () {
@@ -135,37 +168,40 @@ const PageLayout = (function () {
       const text = String(Math.round(mm * 10) / 100);
       return document.documentElement.lang === 'en' ? text : text.replace('.', ',');
     }
-    // Le format dans les phrases de l'interface (« Aperçu {format} », « Page {format} en portrait ») : « A4 » pour un format de FORMATS, « 7 × 3,7 cm »
-    // pour un format libre, dans le sens demandé (la page telle qu'on la voit : largeur d'abord).
+    // Le format dans les phrases de l'interface (« Aperçu {format} », « Page {format} en portrait ») : « A4 » pour un format de FORMATS, « 16:9 » (« 9:16 » en portrait) pour la page d'une
+    // diapositive - de même « 4:3 », « 16:10 » et « 1:1 », les rapports du menu Page d'une présentation (SLIDE_RATIOS) -, « 7 × 3,7 cm » pour un autre format libre, dans le sens demandé (la page telle
+    // qu'on la voit : largeur d'abord).
     function formatLabel(value, orientation) {
-      const f = formatOf(value);
-      if (!f.custom) return f.id;
+      const paperFormat = formatOf(value);
+      if (!paperFormat.custom) return paperFormat.id;
       const landscape = orientation === LANDSCAPE;
-      return cmText(landscape ? f.heightMm : f.widthMm) + ' × ' + cmText(landscape ? f.widthMm : f.heightMm) + ' cm';
+      const ratio = slideRatioOf(paperFormat.id);
+      if (ratio) return landscape ? ratio : ratio.split(':').reverse().join(':');
+      return cmText(landscape ? paperFormat.heightMm : paperFormat.widthMm) + ' × ' + cmText(landscape ? paperFormat.widthMm : paperFormat.heightMm) + ' cm';
     }
 
     // Page en mm dans le sens demandé, sans état : les trois unités des moteurs (mm, pt, twip) se déduisent d'un même couple (sens, format).
     function pageSizeMmFor(orientation, format) {
-      const f = formatOf(format);
-      return orientation === LANDSCAPE ? { width: f.heightMm, height: f.widthMm } : { width: f.widthMm, height: f.heightMm };
+      const paperFormat = formatOf(format);
+      return orientation === LANDSCAPE ? { width: paperFormat.heightMm, height: paperFormat.widthMm } : { width: paperFormat.widthMm, height: paperFormat.heightMm };
     }
     // Dimensions de la page selon une orientation et un format donnés, sans état : les exporteurs reçoivent l'un et l'autre avec leurs marges
     // (getMarginsPt / getMarginsTwip) et en déduisent la page sans connaître l'état courant de ce module. Sans format, l'A4. Les valeurs sont celles de
     // pdfmake (A4 = 595.28 x 841.89 pt) et de Word (11906 x 16838 twips), pas des conversions de 210 x 297 mm : un modèle A4 portrait garde des
     // largeurs de contenu exactes, au centième de point.
     function pageSizePtFor(orientation, format) {
-      const f = formatOf(format);
-      return orientation === LANDSCAPE ? { width: f.heightPt, height: f.widthPt } : { width: f.widthPt, height: f.heightPt };
+      const paperFormat = formatOf(format);
+      return orientation === LANDSCAPE ? { width: paperFormat.heightPt, height: paperFormat.widthPt } : { width: paperFormat.widthPt, height: paperFormat.heightPt };
     }
     function pageSizeTwipFor(orientation, format) {
-      const f = formatOf(format);
-      return orientation === LANDSCAPE ? { width: f.heightTwip, height: f.widthTwip } : { width: f.widthTwip, height: f.heightTwip };
+      const paperFormat = formatOf(format);
+      return orientation === LANDSCAPE ? { width: paperFormat.heightTwip, height: paperFormat.widthTwip } : { width: paperFormat.widthTwip, height: paperFormat.heightTwip };
     }
     // Nom du format pour pdfmake (`pageSize`, tel quel) et jsPDF (`format`, en minuscules). Un format libre n'a pas de nom : pdfmake reçoit ses
     // dimensions en points, dans le sens portrait (`pageOrientation` les tourne lui-même, comme pour un nom).
     function pdfPageNameFor(format) {
-      const f = formatOf(format);
-      return f.pdfName || { width: f.widthPt, height: f.heightPt };
+      const paperFormat = formatOf(format);
+      return paperFormat.pdfName || { width: paperFormat.widthPt, height: paperFormat.heightPt };
     }
     return { cmText, formatLabel, pageSizeMmFor, pageSizePtFor, pageSizeTwipFor, pdfPageNameFor };
   })();
@@ -196,14 +232,66 @@ const PageLayout = (function () {
   })();
   const { WATERMARK_MAX_CHARS, WATERMARK_DEFAULT, normalizeWatermark } = Watermark;
 
+  // Les couleurs personnalisées d'un modèle : leur borne et leur lecture.
+  const CustomColors = (function () {
+    // Jusqu'à CUSTOM_COLORS_MAX codes #rrggbb, la plus récente d'abord : une rangée de la palette. Tout ce qui n'est pas un code à six chiffres, les
+    // doublons et les couleurs de trop (JSON écrit à la main, version plus récente) sont écartés sans erreur.
+    const CUSTOM_COLORS_MAX = 10;
+    function normalizeCustomColors(value) {
+      if (!Array.isArray(value)) return [];
+      const colors = value.filter(color => typeof color === 'string' && /^#[0-9a-f]{6}$/i.test(color)).map(color => color.toLowerCase());
+      return colors.filter((color, at) => colors.indexOf(color) === at).slice(0, CUSTOM_COLORS_MAX);
+    }
+    return { CUSTOM_COLORS_MAX, normalizeCustomColors };
+  })();
+  const { CUSTOM_COLORS_MAX, normalizeCustomColors } = CustomColors;
+
+  // Les mises en forme gardées d'un modèle (js/format-slots.js) : trois emplacements au plus, renommables, rangés dans le JSON de la colonne Margins comme les couleurs
+  // personnalisées. Un emplacement est { name, style, block } : le nom que la personne lui donne, la mise en forme du caractère (le style de frappe, js/typing-style.js) et
+  // celle du paragraphe (type, niveau, alignement, interligne et espaces) ; l'un des deux peut manquer, pas les deux. Ici ne se vérifie que la FORME - un tableau de trois
+  // places au plus, un nom de texte court, deux objets de taille bornée - : ce que les réglages ont le droit de valoir est jugé par FormatSlots, à la lecture et à l'écriture
+  // (ce module se charge avant TypingStyle et ParagraphFormat). Une place vide est null ; les places vides de la fin ne s'écrivent pas.
+  const CustomFormats = (function () {
+    const CUSTOM_FORMATS_MAX = 3;
+    const CUSTOM_FORMAT_NAME_MAX = 40;
+    const CUSTOM_FORMAT_JSON_MAX = 2000;
+    const isPlain = value => !!value && typeof value === 'object' && !Array.isArray(value);
+    function normalizeFormatSlot(slot) {
+      if (!isPlain(slot) || typeof slot.name !== 'string') return null;
+      const name = slot.name.replace(/\s+/g, ' ').trim().slice(0, CUSTOM_FORMAT_NAME_MAX).trim();
+      const style = isPlain(slot.style) ? slot.style : null;
+      const block = isPlain(slot.block) ? slot.block : null;
+      if (!name || (!style && !block)) return null;
+      // Les clés d'un côté absent ne sont pas écrites : un emplacement n'a que ce qu'il garde.
+      const slim = { name };
+      if (style) slim.style = style;
+      if (block) slim.block = block;
+      let copy;
+      try { copy = JSON.stringify(slim); } catch (error) { return null; }
+      return copy.length <= CUSTOM_FORMAT_JSON_MAX ? JSON.parse(copy) : null;
+    }
+    function normalizeCustomFormats(value) {
+      if (!Array.isArray(value)) return [];
+      const slots = value.slice(0, CUSTOM_FORMATS_MAX).map(normalizeFormatSlot);
+      while (slots.length && !slots[slots.length - 1]) slots.pop();
+      return slots;
+    }
+    return { CUSTOM_FORMATS_MAX, CUSTOM_FORMAT_NAME_MAX, normalizeCustomFormats };
+  })();
+  const { CUSTOM_FORMATS_MAX, CUSTOM_FORMAT_NAME_MAX, normalizeCustomFormats } = CustomFormats;
+
   function emptyMargins() {
     return { top: DEFAULT_MARGIN_MM, right: DEFAULT_MARGIN_MM, bottom: DEFAULT_MARGIN_MM, left: DEFAULT_MARGIN_MM, orientation: PORTRAIT, format: DEFAULT_FORMAT };
   }
 
+  // La page d'un macro-modèle neuf : les marges par défaut et « Selon chaque modèle » (chaque modèle assemblé garde le sens de sa page ; « Portrait » et « Paysage », dans le menu
+  // Page, l'imposent à tous). Un macro-modèle déjà enregistré n'est jamais réécrit ainsi : sa page, sans ce réglage, reste son sens imposé.
+  function newMacroMarginsMm() { return Object.assign(emptyMargins(), { orientationAuto: true }); }
+
   let marginsDraft = emptyMargins();
 
   function getMarginsMm() {
-    // Les quatre marges (mm), l'orientation, le format et le filigrane : js/main.js passe cet objet tel quel à Templates.save (colonne Margins) et
+    // Les quatre marges (mm), l'orientation, le format, le filigrane et les couleurs : js/main.js passe cet objet tel quel à Templates.save (colonne Margins) et
     // Templates.loadAll le rend dans `marginsMm`, si bien que le sens et le format voyagent avec les marges sans appel de plus aux trois sites
     // d'enregistrement.
     return marginsDraft;
@@ -228,26 +316,64 @@ const PageLayout = (function () {
 
   function pageSizeMm(orientation, format) { return pageSizeMmFor(orientation, format); }
 
+  // Les quatre marges de `sides` bornées pour une page : clampPair sur chaque paire, sur la largeur et la hauteur de `page`, ou sur `limit` quand il est donné (« Selon chaque modèle », cf. setMarginsMm).
+  function boundSides(sides, page, limit) {
+    const [left, right] = clampPair(sides.left, sides.right, limit || page.width);
+    const [top, bottom] = clampPair(sides.top, sides.bottom, limit || page.height);
+    return { top, right, bottom, left };
+  }
+
+  // Ce que deviendraient ces marges sur la page d'à présent si setMarginsMm les posait (le même rabot), sans rien poser : un préréglage de l'onglet Marges (js/settings.js) sait ainsi s'il est celui en place même
+  // sur une page trop petite pour lui, où le plancher de surface imprimable le réduit. Un côté absent garde celui d'à présent.
+  function boundedMarginsMm(sides) {
+    const page = pageSizeMm(marginsDraft.orientation, marginsDraft.format);
+    return boundSides(Object.assign({}, marginsDraft, sides), page, isOrientationAuto() ? Math.min(page.width, page.height) : null);
+  }
+
   function setMarginsMm(data) {
     // data = { top, right, bottom, left, orientation, format } en mm, ou null/undefined (repli sur les marges par défaut, en portrait A4). Toute clé
     // manquante retombe individuellement sur le défaut plutôt que sur 0 : un objet partiel reste sûr à passer (sans `orientation`, c'est le portrait ;
     // sans `format`, l'A4). Les valeurs sont bornées (cf. clampPair, sur les dimensions de la page de ce sens et de ce format) : `getMarginsMm()` peut
     // donc rendre autre chose que ce qui a été passé, et c'est cette valeur bornée qui fait foi partout (aperçu, exports, champs de l'onglet Réglages).
     const merged = data && typeof data === 'object' ? Object.assign(emptyMargins(), data) : emptyMargins();
-    const orientation = normalizeOrientation(merged.orientation);
+    // « Selon chaque modèle » (macro-modèle seulement, cf. isOrientationAuto) : la page du macro-modèle n'a pas de sens à elle, son brouillon reste en portrait ; ses marges sont
+    // bornées sur le côté COURT du format, pour qu'elles tiennent dans la page de chaque modèle assemblé, portrait ou paysage.
+    const auto = merged.orientationAuto === true;
+    const orientation = auto ? PORTRAIT : normalizeOrientation(merged.orientation);
     const format = normalizeFormat(merged.format);
     const page = pageSizeMm(orientation, format);
-    const [left, right] = clampPair(merged.left, merged.right, page.width);
-    const [top, bottom] = clampPair(merged.top, merged.bottom, page.height);
+    const { top, right, bottom, left } = boundSides(merged, page, auto ? Math.min(page.width, page.height) : null);
     marginsDraft = { top, right, bottom, left, orientation, format };
+    // Comme le filigrane : la clé n'existe que pour un macro-modèle qui a ce réglage, un modèle enregistré avant lui se recharge à l'identique (sens imposé).
+    if (auto) marginsDraft.orientationAuto = true;
     // La clé n'existe que pour un modèle qui a un filigrane : l'objet d'un modèle sans filigrane ne porte aucune clé en plus.
     const watermark = normalizeWatermark(merged.watermark);
     if (watermark) marginsDraft.watermark = watermark;
+    // Idem pour les couleurs personnalisées : la clé n'existe que pour un modèle qui en a.
+    const colors = normalizeCustomColors(merged.colors);
+    if (colors.length) marginsDraft.colors = colors;
+    // Et pour les mises en forme gardées du modèle : la clé n'existe que pour un modèle qui en a.
+    const textFormats = normalizeCustomFormats(merged.textFormats);
+    if (textFormats.length) marginsDraft.textFormats = textFormats;
+    // Et pour le thème d'une présentation : la clé n'existe que pour un modèle qui en a un (js/slide-theme.js le borne).
+    const theme = typeof SlideTheme !== 'undefined' ? SlideTheme.normalize(merged.theme) : null;
+    if (theme) marginsDraft.theme = theme;
     applyToPreviewCss();
   }
 
   function getOrientation() { return marginsDraft.orientation; }
   function isLandscape() { return marginsDraft.orientation === LANDSCAPE; }
+  // « Selon chaque modèle » : le réglage d'un macro-modèle (js/macro-templates.js) dont les pages suivent le sens de chaque modèle assemblé, portrait, paysage ou grille, au lieu d'un sens
+  // imposé à tous. Sans ce réglage (un document, une grille, un macro-modèle fait avant lui), le sens de la page est le seul sens de tout le document, comme toujours. Le brouillon d'un macro-modèle
+  // dans ce mode reste en portrait (cf. setMarginsMm) : il ne dit rien du sens des pages, ce sont les repères du HTML assemblé qui le disent (js/page-sections.js).
+  function isOrientationAuto() { return marginsDraft.orientationAuto === true; }
+  // Les plafonds des marges, en mm : la dimension de la page dans son sens (haut et bas sur la hauteur, gauche et droite sur la largeur) ; « Selon chaque modèle » les plafonne sur le côté
+  // court du format, pour les deux paires. js/settings.js en fait le `max` de ses champs.
+  function getMarginLimitsMm() {
+    const page = getPageSizeMm();
+    const short = Math.min(page.width, page.height);
+    return isOrientationAuto() ? { top: short, bottom: short, left: short, right: short } : { top: page.height, bottom: page.height, left: page.width, right: page.width };
+  }
   function getFormat() { return marginsDraft.format; }
   function getFormatLabel() {
     // Le format de la page courante dans les phrases de l'interface (cf. formatLabel) : « A4 », ou « 7 × 3,7 cm » pour un format libre, dans le sens de
@@ -268,15 +394,41 @@ const PageLayout = (function () {
     // l'appelle alors que l'éditeur contient encore le modèle précédent, et js/main.js rafraîchit lui-même juste après avoir posé le nouveau).
     // js/main.js y rafraîchit le facteur d'ajustement, la pagination, la grille des images en calque et la Lecture ; le bouton et le menu
     // (js/orientation-toggle.js) ne rafraîchissent rien eux-mêmes.
-    document.dispatchEvent(new CustomEvent('pp:pageLayoutChanged', { detail: { orientation: marginsDraft.orientation, format: marginsDraft.format } }));
+    document.dispatchEvent(new CustomEvent('pp:pageLayoutChanged', { detail: { orientation: marginsDraft.orientation, format: marginsDraft.format, orientationAuto: marginsDraft.orientationAuto === true } }));
   }
   function setOrientation(orientation) {
     // Change l'orientation en gardant les 4 marges (re-bornées pour la nouvelle page). Ne touche ni à l'aperçu, ni à la pagination, ni aux exports :
     // l'appelant rafraîchit ce qu'il affiche (Editor.refreshLayout) et marque le brouillon modifié (événement pp:marginsChanged, cf. js/settings.js).
+    // Choisir un sens, c'est l'imposer : un macro-modèle « Selon chaque modèle » le quitte (setOrientationAuto le rétablit).
     const next = normalizeOrientation(orientation);
-    if (next === marginsDraft.orientation) return;
-    setMarginsMm(Object.assign({}, marginsDraft, { orientation: next }));
+    if (next === marginsDraft.orientation && !isOrientationAuto()) return;
+    setMarginsMm(Object.assign({}, marginsDraft, { orientation: next, orientationAuto: false }));
     announcePageLayoutChanged();
+  }
+  function setOrientationAuto(on) {
+    // Pose (ou retire) « Selon chaque modèle » en gardant les marges (re-bornées, cf. setMarginsMm) et le format. Même contrat que setOrientation : ne rafraîchit rien, annonce
+    // `pp:pageLayoutChanged` quand le réglage change (la Lecture et les exports assemblent un autre HTML), l'appelant marque le brouillon modifié (pp:marginsChanged). Retirer le réglage
+    // laisse la page en portrait : le sens qu'on lui impose ensuite est un choix de la personne (setOrientation). Rend vrai si quelque chose a changé.
+    const next = on === true;
+    if (next === isOrientationAuto()) return false;
+    setMarginsMm(Object.assign({}, marginsDraft, { orientationAuto: next }));
+    announcePageLayoutChanged();
+    return true;
+  }
+
+  function withPage(page, fn) {
+    // Le temps d'un calcul synchrone, la page a ce sens et ce format (`page` : `{ orientation, format }`, un format absent ou nul garde celui du brouillon ; mêmes marges, même
+    // filigrane) : tout ce qui lit PageLayout - taille de la page, largeur de la feuille, marges en pixels - le voit, sans écrire dans le brouillon, sans toucher à l'aperçu ni
+    // annoncer de changement. C'est ce que fait la Lecture d'un macro-modèle aux pages mêlées (js/reader-mode.js) pour mesurer et mettre en page chaque section dans la sienne :
+    // une page paysage au milieu de pages portrait, la diapositive 16:9 d'une présentation au milieu de pages A4. Rend ce que rend `fn`, et rend toujours le brouillon tel qu'il
+    // était, même si `fn` lève une exception. Les marges ne sont pas rabotées pour la page d'un autre format : ce sont celles du brouillon, pour toutes les pages.
+    const saved = marginsDraft;
+    marginsDraft = Object.assign({}, saved, { orientation: normalizeOrientation(page && page.orientation), format: page && page.format ? normalizeFormat(page.format) : saved.format });
+    try { return fn(); } finally { marginsDraft = saved; }
+  }
+  function withOrientation(orientation, fn) {
+    // La même chose pour le seul sens : le format reste celui du brouillon.
+    return withPage({ orientation }, fn);
   }
 
   function setFormat(format) {
@@ -297,13 +449,15 @@ const PageLayout = (function () {
     // passent à SMALL_PAGE_MARGIN_MM d'abord. Même contrat que setFormat : ne rafraîchit rien, annonce `pp:pageLayoutChanged` si la page change,
     // l'appelant marque le brouillon modifié (pp:marginsChanged). Rend vrai si quelque chose a changé ; faux, sans rien changer, pour une valeur qui
     // n'est pas un nombre.
-    const a = Number(widthMm);
-    const b = Number(heightMm);
-    if (widthMm === null || heightMm === null || widthMm === '' || heightMm === '' || !Number.isFinite(a) || !Number.isFinite(b)) return false;
-    const next = formatOf(dimText(clampDim(Math.min(a, b))) + 'x' + dimText(clampDim(Math.max(a, b))));
-    const orientation = a > b ? LANDSCAPE : a < b ? PORTRAIT : marginsDraft.orientation;
+    const widthNum = Number(widthMm);
+    const heightNum = Number(heightMm);
+    if (widthMm === null || heightMm === null || widthMm === '' || heightMm === '' || !Number.isFinite(widthNum) || !Number.isFinite(heightNum)) return false;
+    const next = formatOf(dimText(clampDim(Math.min(widthNum, heightNum))) + 'x' + dimText(clampDim(Math.max(widthNum, heightNum))));
+    const orientation = widthNum > heightNum ? LANDSCAPE : widthNum < heightNum ? PORTRAIT : marginsDraft.orientation;
     if (next.id === marginsDraft.format && orientation === marginsDraft.orientation) return false;
     const margins = Object.assign({}, marginsDraft, { format: next.id, orientation });
+    // Une forme saisie qui n'est pas celle de la page en cours impose son sens : « Selon chaque modèle » est quitté (une forme semblable, seul le format change, le garde).
+    if (orientation !== marginsDraft.orientation) margins.orientationAuto = false;
     const untouched = ['top', 'right', 'bottom', 'left'].every(side => Math.abs(marginsDraft[side] - DEFAULT_MARGIN_MM) < 0.05);
     if (next.custom && next.widthMm < SMALL_PAGE_MM && untouched) {
       margins.top = margins.right = margins.bottom = margins.left = SMALL_PAGE_MARGIN_MM;
@@ -334,6 +488,56 @@ const PageLayout = (function () {
     return true;
   }
 
+  function getTheme() { return marginsDraft.theme || null; }
+  function setTheme(value) {
+    // Pose (ou retire, avec null) le thème de la présentation en gardant tout le reste. Même contrat que setWatermark : ne rafraîchit rien d'autre que les variables de l'écran (applyToPreviewCss), annonce
+    // `pp:themeChanged` si le thème change, l'appelant marque le brouillon modifié (pp:marginsChanged) et refait la mise en page (les polices changent les lignes). Rend vrai si quelque chose a changé.
+    const next = typeof SlideTheme !== 'undefined' ? SlideTheme.normalize(value) : null;
+    if (JSON.stringify(next) === JSON.stringify(getTheme())) return false;
+    const rest = Object.assign({}, marginsDraft);
+    delete rest.theme;
+    setMarginsMm(next ? Object.assign(rest, { theme: next }) : rest);
+    document.dispatchEvent(new CustomEvent('pp:themeChanged', { detail: { theme: getTheme() } }));
+    return true;
+  }
+
+  // Une copie du brouillon de la page (marges, sens, format, filigrane, couleurs et mises en forme gardées du modèle, thème) : l'état que js/history-markers.js garde avant et après un geste de la page, pour que Ctrl + Z le défasse.
+  function snapshot() { return JSON.parse(JSON.stringify(marginsDraft)); }
+  // Rend à la page ce qu'un geste y a changé, au Ctrl + Z comme au Ctrl + Y : `next` est la page à rendre, `prev` celle d'avant ce retour (la page du geste, ou la page d'avant lui). Seules les clés qui diffèrent
+  // entre les deux sont posées : un réglage que le geste n'a pas touché (une couleur du modèle gardée depuis) reste tel quel. Annonce comme les gestes eux-mêmes ce qui a changé (`pp:pageLayoutChanged` pour le
+  // sens, le format et « Selon chaque modèle », `pp:watermarkChanged` pour le filigrane) ; l'appelant se charge du reste (Editor.refreshLayout, `pp:marginsChanged`). Rend vrai si la page a changé.
+  function restore(next, prev) {
+    const was = marginsDraft;
+    const merged = Object.assign({}, was);
+    Object.keys(Object.assign({}, prev, next)).forEach(key => {
+      if (JSON.stringify(prev[key]) === JSON.stringify(next[key])) return;
+      if (key in next) merged[key] = next[key]; else delete merged[key];
+    });
+    setMarginsMm(merged);
+    const now = marginsDraft;
+    if (JSON.stringify(was) === JSON.stringify(now)) return false;
+    if (was.orientation !== now.orientation || was.format !== now.format || (was.orientationAuto === true) !== (now.orientationAuto === true)) announcePageLayoutChanged();
+    if (JSON.stringify(was.watermark || null) !== JSON.stringify(now.watermark || null)) document.dispatchEvent(new CustomEvent('pp:watermarkChanged', { detail: { watermark: getWatermark() } }));
+    if (JSON.stringify(was.theme || null) !== JSON.stringify(now.theme || null)) document.dispatchEvent(new CustomEvent('pp:themeChanged', { detail: { theme: getTheme() } }));
+    return true;
+  }
+
+  // Remplace la liste gardée sous `key` dans le brouillon des marges en gardant tout le reste ; une liste vide la retire. Aucune page ne change : rien à annoncer ni à repeindre, l'appelant
+  // marque seulement le brouillon modifié (pp:marginsChanged). Rend vrai si quelque chose a changé.
+  function replaceDraftList(key, next) {
+    if (JSON.stringify(next) === JSON.stringify(marginsDraft[key] || [])) return false;
+    const rest = Object.assign({}, marginsDraft);
+    delete rest[key];
+    setMarginsMm(next.length ? Object.assign(rest, { [key]: next }) : rest);
+    return true;
+  }
+  function getCustomColors() { return (marginsDraft.colors || []).slice(); }
+  function setCustomColors(value) { return replaceDraftList('colors', normalizeCustomColors(value)); }
+
+  // Les mises en forme gardées du modèle : un tableau de trois places au plus (null : une place vide). Comme les couleurs, elles suivent le modèle d'un export à l'autre.
+  function getCustomFormats() { return JSON.parse(JSON.stringify(marginsDraft.textFormats || [])); }
+  function setCustomFormats(value) { return replaceDraftList('textFormats', normalizeCustomFormats(value)); }
+
   // Page courante (sens et format compris) dans chaque unité des moteurs : mm, pt (pdfmake), px CSS (aperçu, pagination), twip (docx).
   function getPageSizeMm() { return pageSizeMm(marginsDraft.orientation, marginsDraft.format); }
   function getPageSizePt() { const s = getPageSizeMm(); return { width: s.width * MM_TO_PT, height: s.height * MM_TO_PT }; }
@@ -351,6 +555,8 @@ const PageLayout = (function () {
     const out = { top: m.top * MM_TO_PT, right: m.right * MM_TO_PT, bottom: m.bottom * MM_TO_PT, left: m.left * MM_TO_PT, orientation: m.orientation, format: m.format };
     // Le filigrane voyage avec la page, comme le sens et le format : les exporteurs n'ont aucun autre canal pour l'apprendre.
     if (m.watermark) out.watermark = m.watermark;
+    // Le thème aussi : le PowerPoint l'écrit dans son thème (js/pptx-export.js).
+    if (m.theme) out.theme = m.theme;
     return out;
   }
 
@@ -369,6 +575,7 @@ const PageLayout = (function () {
       orientation: m.orientation, format: m.format,
     };
     if (m.watermark) out.watermark = m.watermark;
+    if (m.theme) out.theme = m.theme;
     return out;
   }
 
@@ -386,6 +593,10 @@ const PageLayout = (function () {
     // Largeur de la feuille : 793.71px en A4 portrait (la valeur d'avant l'orientation, que css/editor-v2.css garde aussi en repli avant ce premier
     // appel), 1122.52px en A4 paysage, 559.37px en A5 portrait...
     root.setProperty('--pp-page-width', getSheetWidthPx() + 'px');
+    // Sa hauteur : ce que pose sur une page (un cadre de texte libre, css/free-frame.css) est rogné à son bord, jamais montré sur la page d'à côté.
+    root.setProperty('--pp-page-height', Math.round(getPageSizePx().height * 100) / 100 + 'px');
+    // Le thème de la présentation (ses couleurs et ses polices) se pose sur l'écran avec la page : js/slide-theme.js.
+    if (typeof SlideTheme !== 'undefined') SlideTheme.refresh();
   }
 
   function pageNumberText(format, pageNum, totalPages) {
@@ -398,8 +609,7 @@ const PageLayout = (function () {
   }
   function resolvePageNumberBadges(html, pageNum, totalPages) {
     // Résout chaque badge .page-number-badge d'un fragment HTML en son texte pour cette page ; renvoie le HTML résolu, prêt à s'afficher.
-    const host = document.createElement('template'); // inerte : rien ne charge ni ne s'exécute pendant la lecture
-    host.innerHTML = html || '';
+    const host = Dom.inertTemplate(html || ''); // inerte : rien ne charge ni ne s'exécute pendant la lecture
     // Ce HTML va s'afficher (aperçu paginé, Lecture) : une image d'un autre site que la personne n'a pas affichée y prend son cadre « Afficher ».
     if (typeof ExternalImages !== 'undefined') ExternalImages.blockIn(host.content);
     host.content.querySelectorAll('.page-number-badge').forEach(badge => {
@@ -410,12 +620,16 @@ const PageLayout = (function () {
 
   return {
     A4_WIDTH_MM, A4_HEIGHT_MM, MM_TO_PT, MM_TO_TWIP, MM_TO_PX, COLUMN_GAP_PX, MIN_CONTENT_MM, DEFAULT_MARGIN_PT, DEFAULT_MARGIN_MM, PORTRAIT, LANDSCAPE, DEFAULT_FORMAT,
-    HEADER_FOOTER_ZONE_PX, HEADER_FOOTER_GAP_PT, HEADER_FOOTER_GAP_PX, HEADER_FOOTER_BAND_PX, hasZoneContent,
-    getMarginsMm, setMarginsMm, getContentWidthMm, getContentHeightMm, getColumnGapMm, getMarginsPt, getMarginsPx, getMarginsTwip, applyToPreviewCss,
-    getOrientation, isLandscape, setOrientation, getPageSizeMm, getPageSizePt, getPageSizePx, getPageSizeTwip, getSheetWidthPx, pageSizePtFor, pageSizeTwipFor,
+    HEADER_FOOTER_ZONE_PX, HEADER_FOOTER_GAP_PT, HEADER_FOOTER_GAP_PX, HEADER_FOOTER_BAND_PX, HEADER_FOOTER_OVERFLOW_TOLERANCE_PX, zoneOverflowPx, hasZoneContent,
+    getMarginsMm, setMarginsMm, boundedMarginsMm, newMacroMarginsMm, getContentWidthMm, getContentHeightMm, getColumnGapMm, getMarginsPt, getMarginsPx, getMarginsTwip, applyToPreviewCss,
+    getOrientation, isLandscape, isOrientationAuto, setOrientation, setOrientationAuto, withOrientation, withPage, getMarginLimitsMm, getPageSizeMm, getPageSizePt, getPageSizePx, getPageSizeTwip, getSheetWidthPx, pageSizePtFor, pageSizeTwipFor,
     getFormats, getFormat, setFormat, normalizeFormat, pageSizeMmFor, pdfPageNameFor,
-    CUSTOM_MIN_MM, CUSTOM_MAX_MM, isCustomFormat, cmText, formatLabel, getFormatLabel, setPageSize, fitsHeaderFooter,
+    CUSTOM_MIN_MM, CUSTOM_MAX_MM, SLIDE_FORMAT, isCustomFormat, isSlideFormat, getSlideRatios, cmText, formatLabel, getFormatLabel, setPageSize, fitsHeaderFooter,
     WATERMARK_MAX_CHARS, WATERMARK_DEFAULT, normalizeWatermark, getWatermark, setWatermark,
+    CUSTOM_COLORS_MAX, normalizeCustomColors, getCustomColors, setCustomColors,
+    CUSTOM_FORMATS_MAX, CUSTOM_FORMAT_NAME_MAX, normalizeCustomFormats, getCustomFormats, setCustomFormats,
+    getTheme, setTheme,
+    snapshot, restore,
     pageNumberText, resolvePageNumberBadges,
   };
 })();

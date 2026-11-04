@@ -3,12 +3,13 @@
 // js/access-rights.js et js/row-template.js : lue avec le widget, partagée par tout le monde seulement une fois la vue enregistrée côté Grist
 // (grist.setOption ne pose qu'un brouillon).
 // À l'ouverture : la ligne qui désigne un modèle (js/row-template.js) l'emporte, puis le modèle de la vue, puis le modèle par défaut du document (★,
-// js/templates.js). Comme l'étoile, un modèle email ou un macro-modèle ne peut pas être ce modèle de départ (bouton grisé ; un choix enregistré
-// devenu invalide est ignoré).
+// js/templates.js). Le modèle de la vue peut être de n'importe quel type, un email ou un macro-modèle compris : c'est un choix explicite pour cette
+// vue (demande du 08/10). Le ★ du document reste réservé aux modèles ordinaires (Templates.canBeDocumentDefault). Un choix enregistré dont le modèle
+// n'existe plus est ignoré, comme celui d'un modèle d'un type que le widget ne sait pas ouvrir (l'écran le dit).
 // Écran : section « Modèle par défaut de cette vue » de Réglages > Vue (état, « Utiliser le modèle ouvert », « Retirer »).
 //   ViewTemplate.init() -> lit l'option et s'abonne à ses changements (après GristAPI.init)
-//   ViewTemplate.usableId() -> id du modèle de la vue s'il existe encore et peut servir de départ, sinon null
-//   ViewTemplate.set(id) -> choisit ce modèle pour la vue ; clear() retire le choix
+//   ViewTemplate.usableId() -> id du modèle de la vue s'il existe encore et s'ouvre ici, sinon null
+//   ViewTemplate.set(id) -> choisit ce modèle pour la vue ; clear() retire le choix ; l'un et l'autre se défont par Ctrl + Z (js/settings-history.js)
 //   ViewTemplate.wirePanel() -> branche la section de Réglages (redessinée à l'ouverture et à chaque changement de droits ; grisée en lecture seule)
 const ViewTemplate = (function () {
   const OPTION_KEY = 'modeleDeLaVue';
@@ -16,42 +17,41 @@ const ViewTemplate = (function () {
   let currentId = null;      // id choisi (texte) ou null
   // Ce que cet écran vient d'écrire dans les options : Grist le renvoie par onOptions, parfois après un choix plus récent (même garde que
   // js/row-template.js).
-  const expectedEchoes = [];
+  const echoes = GristAPI.createEchoGuard();
 
   const normalize = value => (value != null && value !== '' ? String(value) : null);
   const find = Templates.byId;
-  // Un modèle email ou macro ne démarre jamais le widget (cf. js/main.js:syncDefaultTemplateButton).
-  const canStart = tpl => !!tpl && Templates.canOpenAtStart(tpl.typeModele);
 
   function getId() { return currentId; }
 
+  // Un modèle d'un type que le widget ne sait pas ouvrir (js/templates.js, isOpenableType) n'est pas utilisable : la vue s'ouvre comme sans choix.
   function usableId() {
-    const tpl = currentId != null ? find(currentId) : null;
-    return canStart(tpl) ? String(tpl.id) : null;
+    const tpl = currentId != null ? Templates.openableById(currentId) : null;
+    return tpl ? String(tpl.id) : null;
   }
 
   function isReadOnly() { return typeof AccessRights !== 'undefined' && AccessRights.get().readOnly; }
 
   async function write(id) {
     const next = normalize(id);
-    expectedEchoes.push(JSON.stringify(next));
-    if (expectedEchoes.length > 20) expectedEchoes.shift();
+    echoes.remember(JSON.stringify(next));
     currentId = next;
     try { await GristAPI.setWidgetOption(OPTION_KEY, next); }
     catch (e) { console.error('[ViewTemplate] enregistrement de l’option du widget impossible', e); }
     renderPanel();
   }
 
-  const set = id => write(id);
-  const clear = () => write(null);
+  // Le choix, tel que Ctrl + Z le défait (js/settings-history.js) : défaire ou rétablir l'écrit par la même écriture que le geste, et le coin d'état dit ce que la vue ouvre désormais (la phrase de l'écran).
+  const SETTING = { read: getId, write, say: () => statusText(), locked: isReadOnly };
+
+  const set = id => SettingsHistory.track(SETTING, () => write(id));
+  const clear = () => SettingsHistory.track(SETTING, () => write(null));
 
   function init() {
     currentId = normalize((GristAPI.getWidgetOptions() || {})[OPTION_KEY]);
     GristAPI.onWidgetOptionsChange(options => {
       const incoming = normalize(options && options[OPTION_KEY]);
-      const echo = expectedEchoes.indexOf(JSON.stringify(incoming));
-      if (echo !== -1) { expectedEchoes.splice(0, echo + 1); return; }
-      expectedEchoes.length = 0;
+      if (echoes.isEcho(JSON.stringify(incoming))) return;
       currentId = incoming;
       renderPanel();
     });
@@ -68,12 +68,15 @@ const ViewTemplate = (function () {
 
   function statusText() {
     const chosen = currentId != null ? find(currentId) : null;
-    if (chosen && canStart(chosen)) return I18n.t('settings.viewTemplate.status.set', { name: chosen.nom });
-    // Choix enregistré mais le modèle n'existe plus (ou n'est plus un modèle de départ) : dit tel quel, le modèle par défaut du document s'ouvre.
+    if (chosen && !Templates.isOpenableType(chosen.typeModele)) {
+      return I18n.t('settings.viewTemplate.status.unavailable', { name: chosen.nom, reason: Templates.unavailableText(chosen.typeModele) });
+    }
+    if (chosen) return I18n.t('settings.viewTemplate.status.set', { name: chosen.nom });
+    // Choix enregistré mais le modèle n'existe plus : dit tel quel, le modèle par défaut du document s'ouvre.
     if (currentId != null) return I18n.t('settings.viewTemplate.status.missing');
     const defaultId = Templates.getDefaultId();
     const fallback = defaultId != null ? find(defaultId) : null;
-    return canStart(fallback)
+    return fallback
       ? I18n.t('settings.viewTemplate.status.noneWithDefault', { name: fallback.nom })
       : I18n.t('settings.viewTemplate.status.none');
   }
@@ -86,13 +89,13 @@ const ViewTemplate = (function () {
     const open = openTemplate();
     const setBtn = el('settings-viewtemplate-set');
     const clearBtn = el('settings-viewtemplate-clear');
-    // Grisés, jamais retirés : aucun modèle ouvert, email ou macro (comme l'étoile), déjà celui de la vue, ou lecture seule.
+    // Grisés, jamais retirés : aucun modèle enregistré ouvert (un nouveau modèle n'a pas encore d'id), déjà celui de la vue, ou lecture seule. Tous les
+    // types de modèle se choisissent : document, grille, email et macro-modèle.
     if (setBtn) {
-      setBtn.disabled = locked || !canStart(open) || String(open && open.id) === String(currentId);
-      setBtn.textContent = open && canStart(open)
+      setBtn.disabled = locked || !open || String(open.id) === String(currentId);
+      setBtn.textContent = open
         ? I18n.t('settings.viewTemplate.useNamed', { name: open.nom })
         : I18n.t('settings.viewTemplate.use');
-      setBtn.title = open && !canStart(open) ? I18n.t('settings.viewTemplate.cannotStart') : '';
     }
     if (clearBtn) clearBtn.disabled = locked || currentId == null;
     const lockedHint = el('settings-viewtemplate-locked');
@@ -105,14 +108,13 @@ const ViewTemplate = (function () {
     if (!setBtn || !clearBtn) return;
     setBtn.addEventListener('click', () => {
       const open = openTemplate();
-      if (!canStart(open) || isReadOnly()) return;
+      if (!open || isReadOnly()) return;
       set(open.id);
     });
     clearBtn.addEventListener('click', () => { if (!isReadOnly()) clear(); });
     // Relu à chaque ouverture des Réglages : le modèle ouvert, la liste des modèles et les droits ont pu changer depuis.
     const openBtn = el('v2-btn-settings');
     if (openBtn) openBtn.addEventListener('click', renderPanel);
-    I18n.onChange(renderPanel);
     // Les droits changent aussi Réglages ouverts (onglet Accès, case cochée dans la table des droits, relecture de 10 s) : les boutons se grisent ou
     // se dégrisent sans rouvrir. Rien à préserver ici : l'écran n'a aucune saisie.
     if (typeof AccessRights !== 'undefined') AccessRights.onChange(renderPanel);

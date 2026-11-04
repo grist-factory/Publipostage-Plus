@@ -1,0 +1,408 @@
+// Le lien avec Grist Factory Suite (GFS) : ce que le widget en sait quand GFS l'héberge, et rien quand il tourne seul (une fenêtre de Grist qui charge l'adresse de ce dépôt).
+// Les messages de GFS ont leur enveloppe (contrats de GFS, section 5) : { gfs: <contrat>, type: 'appel' | 'reponse' | 'erreur' | 'evenement', id, nom, args | data }, sans le `mtype` du
+// protocole des widgets de Grist, envoyée au cadre parent avec `targetOrigin "*"` (le sous-cadre d'une app a une origine opaque). Onze choses seulement :
+//  - `contexte`, demandé au démarrage (5 secondes au plus) : les extensions que la personne a activées, la source de chaque bibliothèque qu'elles exigent ({ id: { src, integrite, forme } }),
+//    l'adresse du widget dans Grist (`adresseWidget`, sans requête : celle de GFS, que portent les sections de la page, pas celle de cette app qui n'en est que le sous-cadre),
+//    `ouverture`, ce que GFS demande d'ouvrir au démarrage (consigne 010 ; pour « Nouveau > Importer », le fichier à importer que GFS donne, consigne 035), `langue`, la langue qui vaut maintenant (`fr` ou `en`, consigne 019), `stockage`, l'espace de cette app chez GFS
+//    (`{ clé: texte }`, consigne 024) et `barre`, la barre de GFS posée par-dessus le cadre (`{ bord, epaisseur, zone }` ou null, consigne 025) ;
+//  - l'appel `stockage.ecrire { cle, valeur }`, sans `id` (GFS ne répond rien) : une clé de cet espace change (`valeur` null la retire). Le cadre isolé de GFS refuse son propre stockage de navigateur ;
+//    ce sont ces deux-là qui gardent, pour chaque personne, ce que l'app se rappelle (js/person-store.js, le seul à s'en servir) ;
+//  - l'événement `barre`, `{ barre }` de la même forme, une fois par changement (la personne déplace la barre, le cadre change de taille, l'explorateur s'ouvre ou se ferme, l'app la masque ou la
+//    rend) et l'appel `barre.masquer { masquee }`, sans `id`, que fait un diaporama à son ouverture et à chaque sortie : GFS pose la barre, l'app écarte ce qu'elle met sous la zone (js/gfs-bar.js,
+//    le seul à s'en servir) ;
+//  - l'événement `extensions`, quand la personne en active ou en désactive une dans GFS : la même forme ;
+//  - l'événement `langue`, `{ langue: 'fr' | 'en' }`, quand la personne change la langue de GFS (un seul choix pour GFS et toutes ses apps, contrats 5.2 point 6) : une seule fois par changement, sans que GFS
+//    touche au cadre de l'app, qui décide comment suivre (js/settings.js:followGfsLanguage) ;
+//  - l'événement `reglages`, `{ enregistres: true | false }` (consigne 039), que GFS envoie après chaque écriture des réglages de la vue de l'app (`setOption`, `setOptions`, `clearOptions`) : `true`, le réglage est
+//    dans la vue de Grist, il n'y a plus de « Enregistrer » à cliquer ; `false`, il est resté un brouillon de Grist (GFS s'est replié dessus), que « Enregistrer » partage. Le dernier est gardé (`settingsSaved()`),
+//    les abonnés de `onSettings` sont rappelés quand il change (js/save-reminder.js, le seul à s'en servir) ;
+//  - `ambiance` (contrats 5.2, point 10, consigne 041), au contexte puis par l'événement `ambiance` `{ ambiance }` (une fois par geste de la personne dans la fenêtre « Thème » de GFS) : le choix d'ambiance et de couleur
+//    de la personne, un seul pour GFS et toutes ses apps, `{ id, couleur, ajustee, clair, sombre, forme }` ou `null` (rien n'est choisi : l'app garde ses couleurs). Il est lu par `normalizeAmbiance` du kit
+//    (kit/js/ambiance-message.js, une carte d'importation de index.html le nomme) : les jetons que l'app connaît et des valeurs vérifiées, rien d'autre. Le dernier est gardé (`ambiance()`, une copie),
+//    les abonnés de `onAmbiance` sont rappelés quand il change vraiment (js/gfs-ambiance.js, le seul à s'en servir : il pose les jetons sur la page) ;
+//  - `installer`, quand la personne clique une fonction grisée dans GFS : GFS ouvre sa fenêtre d'installation ;
+//  - l'appel `ranger { fichier, nom, type, lot?, suivants? }` (consigne 043), que l'app envoie pour qu'un PDF qu'elle vient de fabriquer se range parmi les fichiers de GFS, un fichier par appel, sans délai (GFS pose lui-même la
+//    question du nom pris) : la réponse est `{ statut, id, nom }` et une erreur de GFS garde son `code` (`GFS_ANNULE`, `GFS_ECHEC`…), de quoi js/pdf-delivery.js, le seul à s'en servir, décide de la suite ;
+//  - l'appel `ouvrir`, que GFS envoie à l'app déjà ouverte quand la personne double-clique un autre fichier (consigne 010) ou choisit « Nouveau > Importer » (consigne 035, avec le fichier) ou « Lire » sur un PDF (consigne 040, avec le PDF) : l'abonné de `onOpen` répond, ce fichier lui rend la réponse ;
+//  - l'appel `fermer { raison }` (consigne 047), que GFS envoie à l'app active avant de la remplacer par une autre app ou de lui faire laisser la place au fichier d'une autre app (`raison` : `app`, `explorateur`, `nouveau`,
+//    `importer`, `lire` ou `lien`) et dont il attend `{ ferme: true | false }` avant de détruire son cadre : l'abonné de `onClose` répond (js/gfs-open.js : ce qui attend est enregistré avant le `oui`). Une réponse qui
+//    échoue est une erreur (`GFS_ECHEC`, GFS demande alors à la personne), jamais un `oui`. Tout autre appel de GFS reçoit `GFS_INCONNU` (contrats 5.1, point 3).
+// Une app sait qu'elle est hébergée par `gfs=<n>` dans sa propre adresse (<n> : le contrat de GFS), pas par une question : seule, il n'y a ni écouteur ni message, `extensions()` est vide,
+// `library()` ne rend rien, `widgetAddress()` rend '', `opening()` rend null, `language()` rend null, `hasStorage()` rend faux, `bar()` rend null, `settingsSaved()` rend null, `ambiance()` rend null, `hideBar()` rend faux, `opensInNewTab()` rend faux et `deposit()` rejette sans rien envoyer (et rien du kit n'est chargé). Un message n'est lu que s'il vient du cadre parent (`event.source`) et porte le contrat de GFS ; l'écouteur est un addEventListener, jamais `window.onmessage =`,
+// qui remplacerait celui du script d'API de Grist. Le reste du widget passe par js/extensions.js, js/gfs-open.js, js/person-store.js et js/gfs-bar.js, jamais par ce fichier (sauf `opensInNewTab`, que trois liens consultent, consigne 011).
+const GfsLink = (function () {
+  const CONTRACT = 0;                // le contrat que parle l'app, celui de son manifeste
+  const CONTEXT_TIMEOUT_MS = 5000;   // contrats 5.1, point 4 : l'app attend `contexte` 5 secondes au plus
+  const ID_PATTERN = /^[a-z][a-z0-9_-]{0,63}$/;
+  const STORAGE_KEY = /^[A-Za-z0-9_.:-]{1,64}$/;   // contrats 5.3 : la forme d'une clé de l'espace d'une app (1 à 64 caractères)
+  const BAR_EDGES = { gauche: 'left', haut: 'top', droite: 'right', bas: 'bottom' };   // contrats 5.2, point 7 : les quatre bords où GFS pose sa barre, nommés comme le reste de l'app
+  const IMPORT_REASON = 'importer';   // contrats 5.2, point 3 (consigne 035) : la raison d'une ouverture qui porte `importation`
+  const READ_REASON = 'lire';         // contrats 5.2, point 3 (consigne 040) : la raison d'une ouverture qui porte `lecture`
+  const AMBIANCE_WAIT_MS = 1500;      // le contexte porte une ambiance et le lecteur du kit n'est pas encore là : `ready` l'attend ce temps au plus (l'ambiance se pose alors avant l'affichage)
+
+  const hostContract = (function () {
+    try {
+      const raw = new URLSearchParams(window.location.search).get('gfs');
+      return /^\d{1,6}$/.test(raw || '') ? Number(raw) : null;
+    } catch (e) { return null; }
+  })();
+  const hosted = hostContract !== null;
+
+  let extensions = [];
+  let libraries = new Map();   // identifiant -> { src, integrite, forme } (forme : 'script' ou 'module', contrats de GFS 5.2 point 4)
+  let address = '';            // `adresseWidget` du contexte ('' : seul, ou GFS ne l'a pas donnée)
+  let opening = null;          // `ouverture` du contexte : null, ou { fichier: null | { id, type }, type, dossier, raison[, importation: { valeur, fichier: File }][, lecture: { id, fichier: File }] }
+  let language = null;         // `langue` du contexte, puis de l'événement `langue` : 'fr' ou 'en' (null : seul, ou GFS ne la donne pas)
+  let storage = null;          // `stockage` du contexte (consigne 024) : Map clé -> texte, l'espace de cette app chez GFS (null : seul, GFS ne répond pas ou ne le donne pas)
+  const languageListeners = new Set();
+  let settingsSaved = null;    // `enregistres` du dernier événement `reglages` (consigne 039) : true (les réglages écrits sont dans la vue), false (restés un brouillon de Grist) ; null : aucun événement (seul, GFS ne l'envoie pas, ou pas encore)
+  const settingsListeners = new Set();
+  let bar = null;             // `barre` du contexte, puis de l'événement `barre` (consigne 025) : null (seul, GFS ne la donne pas, l'explorateur est ouvert ou l'app l'a masquée) ou { edge, depth, zone: { x, y, width, height } }
+  const barListeners = new Set();
+  let ambiance = null;         // `ambiance` du contexte, puis de l'événement `ambiance` (consigne 041), lue par `normalizeAmbiance` du kit : { id, couleur, ajustee, clair, sombre, forme } ou null (seul, GFS ne la donne pas, rien n'est choisi, ou le lecteur du kit n'est pas là)
+  let ambianceRaw = null;      // ce que GFS a dit, tel quel : relu dès que le lecteur du kit est là
+  let readAmbiance = null;     // `normalizeAmbiance` du kit, une fois son module chargé (hébergée seulement)
+  const ambianceListeners = new Set();
+  let openHandler = null;      // celui qui s'est inscrit pour l'appel `ouvrir` (onOpen)
+  const earlyOpens = [];       // les appels `ouvrir` arrivés avant lui : ils attendent son inscription
+  let closeHandler = null;     // celui qui s'est inscrit pour l'appel `fermer` (onClose)
+  const earlyCloses = [];      // les appels `fermer` arrivés avant lui : ils attendent son inscription
+  let known = false;          // le contexte (ou un événement) est arrivé
+  const listeners = new Set();
+  const pending = new Map();   // id d'appel -> { resolve, reject }
+  const installing = new Map();
+  let nextId = 1;
+  let settleReady;
+  // Résolue quand le contexte est arrivé ou que ses 5 secondes sont passées (jamais rejetée) : tout de suite quand l'app est seule.
+  const ready = new Promise((resolve) => { settleReady = resolve; });
+
+  function call(name, args, timeoutMs) {
+    return new Promise((resolve, reject) => {
+      const id = nextId;
+      nextId += 1;
+      let timer = 0;
+      const done = fn => (value) => { clearTimeout(timer); pending.delete(id); fn(value); };
+      pending.set(id, { resolve: done(resolve), reject: done(reject) });
+      if (timeoutMs) timer = setTimeout(() => done(reject)(new Error('GFS ne répond pas : ' + name)), timeoutMs);
+      const message = { gfs: CONTRACT, type: 'appel', id, nom: name };
+      if (args !== undefined) message.args = args;
+      try { window.parent.postMessage(message, '*'); } catch (e) { done(reject)(e); }
+    });
+  }
+
+  // `ouverture` (contrats 5.2, point 3) ou `args` de l'appel `ouvrir` (5.4) : { fichier, type, dossier, raison } où `fichier` est null ou { id, type }, l'`id` pris comme texte (le numéro de
+  // ligne du modèle). Pour la raison `importer` (« Nouveau > Importer », consigne 035 : GFS a ouvert le sélecteur lui-même et donne le fichier choisi, une seule fois), s'y ajoute
+  // `importation: { valeur, fichier }` : `valeur` un texte (`excel`, `markdown` ou `powerpoint`) et `fichier` un `File`. Pour toute autre raison, ou si `valeur` n'est pas un texte ou `fichier` pas un
+  // `File`, l'ouverture est lue sans importation. Pour la raison `lire` (« Lire » sur un PDF, consigne 040 : GFS garde le PDF, le télécharge lui-même et le donne, une seule fois), s'y ajoute
+  // `lecture: { id, fichier }` : `id` un texte (l'identifiant du PDF chez GFS) et `fichier` un `File` (le PDF, à son nom) ; pour toute autre raison, ou si `id` n'est pas un texte ou `fichier` pas un `File`,
+  // l'ouverture est lue sans lecture. Rien d'autre n'est gardé ; null quand ce n'est pas un objet.
+  function normalizeOpening(raw) {
+    if (!raw || typeof raw !== 'object') return null;
+    const file = raw.fichier && typeof raw.fichier === 'object' && raw.fichier.id != null && String(raw.fichier.id).trim() !== '' ? raw.fichier : null;
+    const text = value => (typeof value === 'string' ? value : '');
+    const found = { fichier: file ? { id: String(file.id).trim(), type: text(file.type) } : null, type: text(raw.type), dossier: text(raw.dossier), raison: text(raw.raison) };
+    const imported = raw.importation;
+    if (found.raison === IMPORT_REASON && imported && typeof imported === 'object' && typeof imported.valeur === 'string' && typeof File === 'function' && imported.fichier instanceof File) {
+      found.importation = { valeur: imported.valeur, fichier: imported.fichier };
+    }
+    const reading = raw.lecture;
+    if (found.raison === READ_REASON && reading && typeof reading === 'object' && typeof reading.id === 'string' && typeof File === 'function' && reading.fichier instanceof File) {
+      found.lecture = { id: reading.id, fichier: reading.fichier };
+    }
+    return found;
+  }
+
+  // `stockage` du contexte (contrats 5.2, consigne 024) : l'espace de cette app chez GFS, `{ clé: texte }`. Une clé hors de la règle de GFS ou une valeur qui n'est pas un texte n'est pas gardée ; null quand
+  // ce n'est pas un objet (un GFS d'avant la consigne 024 n'en donne pas : l'app garde alors ses préférences comme avant).
+  function normalizeStorage(raw) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+    const found = new Map();
+    Object.keys(raw).forEach((key) => { if (STORAGE_KEY.test(key) && typeof raw[key] === 'string') found.set(key, raw[key]); });
+    return found;
+  }
+
+  // `barre` du contexte ou de l'événement `barre` (contrats 5.2, point 7, consigne 025) : { bord, epaisseur, zone: { x, y, largeur, hauteur } } ou null. `bord` est gauche, haut, droite ou bas ; `zone` est le
+  // rectangle que la barre occupe, 4 px de marge compris, en pixels du cadre de l'app (origine en haut à gauche) et `epaisseur` la profondeur dont s'écarte ce qu'on pose à ce bord. Rend { edge, depth, zone }
+  // avec le bord nommé en anglais ('left', 'top', 'right', 'bottom') et la zone en { x, y, width, height } ; null quand GFS n'affiche pas sa barre, et pour une forme hors de cette règle (un bord inconnu,
+  // une largeur, une hauteur ou une épaisseur qui n'est pas un nombre positif ou nul) : mieux vaut ne rien écarter que de se fier à une zone qui n'en est pas une. Une origine négative reste une origine : la barre
+  // déborde d'un cadre plus petit qu'elle.
+  function normalizeBar(raw) {
+    if (!raw || typeof raw !== 'object' || typeof raw.bord !== 'string' || !Object.prototype.hasOwnProperty.call(BAR_EDGES, raw.bord) || !raw.zone || typeof raw.zone !== 'object') return null;
+    const size = value => (typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null);
+    const origin = value => (typeof value === 'number' && Number.isFinite(value) ? value : null);
+    const zone = { x: origin(raw.zone.x), y: origin(raw.zone.y), width: size(raw.zone.largeur), height: size(raw.zone.hauteur) };
+    const depth = size(raw.epaisseur);
+    if (depth === null || Object.keys(zone).some(key => zone[key] === null)) return null;
+    return { edge: BAR_EDGES[raw.bord], depth, zone };
+  }
+
+  // Ce que GFS donne (contexte ou événement `extensions`) : une liste d'identifiants, des sources, l'adresse du widget, l'ouverture demandée, la langue, l'espace de l'app, la barre et l'ambiance, rien d'autre n'est gardé. L'événement
+  // `extensions` n'a ni adresse, ni ouverture, ni langue, ni espace, ni barre, ni ambiance : il ne les efface pas. La langue du contexte (`fr` ou `en`) fait foi à chaque appel `contexte` ; elle est gardée sans rappeler personne
+  // (applyLanguage rappelle ceux qui suivent l'événement `langue`). Il en va de même de la barre : celle du contexte est gardée sans rappeler personne (le départ lit `bar()`), applyBar rappelle ceux qui suivent
+  // l'événement `barre`.
+  function apply(data) {
+    if (!data || typeof data !== 'object') return;
+    if (typeof data.adresseWidget === 'string' && data.adresseWidget.trim()) address = data.adresseWidget.trim();
+    if ('ouverture' in data) opening = normalizeOpening(data.ouverture);
+    if (data.langue === 'fr' || data.langue === 'en') language = data.langue;
+    if ('stockage' in data) storage = normalizeStorage(data.stockage);
+    if ('barre' in data) bar = normalizeBar(data.barre);
+    if ('ambiance' in data) setAmbiance(data.ambiance);
+    const nextExtensions = (Array.isArray(data.extensions) ? data.extensions : []).filter(id => typeof id === 'string' && ID_PATTERN.test(id));
+    const nextLibraries = new Map();
+    const given = data.bibliotheques && typeof data.bibliotheques === 'object' ? data.bibliotheques : {};
+    Object.keys(given).forEach((id) => {
+      const lib = given[id];
+      // `forme` manque chez un GFS d'avant le 16/10 : un script classique, comme Plotly.
+      if (ID_PATTERN.test(id) && lib && typeof lib.src === 'string' && typeof lib.integrite === 'string') nextLibraries.set(id, { src: lib.src, integrite: lib.integrite, forme: lib.forme === 'module' ? 'module' : 'script' });
+    });
+    const changed = !known || JSON.stringify([extensions, Array.from(libraries)]) !== JSON.stringify([nextExtensions, Array.from(nextLibraries)]);
+    extensions = nextExtensions;
+    libraries = nextLibraries;
+    known = true;
+    if (changed) listeners.forEach((fn) => { try { fn(); } catch (e) { console.warn('[GfsLink] abonné en échec', e); } });
+  }
+
+  // L'événement `langue` (contrats 5.2, points 2 et 6) : la personne a changé la langue de GFS, `{ langue: 'fr' | 'en' }`. Les abonnés de `onLanguage` sont rappelés une fois par changement ; une langue
+  // qui ne change rien, ou qui n'est ni `fr` ni `en`, n'est pas gardée et ne rappelle personne.
+  function applyLanguage(data) {
+    known = true;
+    const next = data && typeof data === 'object' ? data.langue : null;
+    if ((next !== 'fr' && next !== 'en') || next === language) return;
+    language = next;
+    languageListeners.forEach((fn) => { try { fn(language); } catch (e) { console.warn('[GfsLink] abonné de la langue en échec', e); } });
+  }
+
+  // L'événement `reglages` (contrats 5.2, point 2, consigne 039) : GFS l'envoie après chaque écriture des réglages de la vue de l'app, `{ enregistres: true }` quand le réglage est dans la vue (personne n'a rien à
+  // enregistrer dans Grist), `{ enregistres: false }` quand il est resté un brouillon de Grist. Le dernier état est gardé ; les abonnés de `onSettings` sont rappelés (`fn(true | false)`) quand il change. Un événement
+  // dont `enregistres` n'est pas un booléen n'est pas gardé et ne rappelle personne : l'état d'avant vaut toujours. Rien n'est jamais écrit ici : l'app n'écrit aucun réglage sans un geste de la personne.
+  function applySettings(data) {
+    known = true;
+    const next = data && typeof data === 'object' && typeof data.enregistres === 'boolean' ? data.enregistres : null;
+    if (next === null || next === settingsSaved) return;
+    settingsSaved = next;
+    settingsListeners.forEach((fn) => { try { fn(settingsSaved); } catch (e) { console.warn('[GfsLink] abonné des réglages en échec', e); } });
+  }
+
+  // L'événement `barre` (contrats 5.2, point 7) : `{ barre }`, de la même forme que celle du contexte, une fois par changement chez GFS (la personne déplace la barre, le cadre change de taille, l'explorateur
+  // s'ouvre ou se ferme, l'app la masque ou la rend). Les abonnés de `onBar` sont rappelés (`fn(bar())`) quand l'état change vraiment ; un événement qui répète l'état d'avant, ou qui n'a pas de `barre`, ne
+  // rappelle personne.
+  function applyBar(data) {
+    known = true;
+    if (!data || typeof data !== 'object' || !('barre' in data)) return;
+    const next = normalizeBar(data.barre);
+    if (JSON.stringify(next) === JSON.stringify(bar)) return;
+    bar = next;
+    barListeners.forEach((fn) => { try { fn(getBar()); } catch (e) { console.warn('[GfsLink] abonné de la barre en échec', e); } });
+  }
+
+  // L'ambiance du contexte ou de l'événement `ambiance` (contrats 5.2, point 10, consigne 041) : le message est gardé tel que GFS l'a dit puis lu par `normalizeAmbiance` du kit, qui ne retient que les jetons que l'app
+  // connaît et des valeurs vérifiées (une couleur `#rrggbb`, une forme sans `;`, `{`, `}`, `url(` ni `@import`) et rend null pour tout ce qui n'est pas un message d'ambiance. Les abonnés de `onAmbiance` sont rappelés
+  // (`fn(ambiance())`) quand le message lu change vraiment, au contexte comme à l'événement ; un message qui, lu, donne le même résultat que le précédent ne rappelle personne. Tant que le lecteur du kit n'est
+  // pas là, rien n'est lu (null) : il relit alors le dernier message dès son arrivée.
+  function setAmbiance(raw) {
+    ambianceRaw = raw === undefined ? null : raw;
+    const next = readAmbiance === null ? null : readAmbiance(ambianceRaw);
+    if (JSON.stringify(next) === JSON.stringify(ambiance)) return;
+    ambiance = next;
+    ambianceListeners.forEach((fn) => { try { fn(getAmbiance()); } catch (e) { console.warn('[GfsLink] abonné de l\'ambiance en échec', e); } });
+  }
+
+  // L'événement `ambiance` : `{ ambiance }`, le message ou null. Un événement sans `ambiance` ne dit rien et ne change rien.
+  function applyAmbiance(data) {
+    known = true;
+    if (!data || typeof data !== 'object' || !('ambiance' in data)) return;
+    setAmbiance(data.ambiance);
+  }
+
+  // Le lecteur du kit : kit/js/ambiance-message.js par la carte d'importation de index.html, une seule adresse (le kit le demande). Seule l'app hébergée le charge, dès le départ et en même temps que le contexte se
+  // demande ; seule, rien n'est téléchargé. Un module qui ne se charge pas (le dépôt de l'app sans son kit, un réseau qui le coupe) ne casse rien : l'app garde ses couleurs et le dit une fois dans la console.
+  const ambianceReader = !hosted ? Promise.resolve() : import('kit/ambiance-message').then((module) => {
+    if (typeof module.normalizeAmbiance !== 'function') throw new TypeError('normalizeAmbiance manque au module');
+    readAmbiance = module.normalizeAmbiance;
+    setAmbiance(ambianceRaw);
+  }).catch(e => console.warn('[GfsLink] le lecteur d\'ambiance du kit ne se charge pas : l\'app garde ses couleurs', e));
+
+  function onMessage(event) {
+    if (event.source !== window.parent) return;
+    const message = event.data;
+    if (!message || typeof message !== 'object' || message.gfs !== hostContract) return;
+    if (message.type === 'reponse' || message.type === 'erreur') {
+      const entry = pending.get(message.id);
+      if (!entry) return;
+      if (message.type === 'reponse') entry.resolve(message.data);
+      // L'erreur garde le `code` de GFS (`GFS_ANNULE`, `GFS_ECHEC`, `GFS_REFUSE`…, contrats 5.1 point 3) : la réaction de l'appelant en dépend (consigne 043 : `GFS_ANNULE` arrête les rangements d'un export, `GFS_ECHEC` non).
+      else entry.reject(Object.assign(new Error(String(message.message || message.code || 'erreur de GFS')), { code: typeof message.code === 'string' ? message.code : '' }));
+    } else if (message.type === 'evenement' && message.nom === 'extensions') apply(message.data);
+    else if (message.type === 'evenement' && message.nom === 'langue') applyLanguage(message.data);
+    else if (message.type === 'evenement' && message.nom === 'barre') applyBar(message.data);
+    else if (message.type === 'evenement' && message.nom === 'reglages') applySettings(message.data);
+    else if (message.type === 'evenement' && message.nom === 'ambiance') applyAmbiance(message.data);
+    else if (message.type === 'appel') receiveCall(message);
+  }
+
+  // La réponse de l'app à un appel de GFS : l'enveloppe porte le contrat de l'app et reprend l'`id` de l'appel.
+  function reply(id, fields) {
+    try { window.parent.postMessage(Object.assign({ gfs: CONTRACT, id }, fields), '*'); } catch (e) { /* GFS n'est plus là : personne n'attend la réponse */ }
+  }
+
+  // La raison d'un appel `fermer` (contrats 5.4, point 3) : l'un des six mots du contrat, '' pour tout autre texte ou une forme inattendue. La réponse n'en dépend pas - l'app enregistre avant de partir quelle que soit la raison -
+  // mais l'abonné la reçoit, et un appel dont la raison est inconnue est répondu comme les autres.
+  const CLOSE_REASONS = ['app', 'explorateur', 'nouveau', 'importer', 'lire', 'lien'];
+  function normalizeCloseReason(args) {
+    const reason = args && typeof args === 'object' && typeof args.raison === 'string' ? args.raison : '';
+    return CLOSE_REASONS.includes(reason) ? reason : '';
+  }
+
+  // Un appel de GFS vers l'app : `ouvrir` va à celui qui s'est inscrit (onOpen), `fermer` à celui de onClose, tout autre nom reçoit `GFS_INCONNU` (contrats 5.1, point 3). Un appel sans `id` entier n'attend pas de réponse (point 2).
+  function receiveCall(message) {
+    const id = Number.isInteger(message.id) ? message.id : null;
+    if (message.nom === 'fermer') {
+      const call = { id, reason: normalizeCloseReason(message.args) };
+      if (closeHandler) deliverClose(call); else earlyCloses.push(call);
+      return;
+    }
+    if (message.nom !== 'ouvrir') {
+      if (id !== null) reply(id, { type: 'erreur', code: 'GFS_INCONNU', message: 'Appel inconnu : ' + String(message.nom).slice(0, 60) });
+      return;
+    }
+    const call = { id, args: normalizeOpening(message.args) };
+    if (openHandler) deliverOpen(call); else earlyOpens.push(call);
+  }
+
+  // Donne l'appel `ouvrir` à l'abonné et renvoie sa réponse à GFS : `{ ouvert: true }` si l'abonné rend vrai, `{ ouvert: false }` sinon - et quand il échoue, qui n'a rien ouvert.
+  function deliverOpen(call) {
+    const answer = opened => { if (call.id !== null) reply(call.id, { type: 'reponse', data: { ouvert: opened === true } }); };
+    let result;
+    try { result = Promise.resolve(openHandler(call.args)); } catch (e) { result = Promise.reject(e); }
+    result.then(answer, (e) => { console.warn('[GfsLink] ouverture demandée par GFS en échec', e); answer(false); });
+  }
+
+  // Donne l'appel `fermer` à l'abonné et renvoie sa réponse à GFS : `{ ferme: true }` si l'abonné rend vrai (tout ce qui attendait est enregistré, ou la personne a abandonné), `{ ferme: false }` sinon (la personne reste). Quand
+  // l'abonné échoue, GFS reçoit une erreur et jamais un `oui` : ce qui n'est pas enregistré le resterait pour rien, et c'est à GFS de demander à la personne (« Fermer quand même » ou « Rester », contrats 5.4, point 3).
+  function deliverClose(call) {
+    const answer = fields => { if (call.id !== null) reply(call.id, fields); };
+    let result;
+    try { result = Promise.resolve(closeHandler(call.reason)); } catch (e) { result = Promise.reject(e); }
+    result.then(
+      closed => answer({ type: 'reponse', data: { ferme: closed === true } }),
+      (e) => { console.warn('[GfsLink] fermeture demandée par GFS en échec', e); answer({ type: 'erreur', code: 'GFS_ECHEC', message: 'La fermeture a échoué' }); },
+    );
+  }
+
+  // Les extensions que la personne a activées dans GFS, et la source de la bibliothèque `id` ({ src, integrite, forme } ou null).
+  const getExtensions = () => extensions.slice();
+  const library = id => libraries.get(id) || null;
+  // L'adresse du widget dans Grist (sans requête) que GFS a donnée dans le contexte : celle de GFS, que portent les sections de la page. '' seul, si GFS ne répond pas ou ne la donne pas.
+  const widgetAddress = () => address;
+  // GFS a répondu (le contexte ou un événement est arrivé) : faux seul, et faux tant qu'un GFS qui ne répond pas laisse passer ses 5 secondes.
+  const isAnswering = () => known;
+  // Un lien `mailto:` ou `tel:` suivi dans le cadre isolé de GFS le fait mourir (sa politique `frame-src` ne connaît pas ces adresses, consigne 011) : hébergée, l'app l'ouvre donc dans un
+  // nouvel onglet, où rien ne casse. Seule, faux : ces liens se comportent comme avant.
+  const opensInNewTab = href => hosted && /^(?:mailto|tel):/i.test(String(href == null ? '' : href).trim());
+  // Ce que GFS demande d'ouvrir au démarrage (`ouverture` du contexte) : null, ou { fichier: null | { id, type }, type, dossier, raison[, importation: { valeur, fichier }][, lecture: { id, fichier }] } (voir normalizeOpening). null seul, si GFS
+  // ne répond pas, ou s'il n'a rien demandé.
+  const getOpening = () => opening;
+  // La langue de GFS qui vaut maintenant, 'fr' ou 'en' : celle du contexte, puis celle du dernier événement `langue`. null seul, si GFS ne répond pas ou ne la donne pas (un GFS d'avant la consigne 019).
+  const getLanguage = () => language;
+  // Où en sont les réglages de la vue que l'app a écrits (consigne 039) : true (GFS les a mis dans la vue : plus de « Enregistrer » dans Grist), false (restés un brouillon de Grist), null (aucun événement
+  // `reglages` : seule, un GFS qui ne l'envoie pas, ou rien d'écrit depuis l'ouverture). Seul `true` éteint ce qui demande d'enregistrer ; tout le reste le garde.
+  const getSettingsSaved = () => settingsSaved;
+  // L'espace de cette app chez GFS (consigne 024) : vrai quand le contexte en a donné un, même vide ; faux seul, sans réponse de GFS, ou avec un GFS d'avant la consigne 024 (js/person-store.js garde alors les
+  // préférences comme avant). La valeur d'une clé est un texte, null quand elle n'y est pas.
+  const hasStorage = () => storage !== null;
+  const storageGet = key => (storage !== null && storage.has(key) ? storage.get(key) : null);
+  // Écrit une clé de cet espace par l'appel `stockage.ecrire { cle, valeur }` (`valeur` null la retire) : la copie d'ici change à l'instant, GFS garde la clé pour les prochains `contexte`. Sans `id`, GFS ne répond
+  // rien (contrats 5.1, point 2) : un refus (`GFS_QUOTA`, `GFS_REFUSE`) ne revient pas ici, GFS le dit dans sa console. Rend faux, sans rien envoyer, quand GFS n'a pas donné d'espace ou que la clé ou la valeur est
+  // hors de sa règle.
+  function storageSet(key, value) {
+    if (storage === null || typeof key !== 'string' || !STORAGE_KEY.test(key) || (value !== null && typeof value !== 'string')) return false;
+    if (value === null) storage.delete(key); else storage.set(key, value);
+    try { window.parent.postMessage({ gfs: CONTRACT, type: 'appel', nom: 'stockage.ecrire', args: { cle: key, valeur: value } }, '*'); } catch (e) { return false; }
+    return true;
+  }
+  // La barre de GFS qui vaut maintenant (consigne 025) : celle du contexte, puis celle du dernier événement `barre`. null seul, si GFS ne répond pas ou ne la donne pas (un GFS d'avant la consigne 025), si son
+  // explorateur est ouvert ou si l'app l'a masquée ; sinon { edge: 'left' | 'top' | 'right' | 'bottom', depth, zone: { x, y, width, height } } (voir normalizeBar), une copie que l'appelant peut garder.
+  function getBar() { return bar === null ? null : { edge: bar.edge, depth: bar.depth, zone: Object.assign({}, bar.zone) }; }
+  // Demande à GFS de masquer sa barre (`masked` vrai : le diaporama prend tout le cadre) ou de la rendre (faux), par l'appel `barre.masquer { masquee }` sans `id` : aucune réponse n'est attendue (contrats 5.1,
+  // point 2) et un GFS d'avant la consigne 025 n'en fait rien. GFS remontre la barre de lui-même quand l'explorateur s'ouvre, que l'app se ferme et à chaque contexte : la sortie du diaporama, quelle qu'elle soit,
+  // la rend quand même. Rend faux, sans rien envoyer, seule ou quand `masked` n'est pas un booléen.
+  function hideBar(masked) {
+    if (!hosted || typeof masked !== 'boolean') return false;
+    try { window.parent.postMessage({ gfs: CONTRACT, type: 'appel', nom: 'barre.masquer', args: { masquee: masked } }, '*'); } catch (e) { return false; }
+    return true;
+  }
+  // L'ambiance que la personne a choisie pour GFS et ses apps (consigne 041) : celle du contexte, puis celle du dernier événement `ambiance`, lue par le kit : { id, couleur, ajustee, clair, sombre, forme } (voir
+  // setAmbiance), une copie que l'appelant peut garder. null seul, si GFS ne répond pas ou ne la donne pas (un GFS d'avant la consigne 041), quand rien n'est choisi, ou quand le lecteur du kit ne s'est pas chargé.
+  function getAmbiance() { return ambiance === null ? null : JSON.parse(JSON.stringify(ambiance)); }
+  // Un abonné est rappelé à chaque changement des extensions actives ou de leurs sources, et une fois quand le contexte arrive. Rend de quoi se désabonner.
+  function onChange(fn) { listeners.add(fn); return () => listeners.delete(fn); }
+  // Un abonné de la barre est rappelé (`fn(bar)`, ce que rend `bar()`) à chaque événement `barre` qui change l'état, jamais à l'arrivée du contexte : le départ lit `bar()`. Rend de quoi se désabonner.
+  function onBar(fn) { barListeners.add(fn); return () => barListeners.delete(fn); }
+  // Un abonné de l'ambiance est rappelé (`fn(ambiance())`) à chaque changement du message lu : au contexte quand il en porte un, à chaque événement `ambiance` qui change l'état, et quand le lecteur du kit arrive après
+  // eux. Rend de quoi se désabonner.
+  function onAmbiance(fn) { ambianceListeners.add(fn); return () => ambianceListeners.delete(fn); }
+  // Un abonné de la langue est rappelé (`fn('fr' | 'en')`) à chaque événement `langue` qui change celle de GFS, jamais à l'arrivée du contexte : le départ lit `language()`. Rend de quoi se désabonner.
+  function onLanguage(fn) { languageListeners.add(fn); return () => languageListeners.delete(fn); }
+  // Un abonné des réglages est rappelé (`fn(true | false)`, ce que rend `settingsSaved()`) à chaque événement `reglages` qui change l'état, jamais à l'arrivée du contexte (il n'en porte pas) : le départ lit
+  // `settingsSaved()`. Rend de quoi se désabonner.
+  function onSettings(fn) { settingsListeners.add(fn); return () => settingsListeners.delete(fn); }
+  // Inscrit celui qui ouvre ce que GFS demande : `fn({ fichier, type, dossier, raison[, importation][, lecture] })` rend (une promesse de) vrai quand le fichier demandé est ouvert à la fin, faux sinon ; GFS en reçoit
+  // `{ ouvert }`, sans délai (la personne peut prendre son temps). Un seul abonné ; les appels arrivés avant lui lui sont donnés dans l'ordre.
+  function onOpen(fn) {
+    openHandler = fn;
+    earlyOpens.splice(0).forEach(deliverOpen);
+  }
+
+  // Inscrit celui qui répond à `fermer` (consigne 047) : `fn(raison)` rend (une promesse de) vrai quand l'app peut laisser la place - rien n'attend, tout ce qui attendait est enregistré, ou la personne a répondu « Abandonner » -,
+  // faux quand la personne reste. GFS en reçoit `{ ferme }` et ne détruit le cadre qu'après `{ ferme: true }` ; il n'y a pas de délai à tenir (au bout de 10 secondes, c'est lui qui demande à la personne). Un seul abonné ; les
+  // appels arrivés avant lui lui sont donnés dans l'ordre.
+  function onClose(fn) {
+    closeHandler = fn;
+    earlyCloses.splice(0).forEach(deliverClose);
+  }
+
+  // Ouvre, dans GFS, la fenêtre d'installation de l'extension `extension` (un clic sur une fonction grisée). Rend les extensions actives après le choix de la personne ; l'événement
+  // `extensions` suit si elle en a activé une. Deux clics pendant que la fenêtre est ouverte ne posent qu'une demande.
+  function install(extension) {
+    if (!hosted) return Promise.reject(new Error('GFS absent'));
+    if (!installing.has(extension)) {
+      const request = call('installer', { extension }).then(data => (data && Array.isArray(data.actives) ? data.actives : []));
+      installing.set(extension, request);
+      const settled = () => installing.delete(extension);
+      request.then(settled, settled);
+    }
+    return installing.get(extension);
+  }
+
+  // Ce que GFS répond à `ranger` : `{ statut, id, nom }` (contrats 5.4, point 9), `statut` l'un des quatre mots du contrat, `id` et `nom` un texte ou null (`ignore` : la personne n'en veut pas, les deux sont null). Une réponse
+  // hors de cette forme n'est pas lue au hasard : elle est une erreur (`GFS_REPONSE`), et l'export, lui, ne se perd pas (PdfDelivery télécharge le fichier).
+  const DEPOSIT_STATUSES = ['ajoute', 'remplace', 'copie', 'ignore'];
+  function normalizeDeposit(data) {
+    if (!data || typeof data !== 'object' || DEPOSIT_STATUSES.indexOf(data.statut) === -1) throw Object.assign(new Error('Réponse de GFS illisible : ranger'), { code: 'GFS_REPONSE' });
+    return { statut: data.statut, id: data.id == null ? null : String(data.id), nom: typeof data.nom === 'string' ? data.nom : null };
+  }
+
+  // Donne à GFS un PDF que l'app vient de fabriquer, pour qu'il le garde parmi ses fichiers (consigne 043, contrats 5.4 point 9) : l'appel `ranger { fichier, nom, type: 'pdf', lot?, suivants? }`, sans délai (GFS pose lui-même à la
+  // personne la question du nom pris, et elle répond quand elle veut). `fichier` : un `File` ou un `Blob` (les octets passent dans le message) ; `nom` : 1 à 200 signes ; `lot` : un texte de 1 à 64 signes qui nomme CET export quand il a
+  // plusieurs fichiers, et `suivants` : combien d'autres fichiers du même export viendront après celui-ci (0 pour le dernier) - GFS offre alors « Faire pareil pour les suivants ». Jamais de `dossier` : les PDF arrivent à la racine.
+  // Rend `{ statut: 'ajoute' | 'remplace' | 'copie' | 'ignore', id, nom }` (`nom` : celui que GFS a gardé, « Facture (1).pdf » pour une copie) ; rejette avec le `code` de GFS quand il refuse ou échoue. Un seul fichier à la fois : l'appelant
+  // attend la réponse avant d'envoyer le suivant (chaque appel copie les octets). Seule, rejette sans rien envoyer.
+  function deposit(fields) {
+    if (!hosted) return Promise.reject(new Error('GFS absent'));
+    const given = fields && typeof fields === 'object' ? fields : {};
+    const args = { fichier: given.fichier, nom: given.nom, type: 'pdf' };
+    if (typeof given.lot === 'string' && given.lot) args.lot = given.lot;
+    if (Number.isInteger(given.suivants) && given.suivants >= 0) args.suivants = given.suivants;
+    return call('ranger', args).then(normalizeDeposit);
+  }
+
+  if (hosted) {
+    window.addEventListener('message', onMessage);
+    // `ready` attend aussi le lecteur du kit (1,5 seconde au plus) quand le contexte porte une ambiance : elle est lue avant que l'app ne s'affiche. Sans ambiance, rien à attendre.
+    const readerIfNeeded = () => (ambianceRaw !== null && readAmbiance === null ? Promise.race([ambianceReader, new Promise(resolve => setTimeout(resolve, AMBIANCE_WAIT_MS))]) : undefined);
+    call('contexte', undefined, CONTEXT_TIMEOUT_MS).then(apply, e => console.warn('[GfsLink] contexte indisponible', e)).then(readerIfNeeded).then(settleReady);
+  } else settleReady();
+
+  return { hosted, ready, isAnswering, extensions: getExtensions, library, widgetAddress, opening: getOpening, language: getLanguage, settingsSaved: getSettingsSaved, hasStorage, storageGet, storageSet, bar: getBar, hideBar, opensInNewTab, ambiance: getAmbiance, onChange, onLanguage, onSettings, onBar, onAmbiance, onOpen, onClose, install, deposit };
+})();

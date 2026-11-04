@@ -4,12 +4,13 @@
 // filtrée à la frappe, comme le panneau # de js/variables.js (@tiptap/suggestion, flèches, Entrée ou Tab, Échap).
 //
 // Par personne : les abréviations vivent dans la table Publipostage_Abreviations du document (Utilisateur = email Grist, repli '' sans identité, même
-// patron que js/template-preferences.js), créée à la première abréviation ajoutée. Le caractère déclencheur, comme la langue et le thème, est en
-// localStorage (par navigateur). La table est lue au premier focus de l'éditeur ou à l'ouverture de Réglages > Raccourcis, jamais au démarrage du
+// patron que js/template-preferences.js), créée à la première abréviation ajoutée. Le caractère déclencheur, comme le thème, est gardé par
+// js/person-store.js (par navigateur : le navigateur, ou GFS quand elle héberge le widget). La table est lue au premier focus de l'éditeur ou à l'ouverture de Réglages > Raccourcis, jamais au démarrage du
 // widget.
 //
 // Le caractère déclencheur se relit à chaque frappe (findSuggestion, findTypedAbbreviation) : un changement dans Réglages vaut tout de suite, alors
 // que le `char` du panneau # (js/variables.js) est figé à la construction de l'éditeur.
+// Ajouter, modifier et supprimer une abréviation se défont par Ctrl + Z (js/expansion-history.js, qui appelle `add`, `update` et `remove` ci-dessous) ; le caractère déclencheur aussi (js/settings-history.js).
 const TextExpansion = (function () {
   const TABLE_NAME = 'Publipostage_Abreviations';
   const TABLE_COLUMNS = [
@@ -34,10 +35,8 @@ const TextExpansion = (function () {
     function variablesChar() { return typeof Variables !== 'undefined' ? Variables.triggerChar() : '#'; }
 
     function storedChar() {
-      try {
-        const v = localStorage.getItem(CHAR_STORAGE);
-        return (v && v.length === 1) ? v : DEFAULT_CHAR;
-      } catch (e) { return DEFAULT_CHAR; }
+      const v = PersonStore.get(CHAR_STORAGE);
+      return (v && v.length === 1) ? v : DEFAULT_CHAR;
     }
 
     function charProblem(value) {
@@ -60,7 +59,7 @@ const TextExpansion = (function () {
     function setTriggerChar(value) {
       const problem = charProblem(value);
       if (problem) return problem;
-      try { localStorage.setItem(CHAR_STORAGE, value); } catch (e) { /* stockage indisponible : le choix ne survivra pas au rechargement */ }
+      PersonStore.set(CHAR_STORAGE, value); // non retenu (stockage indisponible) : le choix ne survivra pas au rechargement
       return '';
     }
 
@@ -89,13 +88,13 @@ const TextExpansion = (function () {
     // Pas de table = aucune abréviation : elle n'est créée qu'à la première écriture (ensureTable), jamais pour lire.
     if (tables.indexOf(TABLE_NAME) === -1) return found;
     tableKnown = true;
-    let data;
-    try { data = await grist.docApi.fetchTable(TABLE_NAME); } catch (e) { console.warn('[text-expansion] lecture des abréviations impossible', e); return found; }
-    for (let i = 0; i < data.id.length; i++) {
-      if (((data.Utilisateur && data.Utilisateur[i]) || '') !== email) continue;
-      const abbreviation = String((data.Abreviation && data.Abreviation[i]) || '').trim();
+    let tableData;
+    try { tableData = await grist.docApi.fetchTable(TABLE_NAME); } catch (e) { console.warn('[text-expansion] lecture des abréviations impossible', e); return found; }
+    for (let i = 0; i < tableData.id.length; i++) {
+      if (((tableData.Utilisateur && tableData.Utilisateur[i]) || '') !== email) continue;
+      const abbreviation = String((tableData.Abreviation && tableData.Abreviation[i]) || '').trim();
       if (!abbreviation) continue;
-      found.push({ rowId: data.id[i], abbreviation, text: String((data.Texte && data.Texte[i]) || '') });
+      found.push({ rowId: tableData.id[i], abbreviation, text: String((tableData.Texte && tableData.Texte[i]) || '') });
     }
     return found;
   }
@@ -190,7 +189,16 @@ const TextExpansion = (function () {
     tableKnown = true;
   }
 
-  function add(rawAbbreviation, rawText) {
+  // Aucune ligne de la table n'a le numéro `rowId`, de quelque personne qu'elle soit : la table est commune à toutes les personnes du document, alors que `entries` n'a que les lignes de la courante.
+  async function rowIdIsFree(rowId) {
+    try {
+      const tableData = await grist.docApi.fetchTable(TABLE_NAME);
+      return !!tableData && Array.isArray(tableData.id) && tableData.id.indexOf(rowId) === -1;
+    } catch (e) { return false; }
+  }
+
+  // `wantedRowId` : le numéro de ligne d'une abréviation retirée, que l'historique d'Annuler (js/expansion-history.js) lui rend s'il est libre ; pris depuis, ou illisible, la ligne reçoit un numéro neuf.
+  function add(rawAbbreviation, rawText, wantedRowId) {
     return writes.enqueue(async () => {
       await load();
       const clean = cleanEntry(rawAbbreviation, rawText);
@@ -198,7 +206,8 @@ const TextExpansion = (function () {
       if (problem) throw validationError(problem);
       await ensureTable();
       const email = (await userEmail.get()) || '';
-      const result = await grist.docApi.applyUserActions([['AddRecord', TABLE_NAME, null, { Utilisateur: email, Abreviation: clean.abbreviation, Texte: clean.text }]]);
+      const rowId = Number.isInteger(wantedRowId) && wantedRowId >= 1 && (await rowIdIsFree(wantedRowId)) ? wantedRowId : null;
+      const result = await grist.docApi.applyUserActions([['AddRecord', TABLE_NAME, rowId, { Utilisateur: email, Abreviation: clean.abbreviation, Texte: clean.text }]]);
       const entry = { rowId: result.retValues[0], abbreviation: clean.abbreviation, text: clean.text };
       entries.get().push(entry);
       return Object.assign({}, entry);
@@ -286,108 +295,21 @@ const TextExpansion = (function () {
     return { range: { from, to: config.$position.pos }, query: match[2], text: char + match[2] };
   }
 
-  let box = null;
-  let rowEls = [];
-  let moreEl = null; // la ligne « Encore N résultats » sous les abréviations montrées, quand il en reste
-  let shown = [];
-  let selected = 0;
-  let pickItem = null;
-
-  function ensureBox() {
-    if (box) return box;
-    box = document.createElement('div');
-    box.id = 'expansion-box';
-    box.setAttribute('role', 'listbox');
-    box.style.display = 'none';
-    document.body.appendChild(box);
-    return box;
-  }
-
-  function paintSelection() {
-    // La ligne choisie suit les flèches comme le survol ; elle reste visible quand la liste défile.
-    rowEls.forEach((row, index) => {
-      const on = index === selected;
-      row.classList.toggle('selected', on);
-      row.setAttribute('aria-selected', on ? 'true' : 'false');
-    });
-    const row = rowEls[selected];
-    if (!row || !box) return;
-    // La ligne « Encore N résultats » reste collée au bas de la liste : la ligne choisie ne passe pas dessous.
-    const covered = moreEl ? moreEl.offsetHeight : 0;
-    if (row.offsetTop < box.scrollTop) box.scrollTop = row.offsetTop;
-    else if (row.offsetTop + row.offsetHeight > box.scrollTop + box.clientHeight - covered) box.scrollTop = row.offsetTop + row.offsetHeight - box.clientHeight + covered;
-  }
-
-  function hide() {
-    if (box) box.style.display = 'none';
-    shown = [];
-    rowEls = [];
-    moreEl = null;
-    pickItem = null;
-  }
-
-  function show(props) {
-    shown = props.items || [];
-    pickItem = props.command;
-    if (!shown.length) { hide(); return; }
-    selected = 0;
-    const el = ensureBox();
-    el.setAttribute('aria-label', I18n.t('expansion.panel.label'));
-    el.textContent = '';
-    const char = triggerChar() || DEFAULT_CHAR;
-    rowEls = shown.map((entry, index) => {
-      const row = document.createElement('div');
-      row.className = 'ex-item';
-      row.setAttribute('role', 'option');
+  // La liste « § » : la boîte, la ligne choisie et les touches sont celles de js/suggestion-list.js (partagées avec la liste « @ » de js/mention.js) ;
+  // ici, seulement ce que dit une ligne : l'abréviation en gras, puis son texte sur une seule ligne.
+  const suggestions = SuggestionList.create({
+    id: 'expansion-box',
+    label: () => I18n.t('expansion.panel.label'),
+    row: entry => {
       const abbreviation = document.createElement('span');
       abbreviation.className = 'ex-abbr';
-      abbreviation.textContent = char + entry.abbreviation;
+      abbreviation.textContent = (triggerChar() || DEFAULT_CHAR) + entry.abbreviation;
       const text = document.createElement('span');
       text.className = 'ex-text';
       text.textContent = entry.text;
-      row.append(abbreviation, text);
-      // mousedown + preventDefault (pas click) : l'éditeur garde le focus, comme dans le panneau # (js/variables.js:render).
-      row.addEventListener('mousedown', event => { event.preventDefault(); if (pickItem) pickItem(entry); });
-      row.addEventListener('mouseenter', () => { if (selected !== index) { selected = index; paintSelection(); } });
-      el.appendChild(row);
-      return row;
-    });
-    moreEl = null;
-    el.classList.toggle('has-more', shown.more > 0);
-    if (shown.more > 0) {
-      moreEl = document.createElement('div');
-      moreEl.className = 'ex-more';
-      moreEl.setAttribute('role', 'presentation');
-      // La phrase des listes avec recherche (js/search-select.js) : « Encore N résultats : précisez la recherche. »
-      moreEl.textContent = I18n.t('searchSelect.more', { count: shown.more });
-      el.appendChild(moreEl);
-    }
-    el.style.display = 'flex';
-    paintSelection();
-    const rect = props.clientRect && props.clientRect();
-    if (rect) ViewportFit.placePopup(el, rect, { gap: 4 });
-  }
-
-  function suggestionRender() {
-    return {
-      onStart(props) { show(props); },
-      onUpdate(props) { show(props); },
-      onKeyDown({ event }) {
-        if (!shown.length || !box || box.style.display === 'none') return false;
-        if (event.key === 'ArrowDown') { selected = (selected + 1) % shown.length; paintSelection(); return true; }
-        if (event.key === 'ArrowUp') { selected = (selected - 1 + shown.length) % shown.length; paintSelection(); return true; }
-        if (event.key === 'Enter' || event.key === 'Tab') {
-          // Maj+Entrée (saut de ligne), Maj+Tab (remonter d'un cran dans une liste) et les raccourcis avec Ctrl/Alt/Cmd gardent leur sens.
-          if (event.shiftKey || event.ctrlKey || event.altKey || event.metaKey) return false;
-          if (pickItem) pickItem(shown[selected]);
-          return true;
-        }
-        if (event.key === 'Escape') { hide(); return true; }
-        return false;
-      },
-      onExit() { hide(); },
-    };
-  }
+      return [abbreviation, text];
+    },
+  });
 
   function createExtension(Extension, Suggestion, InputRule, PluginKey) {
     // Reçoit Extension, Suggestion, InputRule et PluginKey de js/editor.js plutôt que de les importer : même principe que Variables.createExtension (un
@@ -435,7 +357,7 @@ const TextExpansion = (function () {
                 return true;
               }).run();
             },
-            render: suggestionRender,
+            render: suggestions.render,
           }),
         ];
       },

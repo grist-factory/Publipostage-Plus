@@ -16,12 +16,15 @@
 // « Annuler » garde le modèle ouvert, sans reposer la question pour la même ligne.
 //   RowTemplate.init(hooks) -> lit les options et s'abonne à leurs changements ;
 //                                         hooks = { openTemplate(id) -> Promise<bool>, currentId(), currentRecord() -> { record, tableId } }
-//   RowTemplate.start() -> à appeler une fois les modèles chargés et le premier modèle ouvert : les lignes reçues avant sont alors prises en compte
+//   RowTemplate.start(keepOpen) -> à appeler une fois les modèles chargés et le premier modèle ouvert : les lignes reçues avant sont alors prises en compte ;
+//                                         `keepOpen` : ce modèle ne vient pas de la ligne (GFS l'a désigné, js/gfs-open.js) - la ligne courante ne rouvre pas le sien par-dessus
 //   RowTemplate.isActive() -> un réglage complet est en vigueur
 //   RowTemplate.pick(record, tableId) -> id du modèle que cette ligne ouvre, ou null (ne rien changer)
 //   RowTemplate.follow(record, tableId)-> Promise<bool> : le modèle a changé (js/main.js:loadTemplateIntoEditor a alors déjà redessiné la Lecture)
 //   RowTemplate.readRaw() / save(raw) -> le réglage tel qu'enregistré / l'écrire sans rien ouvrir (l'onglet Réglages) ; refresh() l'applique à la
 //   ligne courante
+//   RowTemplate.setting -> le réglage tel que Ctrl + Z le défait (js/settings-history.js, que l'onglet Réglages appelle : js/row-template-panel.js) ; défaire ou
+//                                         rétablir n'ouvre aucun modèle
 const RowTemplate = (function () {
   const OPTION_KEY = 'modeleSelonLigne';
   const DEFAULT = 'default';
@@ -35,7 +38,7 @@ const RowTemplate = (function () {
   let running = false;
   // Ce que cet écran vient d'écrire dans les options : Grist le renvoie par onOptions, parfois après une saisie plus récente - l'écho d'une valeur
   // déjà remplacée ne doit pas défaire le réglage en cours.
-  const expectedEchoes = [];
+  const echoes = GristAPI.createEchoGuard();
 
   const isComplete = r => !!(r && r.column && r.modeleId != null && r.modeleId !== '');
 
@@ -73,10 +76,11 @@ const RowTemplate = (function () {
 
   function isActive() { return !!config; }
 
-  const templateExists = id => !!Templates.byId(id);
+  // Un modèle d'un type que le widget ne sait pas ouvrir (js/templates.js, isOpenableType) compte comme un modèle supprimé : la règle qui le désigne est sautée, jamais ouverte.
+  const templateExists = id => !!Templates.openableById(id);
 
-  // « Le modèle par défaut » : celui de la vue (js/view-template.js) s'il y en a un, sinon le ★ du document. Même garde qu'au démarrage
-  // (js/main.js) : un modèle email ou macro n'est jamais « le modèle par défaut » qu'on ouvre tout seul.
+  // « Le modèle par défaut » : celui de la vue (js/view-template.js, de n'importe quel type : email et macro-modèle compris) s'il y en a un, sinon le
+  // ★ du document (Templates.getDefaultId, jamais un email ni un macro-modèle). Même ordre qu'au démarrage (js/main.js).
   function defaultTemplateId() {
     const ofView = typeof ViewTemplate !== 'undefined' ? ViewTemplate.usableId() : null;
     if (ofView != null) return ofView;
@@ -142,7 +146,17 @@ const RowTemplate = (function () {
     return apply === false ? Promise.resolve(false) : refresh();
   }
 
-  function start() {
+  // `keepOpen` : le modèle ouvert au démarrage a été désigné par GFS (js/gfs-open.js), pas par la ligne. La ligne courante est alors tenue pour traitée avec ce que ses règles donnent : son modèle
+  // ne s'ouvre pas par-dessus celui que la personne vient de choisir dans GFS. Les lignes suivantes suivent les règles comme d'habitude. Tenue avant `started`, pour qu'une ligne reçue pendant ce
+  // temps ne passe pas devant : elle est relue par `refresh()` juste après.
+  async function start(keepOpen) {
+    if (keepOpen) {
+      const current = config && hooks && hooks.currentRecord();
+      if (current && current.record) {
+        try { lastHandled = { key: rowKey(current.record, current.tableId), id: await pick(current.record, current.tableId) }; }
+        catch (e) { console.error('[RowTemplate] ligne courante non tenue pour traitée', e); }
+      }
+    }
     started = true;
     return refresh();
   }
@@ -152,23 +166,47 @@ const RowTemplate = (function () {
     config = normalizeConfig((GristAPI.getWidgetOptions() || {})[OPTION_KEY]);
     GristAPI.onWidgetOptionsChange(options => {
       const incoming = JSON.stringify(normalizeRaw(options && options[OPTION_KEY]));
-      const echo = expectedEchoes.indexOf(incoming);
-      if (echo !== -1) { expectedEchoes.splice(0, echo + 1); return; }
-      expectedEchoes.length = 0;
+      if (echoes.isEcho(incoming)) return;
       setConfig(normalizeConfig(options && options[OPTION_KEY])).catch(e => console.error('[RowTemplate] réglage non appliqué', e));
     });
   }
 
   async function save(raw) {
     const clean = normalizeRaw(raw);
+    // Rien n'a changé (les Réglages s'ouvrent puis se ferment sans que l'onglet Vue soit touché) : rien n'est écrit. Écrire `null` pour un réglage qui
+    // n'existe pas ferait apparaître « Enregistrer » dans Grist (brouillon de la vue) sans rien à enregistrer.
+    if (JSON.stringify(clean) === JSON.stringify(normalizeRaw((GristAPI.getWidgetOptions() || {})[OPTION_KEY]))) return setConfig(normalizeConfig(clean), false);
     // Brouillon de Grist : visible par tous une fois la vue enregistrée (bouton Enregistrer en haut du widget). Un échec n'empêche pas de l'appliquer
     // ici.
-    expectedEchoes.push(JSON.stringify(clean));
-    if (expectedEchoes.length > 20) expectedEchoes.shift();
+    echoes.remember(JSON.stringify(clean));
     try { await GristAPI.setWidgetOption(OPTION_KEY, clean); }
     catch (e) { console.error('[RowTemplate] enregistrement de l’option du widget impossible', e); }
     return setConfig(normalizeConfig(clean), false);
   }
 
-  return { DEFAULT, KEEP, init, start, isActive, pick, follow, refresh, readRaw, save };
+  // Défaire ou rétablir le réglage (js/settings-history.js) l'écrit comme `save`, sans rien ouvrir : un modèle qui s'ouvre vide ce qui se rétablit (js/action-history.js : un modèle chargé efface les actions défaites), et le modèle ouvert est celui de la
+  // personne. La ligne courante est tenue pour traitée avec ce que le réglage rendu lui donne (comme `start` quand GFS désigne le modèle) : sans cela, le prochain message qui la reprend rouvrirait le modèle de la règle par-dessus celui de la personne.
+  // La ligne suivante suit le réglage comme d'habitude.
+  async function restore(raw) {
+    await save(raw);
+    const current = config && started && hooks && hooks.currentRecord();
+    if (!current || !current.record) return;
+    let id;
+    try { id = await pick(current.record, current.tableId); }
+    catch (e) { console.error('[RowTemplate] ligne courante non tenue pour traitée', e); return; }
+    if (!lastHandled) lastHandled = { key: rowKey(current.record, current.tableId), id }; // une ligne reçue entre-temps a déjà son résultat : il reste
+  }
+
+  // Le réglage tel que Ctrl + Z le défait : sa valeur est celle de `readRaw` (activé ou non, règles complètes, « Si aucune règle ne correspond »), le coin d'état dit s'il est activé et combien de règles il garde.
+  const SETTING = {
+    read: readRaw,
+    write: restore,
+    say: raw => I18n.t('status.settingSet', {
+      setting: I18n.t('settings.rowTemplate.title'),
+      value: raw.enabled ? I18n.t('status.rowTemplateOn', { count: raw.rules.length }) : I18n.t('status.rowTemplateOff'),
+    }),
+    locked: () => typeof AccessRights !== 'undefined' && AccessRights.get().readOnly,
+  };
+
+  return { DEFAULT, KEEP, init, start, isActive, pick, follow, refresh, readRaw, save, setting: SETTING };
 })();

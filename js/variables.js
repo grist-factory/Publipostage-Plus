@@ -2,23 +2,29 @@
 // de références, calcul) et la fenêtre des règles de liaison entre tables. La liste (#autocomplete-box, css/style.css) est créée ici, pas déclarée
 // dans index.html.
 const Variables = (function () {
-  // Touche de déclenchement, réglée dans le panneau Réglages et lue dans localStorage : un seul caractère, '#' à défaut.
+  // Touche de déclenchement, réglée dans le panneau Réglages et lue par js/person-store.js : un seul caractère, '#' à défaut.
   function triggerChar() {
-    try {
-      const char = localStorage.getItem('pp_trigger_char');
-      return char && char.length === 1 ? char : '#';
-    } catch (e) { return '#'; }
+    const char = PersonStore.get('pp_trigger_char');
+    return char && char.length === 1 ? char : '#';
   }
+
+  // Ce que la liste « # » lit après le déclencheur : des lettres, des chiffres, des espaces (le navigateur écrit une espace insécable en fin de ligne),
+  // « _ », « . » et « - », les mots d'un nom de colonne (js/search-select.js:searchWords). Une espace juste après le déclencheur n'ouvre rien (« # » puis
+  // une espace est du texte, comme avant) et toute autre ponctuation ferme la liste : « #Titre, » n'est pas une recherche, Entrée n'y pose pas la variable.
+  const QUERY_CHARS = '[\\p{L}\\p{N}_.\\s-]*';
+  const NAME_QUERY = new RegExp('^(?!\\s)' + QUERY_CHARS + '$', 'u');
 
   let acBox = null;
   let acItemsBox = null;
   let currentItems = [];
   let selectedIndex = 0;
-  // Dernières props de @tiptap/suggestion : un clic sur un onglet rejoue updateItems() avec elles, n'étant pas un évènement du plugin.
+  // Dernières props de @tiptap/suggestion : un clic sur un onglet rejoue updateItems() avec elles, n'étant pas un évènement du plugin. `latestFieldMode` :
+  // ce sont celles de la liste d'un champ texte à bulles (fieldMode).
   let latestProps = null;
+  let latestFieldMode = false;
   // La commande de l'entrée choisie : @tiptap/suggestion ne la donne qu'à onStart et onUpdate, jamais à onKeyDown ni au clic de souris.
   let latestCommand = null;
-  // Onglet actif du panneau « # » (le champ du nom de fichier PDF n'a pas celui des puces) ; 'variables' à chaque ouverture.
+  // Onglet actif du panneau « # » (le champ texte d'une fenêtre - QR code, calcul - n'a pas celui des puces) ; 'variables' à chaque ouverture.
   let activeTab = 'variables';
   // La fenêtre d'où la liste s'ouvre quand c'est depuis un de ses champs (le calcul d'une bulle) : la liste passe devant elle
   // (ViewportFit.placePopup, Layers.raise), les fenêtres étant au-dessus des menus où elle est posée. null pour la liste de l'éditeur et celle des
@@ -38,13 +44,17 @@ const Variables = (function () {
     // La boîte de la liste : les entrées fixes de l'onglet des puces et la création de la boîte
 
     // Entrées fixes de l'onglet des puces (jamais issues de GristAPI) : `kind: 'chip'` les distingue d'une #Variable ; `i18nKey` est résolu à
-    // l'affichage (displayKey), pour suivre un changement de langue.
+    // l'affichage (displayKey). `inField` : la puce se pose aussi dans un champ texte (Objet, À, Cc, Cci, nom du PDF),
+    // où elle s'écrit en texte - une valeur du moment, pas un bloc ni une note.
     const SMART_CHIP_ITEMS = [
       { key: 'Note de bas de page', i18nKey: 'chips.footnote', kind: 'chip', chipKind: 'footnote' },
-      { key: 'Date du jour', i18nKey: 'chips.date', kind: 'chip', chipKind: 'date' },
-      { key: 'Heure actuelle', i18nKey: 'chips.time', kind: 'chip', chipKind: 'time' },
-      { key: 'Email de l’utilisateur', i18nKey: 'chips.email', kind: 'chip', chipKind: 'email' },
-      { key: 'Nom de l’utilisateur', i18nKey: 'chips.name', kind: 'chip', chipKind: 'name' },
+      { key: 'Date du jour', i18nKey: 'chips.date', kind: 'chip', chipKind: 'date', inField: true },
+      { key: 'Heure actuelle', i18nKey: 'chips.time', kind: 'chip', chipKind: 'time', inField: true },
+      { key: 'Email de l’utilisateur', i18nKey: 'chips.email', kind: 'chip', chipKind: 'email', inField: true },
+      { key: 'Nom de l’utilisateur', i18nKey: 'chips.name', kind: 'chip', chipKind: 'name', inField: true },
+      // Le rang de la ligne dans une zone répétée par une Boucle (1, 2, 3...), écrit à la Lecture et à l'export (js/loop-rules.js, itemBinding) ; une
+      // puce comme la date, mais qui n'a de sens que dans un document : elle n'entre pas dans un champ texte.
+      { key: 'N° de ligne', i18nKey: 'chips.rowNumber', kind: 'chip', chipKind: 'rowNumber' },
       // Un bloc (js/conditional-text.js), pas une puce en ligne : il entoure le texte sélectionné quand le bouton « Insérer une variable » a ouvert la
       // liste dessus, sinon il se pose vide, curseur dedans.
       { key: 'Texte conditionnel', i18nKey: 'chips.conditionalText', kind: 'chip', chipKind: 'conditionalText' },
@@ -69,14 +79,12 @@ const Variables = (function () {
       [['variables', 'panel.tabVariables'], ['chips', 'panel.tabChips']].forEach(([name, label]) => {
         const tab = Dom.el('div', 'ac-tab', I18n.t(label));
         tab.dataset.tab = name;
-        // La liste n'est créée qu'une fois : data-i18n fait relire le libellé à I18n.applyTranslations quand la personne change de langue (« Puces » / « Chips »).
-        tab.setAttribute('data-i18n', label);
         // mousedown + preventDefault (pas click) : un blur du focus de l'éditeur ne perturbe pas le changement d'onglet.
         tab.addEventListener('mousedown', e => {
           e.preventDefault();
           if (activeTab === name) return;
           activeTab = name;
-          if (latestProps) updateItems(Object.assign({}, latestProps, { items: computeItems(latestProps.query, latestProps.editor) }));
+          if (latestProps) updateItems(Object.assign({}, latestProps, { items: computeItems(latestProps.query, latestProps.editor, latestFieldMode) }), latestFieldMode);
         });
         tabs.appendChild(tab);
       });
@@ -101,14 +109,15 @@ const Variables = (function () {
     return { SMART_CHIP_ITEMS, displayKey, ensureBox };
   })();
 
-  const { currentTables, prioritizeTables, matchingVariables, refreshSchemaOnce, computeItems } = (function () {
+  const { currentTables, prioritizeTables, matchingVariables, columnSearchText, referencedTable, crossedListTable, writesList, columnsBelow, refreshSchemaOnce, computeItems, fieldItems } = (function () {
     // Les entrées de la liste : tables en cours, variables qui correspondent, onglet actif
 
-    // Tables « en cours », la plus proche d'abord : celle que parcourt la zone répétée où est le curseur (js/variable-loop.js:loopTableAt ; `editor`
-    // absent hors de l'éditeur, nom du fichier PDF), puis celle de la page. Vide tant que la page n'a pas de table.
+    // Tables « en cours », la plus proche d'abord : celles que parcourent les zones répétées où est le curseur, de la plus proche à la plus large
+    // (js/variable-loop.js:loopTablesAt ; `editor` absent hors de l'éditeur, nom du fichier PDF), puis celle de la page. Vide tant que la page n'a pas de
+    // table.
     function currentTables(editor) {
-      const loopTable = editor ? VariableLoop.loopTableAt(editor.state, editor.state.selection.from) : null;
-      return [loopTable, GristAPI.getCurrentTableId()].filter((table, index, all) => table && all.indexOf(table) === index);
+      const loopTables = editor ? VariableLoop.loopTablesAt(editor.state, editor.state.selection.from) : [];
+      return loopTables.concat(GristAPI.getCurrentTableId()).filter((table, index, all) => table && all.indexOf(table) === index);
     }
     // `items` ({ table, … }) avec les colonnes des tables « en cours » en tête : chaque table de `tables` dans cet ordre, puis les autres, l'ordre
     // d'origine gardé dans chaque groupe. À appliquer avant toute limite de longueur, sans quoi une table qui vient tard dans le schéma voit ses
@@ -120,12 +129,90 @@ const Variables = (function () {
       return [].concat(...groups, others);
     }
 
-    // Les variables dont la clé « Table.Colonne » contient la saisie `query`, sans les colonnes d'aide. Sans accents ni casse, comme toutes les listes
-    // à recherche (js/search-select.js:normalize) : « télé » retrouve Telephone, les identifiants de Grist n'ayant jamais d'accent. Aucune limite de
-    // longueur : la personne cherche par le nom, elle ne fait pas défiler la liste.
+    // Les noms sous lesquels une colonne se cherche, d'un seul tenant : sa clé « Table.Colonne » (la table se cherche avec la colonne) et son libellé Grist
+    // (js/grist-api.js:getColumnLabel). Pour la liste « # » comme pour le `data-search` des listes avec recherche (js/search-select.js). `column` peut être
+    // un chemin « Accompagnateur.Email » (GristAPI.resolveColumnPath) : le libellé de chacune de ses colonnes se cherche aussi.
+    function columnSearchText(table, column) {
+      if (String(column).indexOf('.') === -1) {
+        const label = GristAPI.getColumnLabel(table, column);
+        return table + '.' + column + (label ? ' ' + label : '');
+      }
+      const labels = [];
+      let at = table;
+      String(column).split('.').forEach(hop => {
+        const label = at && GristAPI.getColumnLabel(at, hop);
+        if (label) labels.push(label);
+        at = at && GristAPI.tableAtEndOf(at, [hop]);
+      });
+      return table + '.' + column + (labels.length ? ' ' + labels.join(' ') : '');
+    }
+
+    // La table que désigne la colonne Référence `column` de `table` (ou le chemin « Ref.Ref » qui y mène), null pour toute autre colonne : une liste de
+    // références désigne plusieurs lignes, la flèche n'en ouvre qu'une (`singleOnly`). La destination de la flèche des listes de colonnes
+    // (js/search-select.js, `expand`) et de celle d'« Autres attributs » (js/variable-linked-attrs.js) ; on arrive dans une liste de références par sa
+    // bulle, pas par une flèche.
+    function referencedTable(table, column) {
+      const target = GristAPI.tableAtEndOf(table, String(column).split('.'), true);
+      return target && GristAPI.getTables().indexOf(target) !== -1 ? target : null;
+    }
+    // La table dont une liste de références désigne les lignes quand la suite de colonnes Référence `hops`, partie de `table`, en traverse une, null
+    // sinon : ce qu'on lit au bout du chemin est alors une valeur par ligne de la liste (resolveRows, `multi`), pas une seule. La fenêtre « Liste »
+    // d'une bulle (js/variable-list.js) et celle d'« Autres attributs » (js/variable-linked-attrs.js) lisent la même règle.
+    function crossedListTable(table, hops) {
+      let at = table;
+      for (const hop of hops) {
+        const ref = GristAPI.referenceOf(GristAPI.getColumnType(at, hop));
+        if (!ref) return null;
+        if (ref.list) return ref.table;
+        at = ref.table;
+      }
+      return null;
+    }
+    // Vrai quand la colonne `column` de `table`, ou le chemin « Equipe.Email » qui y mène, s'écrit en liste : une colonne Liste de choix ou Liste de
+    // références, ou un chemin qui traverse une liste de références. C'est ce que règle la fenêtre « Liste » (js/variable-list.js) ; « Remplacer »
+    // d'Autres attributs en garde le réglage d'une bulle à l'autre.
+    function writesList(table, column) {
+      const hops = String(column).split('.');
+      hops.pop();
+      return VariableFormat.isListType(GristAPI.getColumnType(table, column)) || !!crossedListTable(table, hops);
+    }
+
+    // Les lignes où mène la flèche de la colonne `key` (« Table.Colonne » ou le chemin « Table.Référence.Colonne » qui y mène) dans une liste de colonnes
+    // (js/search-select.js, option `expand`) : les colonnes de la table qu'elle désigne, null si `key` n'est pas une Référence simple. Chaque ligne est
+    // le chemin entier (« Projet.Accompagnateur.Email », celui que résout resolveRawValue) nommé par sa colonne seule : le fil d'Ariane de la liste dit
+    // par où l'on est descendu. `hintOf(table, colonne)`, facultatif, donne l'indice discret de la ligne (son type).
+    function columnsBelow(key, hintOf) {
+      const cut = String(key).indexOf('.');
+      const table = cut === -1 ? '' : key.slice(0, cut);
+      const target = table ? referencedTable(table, key.slice(cut + 1)) : null;
+      if (!target) return null;
+      return GristAPI.getVisibleColumns(target).map(column => ({
+        value: key + '.' + column,
+        name: column,
+        hint: hintOf ? hintOf(target, column) : '',
+        search: columnSearchText(target, column),
+        expand: referencedTable(target, column) || '',
+      }));
+    }
+
+    // Le test d'un nom pour la saisie `query` de la liste « # » : tous ses mots (js/search-select.js:searchWords) dans `search` (les noms de l'entrée, d'un
+    // seul tenant) et, pour un mot qui finit par un point, ce point-là dans `key`, tel quel. Un point ne compte pas dans un nom (« Porteur.3 » vaut
+    // « Porteur 3 »), sauf tout à la fin d'un mot, où il peut finir la phrase : « #Projets. » propose les colonnes de Projets, comme avant, mais « Voir
+    // #Projets.Nom. » ne propose plus rien (la liste se refermait au point, Entrée ne pose pas la variable).
+    function nameTest(query) {
+      const words = SearchSelect.searchWords(query);
+      const dotted = SearchSelect.normalize(query).split(/\s+/).filter(word => word.endsWith('.'));
+      return (search, key) => SearchSelect.foundIn(words, SearchSelect.searchKey(search))
+        && (!dotted.length || dotted.every(word => SearchSelect.normalize(key).includes(word)));
+    }
+
+    // Les variables dont les noms contiennent les mots de la saisie `query`, sans les colonnes d'aide : la recherche par nom de toutes les listes
+    // (js/search-select.js:searchWords), donc sans accents ni casse, sans compter « _ », « . » ni « - », les mots (séparés par une espace) dans n'importe
+    // quel ordre : « porteur 3 » et « Porteur3 » retrouvent Projets.Porteur_3. Aucune limite de longueur : la personne cherche par le nom, elle ne fait
+    // pas défiler la liste.
     function matchingVariables(query) {
-      const wanted = SearchSelect.normalize(query);
-      return GristAPI.getAllVariables().filter(v => !GristAPI.isHelperColumn(v.column) && SearchSelect.normalize(v.key).includes(wanted));
+      const found = nameTest(query);
+      return GristAPI.getAllVariables().filter(v => !GristAPI.isHelperColumn(v.column) && found(columnSearchText(v.table, v.column), v.key));
     }
 
     function refreshSchemaOnce() {
@@ -135,25 +222,40 @@ const Variables = (function () {
     }
 
     // Les entrées de l'onglet actif, pour l'`items()` de @tiptap/suggestion (à chaque frappe) comme pour le clic sur un onglet. `editor` (facultatif) :
-    // les colonnes de la table de la page viennent en tête ; dans une zone répétée, celles de la table parcourue passent avant elles.
-    function computeItems(query, editor) {
+    // les colonnes de la table de la page viennent en tête ; dans une zone répétée, celles de la table parcourue passent avant elles. `fieldMode` : la
+    // liste d'un champ texte (Objet, À, Cc, Cci, nom du PDF), qui n'a que des variables et les puces qui s'écrivent en texte (`inField` : date, heure,
+    // email et nom de l'utilisateur) - ni note de bas de page, ni bloc conditionnel, ni calcul.
+    function computeItems(query, editor, fieldMode) {
+      if (!NAME_QUERY.test(query)) return [];
       if (activeTab === 'chips') {
         // Pas de note de bas de page dans un en-tête ou un pied : la zone est répétée sur chaque page, sans repère de page physique où ancrer une note.
-        const items = Editor.isEditingHeaderFooter() ? SMART_CHIP_ITEMS.filter(v => v.chipKind !== 'footnote') : SMART_CHIP_ITEMS;
-        const wanted = SearchSelect.normalize(query);
-        return items.filter(v => SearchSelect.normalize(displayKey(v)).includes(wanted));
+        let items = SMART_CHIP_ITEMS;
+        if (fieldMode) items = items.filter(v => v.inField);
+        else if (Editor.isEditingHeaderFooter()) items = items.filter(v => v.chipKind !== 'footnote');
+        const found = nameTest(query);
+        return items.filter(v => found(displayKey(v), displayKey(v)));
       }
       refreshSchemaOnce();
-      return prioritizeTables(matchingVariables(query), currentTables(editor));
+      return fieldMode ? fieldItems(query, editor) : prioritizeTables(matchingVariables(query), currentTables(editor));
     }
-    return { currentTables, prioritizeTables, matchingVariables, refreshSchemaOnce, computeItems };
+    // La liste d'un champ texte, celle des champs à bulles (computeItems) comme celle d'un <input> (checkForFilenameTrigger) : après « Projet.Accompagnateur. »,
+    // les colonnes de la ligne que désigne cette Référence (pathItems) ; sinon la saisie cherche la colonne par son nom (matchingVariables), celles de la
+    // table de la page d'abord. Une clé tapée en entier, seule proposition, n'a rien à compléter (clé tapée à la main, curseur revenu derrière une variable
+    // posée) : la liste reste fermée, une espace ou un tiret tapé derrière elle n'y change rien.
+    function fieldItems(query, editor) {
+      const items = pathItems(query) || prioritizeTables(matchingVariables(query), currentTables(editor));
+      const typed = SearchSelect.normalize(query).replace(/[\s-]+$/, '');
+      if (!items.length || (items.length === 1 && SearchSelect.normalize(items[0].key) === typed)) return [];
+      return items;
+    }
+    return { currentTables, prioritizeTables, matchingVariables, columnSearchText, referencedTable, crossedListTable, writesList, columnsBelow, refreshSchemaOnce, computeItems, fieldItems };
   })();
 
   const { setTabsVisible, render, select, moveSelection, position, preferChipsTab } = (function () {
     // L'affichage de la liste : onglets, lignes, ligne choisie, position
 
-    // Le champ du nom de fichier PDF réutilise cette boîte sans l'onglet des puces (aucun nœud ProseMirror à y insérer) : masqué plutôt que retiré du
-    // DOM.
+    // Le champ texte d'une fenêtre (le QR code, le calcul d'une bulle) réutilise cette boîte sans l'onglet des puces (aucun nœud ProseMirror à y insérer) :
+    // masqué plutôt que retiré du DOM.
     function setTabsVisible(visible) {
       ensureBox().querySelector('.ac-tabs').style.display = visible ? '' : 'none';
     }
@@ -216,17 +318,21 @@ const Variables = (function () {
   const { updateItems, hide, suggestionRender } = (function () {
     // La mise à jour de la liste et l'objet de rendu de @tiptap/suggestion
 
-    function updateItems(props) {
+    // `fieldMode` : la liste d'un champ texte, dont l'onglet des puces n'a que celles qui s'écrivent en texte.
+    function updateItems(props, fieldMode) {
       latestProps = props;
+      latestFieldMode = !!fieldMode;
       currentItems = props.items || [];
       // Avec un texte à entourer en attente, « Texte conditionnel » est l'entrée choisie : Entrée suffit.
-      const wrapIndex = ConditionalText.hasPending() ? currentItems.findIndex(item => item.chipKind === 'conditionalText') : -1;
+      const wrapIndex = !fieldMode && ConditionalText.hasPending() ? currentItems.findIndex(item => item.chipKind === 'conditionalText') : -1;
       selectedIndex = wrapIndex > 0 ? wrapIndex : 0;
       latestCommand = props.command;
       setTabsVisible(true);
       render();
-      // La liste de l'éditeur retrouve son étage de menu : un champ de fenêtre l'a peut-être montée devant sa fenêtre (checkForFilenameTrigger).
-      listWindow = null;
+      // La liste de l'éditeur retrouve son étage de menu : un champ de fenêtre l'a peut-être montée devant sa fenêtre (checkForFilenameTrigger). Un champ à bulles que porte
+      // une fenêtre (le « Sinon afficher » de js/variable-condition.js) la monte devant elle.
+      const dom = props.editor && props.editor.view && props.editor.view.dom;
+      listWindow = dom && dom.closest ? dom.closest('.pp-modal') : null;
       ensureBox().style.display = currentItems.length ? 'flex' : 'none';
       position(props.clientRect);
     }
@@ -235,10 +341,10 @@ const Variables = (function () {
 
     // L'objet de rendu de @tiptap/suggestion : onStart et onUpdate à chaque frappe après le déclencheur, onKeyDown pour intercepter flèches, Entrée et
     // Échap (true : géré, l'éditeur ne les reçoit pas), onExit quand le déclencheur n'est plus actif (curseur sorti, espace tapé...).
-    function suggestionRender() {
+    function suggestionRender(fieldMode) {
       return {
-        onStart: updateItems,
-        onUpdate: updateItems,
+        onStart: props => updateItems(props, fieldMode),
+        onUpdate: props => updateItems(props, fieldMode),
         onKeyDown(props) {
           if (!currentItems.length) return false;
           if (props.event.key === 'ArrowDown') { moveSelection(1); return true; }
@@ -247,14 +353,19 @@ const Variables = (function () {
           if (props.event.key === 'Escape') { hide(); return true; }
           return false;
         },
-        onExit() { hide(); schemaRefreshedForSession = false; activeTab = 'variables'; ConditionalText.cancelPending(); },
+        onExit() {
+          hide();
+          schemaRefreshedForSession = false;
+          activeTab = 'variables';
+          if (!fieldMode) ConditionalText.cancelPending();
+        },
       };
     }
     return { updateItems, hide, suggestionRender };
   })();
 
-  const { createExtension } = (function () {
-    // Les insertions (puces, note de bas de page, variable) et l'extension TipTap
+  const { createExtension, createFieldExtension, isAttachmentColumn, insertAttachmentImage } = (function () {
+    // Les insertions (puces, note de bas de page, variable, image d'une colonne Pièces jointes) et l'extension TipTap
 
     // Les puces qui ouvrent leur propre insertion. Appelées à l'usage : ces modules sont chargés après celui-ci.
     const PANEL_INSERTERS = {
@@ -284,43 +395,97 @@ const Variables = (function () {
       else if (chipKind === 'footnote') insertFootnote(editor, range);
       else editor.chain().focus().insertContentAt(range, { type: 'smartChip', attrs: { kind: chipKind } }).run();
     }
+    // Vrai quand la variable `item` posée à `pos` se lira là sans autre réglage. Dans une zone répétée pour cette table (ou pour une table qui entoure cette zone),
+    // elle lit la ligne du tour : aucun lien à configurer (js/loop-rules.js). Aucun non plus pour une table dont les lignes se rattachent à celles de la zone : sa
+    // boucle se pose ensuite sur la bulle (js/variable-loop.js:nestableAt). Sinon une table pas encore liée ouvre la fenêtre de la clé de correspondance, et le
+    // résultat est faux quand elle est refusée : rien ne se pose alors.
+    async function ensureLinkedAt(editor, pos, item) {
+      return VariableLoop.loopTablesAt(editor.state, pos).indexOf(item.table) !== -1 || VariableLoop.nestableAt(editor.state, pos, item) || ensureLinkConfigured(item);
+    }
+    // Une colonne Pièces jointes se pose en image liée à la colonne, jamais en bulle : un cadre de 320 × 240 px que la Lecture et les exports remplissent avec la
+    // première pièce jointe de la ligne (js/reader-mode.js:resolveVariableImages). Le menu « Image depuis une variable » de la barre (js/main-toolbar.js) et la liste
+    // « # » du corps posent la même image, par cette seule fonction, avec la même clé de correspondance demandée avant (ensureLinkedAt) : sans elle, l'image d'une
+    // autre table se poserait puis ne s'afficherait ni à la Lecture ni à l'export. `range` : ce que l'image remplace (le « #requête » de la liste) ; sans lui, la
+    // sélection. Faux quand la clé est refusée.
+    const isAttachmentColumn = item => GristAPI.getColumnType(item.table, item.column) === 'Attachments';
+    async function insertAttachmentImage(editor, item, range) {
+      if (!(await ensureLinkedAt(editor, range ? range.from : editor.state.selection.from, item))) return false;
+      const chain = editor.chain().focus();
+      if (range) chain.setTextSelection(range);
+      chain.insertImage({ varTable: item.table, varColumn: item.column, varKey: item.key, width: '320px', height: '240px' }).run();
+      return true;
+    }
     // `range` reste valide pendant l'attente de la fenêtre de liaison (position ProseMirror, pas liée au focus DOM).
     async function insertVariable(editor, range, item) {
-      // Dans une zone répétée pour cette table, la variable lit la ligne du tour : aucun lien à configurer (js/loop-rules.js).
-      const inLoop = VariableLoop.loopTableAt(editor.state, range.from) === item.table;
-      if (!inLoop && !(await ensureLinkConfigured(item))) return;
+      // Là où une image peut vivre, une colonne Pièces jointes devient l'image du menu Image. Pas dans un champ texte (Objet, À, Cc, Cci, nom du PDF : son document
+      // n'a pas de nœud image) ni dans un modèle d'e-mail (texte brut, menu Image grisé) : la bulle d'avant, qui n'y écrit rien.
+      if (isAttachmentColumn(item) && editor.schema.nodes.editorImage && !EmailPlainText.isActive()) { await insertAttachmentImage(editor, item, range); return; }
+      if (!(await ensureLinkedAt(editor, range.from, item))) return;
       editor.chain().focus().insertContentAt(range, { type: 'varBadge', attrs: { table: item.table, column: item.column, key: item.key } }).run();
     }
+
+    // Le choix d'une ligne de la liste, dans l'éditeur du document comme dans un champ texte à bulles : une puce ou une bulle de variable.
+    function insertItem(editor, range, item) {
+      if (item.kind === 'chip') insertChip(editor, range, item.chipKind);
+      else insertVariable(editor, range, item);
+    }
+
+    // Ce que les deux listes « # » (le corps du modèle, les champs texte à bulles) ont en commun : le déclencheur - réglable dans le panneau Réglages, un
+    // changement n'a effet qu'après rechargement, ce `char` étant lu une fois, à la construction de l'éditeur - et la saisie jusqu'au curseur, espaces
+    // comprises : « #porteur 3 » cherche les deux mots (la liste se vide, et se tait, dès qu'aucune colonne ne les porte tous).
+    const suggestionBase = editor => ({ editor, char: triggerChar(), allowSpaces: true });
 
     // Reçoit les classes Extension et Suggestion plutôt que de les importer : editor.js les a déjà chargées au même moment.
     function createExtension(Extension, Suggestion) {
       return Extension.create({
         name: 'varBadgeSuggestion',
+        // Avant les autres extensions : dans une case de grille ou de tableau, les flèches (et Tab) de prosemirror-tables passeraient sinon avant la liste
+        // ouverte, qui ne verrait jamais la touche - le curseur changerait de case au lieu de parcourir les colonnes. Hors liste ouverte (ou liste sans
+        // ligne), elle rend la main sans rien consommer.
+        priority: 1000,
         addProseMirrorPlugins() {
           return [
-            Suggestion({
-              editor: this.editor,
-              // Réglable dans le panneau Réglages ; un changement n'a effet qu'après rechargement, ce `char` étant lu une fois, à la construction de
-              // l'éditeur.
-              char: triggerChar(),
+            Suggestion(Object.assign(suggestionBase(this.editor), {
               // Jamais dans un bloc de code : un « # » de commentaire ou de couleur (#fff) y ouvrirait la liste, et une bulle ne peut pas vivre dans du
               // texte brut.
               allow: ({ state, range }) => !state.doc.resolve(range.from).parent.type.spec.code,
               items: ({ query, editor }) => computeItems(query, editor),
-              command: ({ editor, range, props }) => {
-                if (props.kind === 'chip') insertChip(editor, range, props.chipKind);
-                else insertVariable(editor, range, props);
-              },
+              command: ({ editor, range, props }) => insertItem(editor, range, props),
               render: suggestionRender,
-            }),
+            })),
           ];
         },
       });
     }
-    return { createExtension };
+    // L'extension TipTap d'un champ texte à bulles (js/field-editor.js) : le « # » ouvre la même liste que dans l'éditeur, dont l'onglet des puces n'a que
+    // celles qui s'écrivent en texte, et le choix pose une bulle ou une puce. Même demande de clé de correspondance qu'à l'insertion d'une bulle du corps
+    // (insertVariable). Le déclencheur s'ouvre
+    // derrière n'importe quel caractère (`allowedPrefixes: null`), comme dans le champ texte d'avant : « Suivi_#Projet.Nom » est le nom de fichier
+    // type, et l'éditeur du corps, lui, n'ouvre la liste qu'après une espace.
+    function createFieldExtension(Extension, Suggestion) {
+      return Extension.create({
+        name: 'fieldVariableSuggestion',
+        // La liste, partagée par tous les champs et par le document, ne reste pas ouverte sous un champ que le curseur a quitté. Un clic sur une ligne
+        // de la liste garde le focus du champ (mousedown sans effet par défaut, cf. ensureBox) : il n'arrive pas ici.
+        onBlur() { hide(); },
+        addProseMirrorPlugins() {
+          return [
+            Suggestion(Object.assign(suggestionBase(this.editor), {
+              allowedPrefixes: null,
+              items: ({ query, editor }) => computeItems(query, editor, true),
+              // La liste se ferme au choix : la fenêtre de la clé de correspondance, si elle s'ouvre, ne la retrouve pas ouverte derrière elle, et un refus laisse le
+              // texte tapé sans liste, comme le champ d'avant.
+              command: ({ editor, range, props }) => { hide(); insertItem(editor, range, props); },
+              render: () => suggestionRender(true),
+            })),
+          ];
+        },
+      });
+    }
+    return { createExtension, createFieldExtension, isAttachmentColumn, insertAttachmentImage };
   })();
 
-  const { checkForFilenameTrigger } = (function () {
+  const { checkForFilenameTrigger, pathItems } = (function () {
     // La liste d'un champ texte : chemins de références et déclencheur
 
     // Saisie « Table.Colonne.… » d'un champ texte (`raw`, casse tapée) : quand ce qui précède le dernier point est un chemin de colonnes Référence qui
@@ -343,8 +508,9 @@ const Variables = (function () {
         if (!reached) return null;
         hops.push(column);
       }
-      const partial = SearchSelect.normalize(raw.slice(cut + 1));
-      return GristAPI.getVisibleColumns(reached).filter(c => SearchSelect.normalize(c).includes(partial)).map(c => {
+      const words = SearchSelect.searchWords(raw.slice(cut + 1));
+      const found = c => SearchSelect.foundIn(words, SearchSelect.searchKey(c, GristAPI.getColumnLabel(reached, c)));
+      return GristAPI.getVisibleColumns(reached).filter(found).map(c => {
         const path = hops.concat(c).join('.');
         return { key: table + '.' + path, table, column: path };
       });
@@ -354,19 +520,15 @@ const Variables = (function () {
       const closeList = () => { hide(); filenameInputState = null; schemaRefreshedForSession = false; };
       const caret = el.selectionStart;
       if (caret == null) { closeList(); return; }
-      // Lettres accentuées comprises : « #télé » retrouve Telephone comme dans l'éditeur.
-      const match = el.value.slice(0, caret).match(new RegExp(triggerChar().replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '([\\p{L}\\p{N}_.]*)$', 'u'));
+      // Les mêmes caractères que dans l'éditeur (QUERY_CHARS) : « #télé » retrouve Telephone et « #porteur 3 » Projets.Porteur_3.
+      const match = el.value.slice(0, caret).match(new RegExp(triggerChar().replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '((?!\\s)' + QUERY_CHARS + ')$', 'u'));
       if (!match) { closeList(); return; }
       // Relu dès le premier caractère tapé après le déclencheur : sinon chercher une colonne toute neuve ne trouverait rien, la liste vide se fermant
       // avant d'avoir pu relire.
       refreshSchemaOnce();
-      const query = SearchSelect.normalize(match[1]);
-      // Après « Projet.Accompagnateur. » : les colonnes de la ligne que désigne cette Référence ; sinon la saisie filtre les clés « Table.Colonne »,
-      // celles de la table de la page d'abord.
-      const items = pathItems(match[1]) || prioritizeTables(matchingVariables(match[1]), currentTables());
-      // Une clé tapée en entier, seule proposition, n'a rien à compléter (clé tapée à la main, curseur revenu derrière une variable posée) : la liste
-      // reste fermée.
-      if (!items.length || (items.length === 1 && SearchSelect.normalize(items[0].key) === query)) { hide(); filenameInputState = null; return; }
+      // La même liste que celle des champs à bulles ; vide, elle reste fermée.
+      const items = fieldItems(match[1]);
+      if (!items.length) { hide(); filenameInputState = null; return; }
       filenameInputState = { el, start: caret - match[0].length, end: caret };
       currentItems = items;
       selectedIndex = 0;
@@ -378,7 +540,7 @@ const Variables = (function () {
       ensureBox().style.display = 'flex';
       position(() => el.getBoundingClientRect());
     }
-    return { checkForFilenameTrigger };
+    return { checkForFilenameTrigger, pathItems };
   })();
   const { insertFilenameVariable, initFilenameInput } = (function () {
     // L'insertion dans un champ texte et son clavier
@@ -437,13 +599,16 @@ const Variables = (function () {
     // Le type de la colonne lue : `opts.colType` quand la valeur ne vient d'aucune colonne (le résultat d'un calcul, js/formula.js, est un nombre écrit
     // et caché à zéro comme celui d'une colonne Numérique).
     const typeOfValue = (varTable, varColumn, opts) => opts.colType || (varTable && varColumn ? GristAPI.getColumnType(varTable, varColumn) : null);
+    // Les décimales qu'écrit un nombre montré par une Référence : jusqu'à dix, comme une colonne Grist sans format (gristDigits, js/variable-format.js).
+    const REFERENCE_MAX_DECIMALS = 10;
     // Ni la bulle d'un champ texte (`rawNumbers`) ni une valeur montrée comme donnée (`keepZero`) ne cachent le zéro.
     const dropsZero = (format, colType, opts) => !opts.rawNumbers && !opts.keepZero && zeroHidden(format, colType);
     const withoutZeros = (items, drop) => (drop ? items.filter(v => !VariableFormat.isZero(v)) : items);
 
-    // Le texte d'une valeur tel que l'écrit la bulle de `format` (null : réglages par défaut). Sans réglage, une colonne Date ou DateTime reçoit quand
-    // même le préréglage par défaut, une Numérique ou Entier s'écrit comme la barre flottante l'annonce (FR : espaces entre les milliers, virgule ; US
-    // quand l'interface est en anglais), un Oui / Non en « vrai » / « faux » (« true » / « false » en anglais). Seul un vrai nombre est mis en forme :
+    // Le texte d'une valeur tel que l'écrit la bulle de `format` (null : réglages par défaut). Sans réglage, une colonne Date ou Date et heure (son type
+    // est « DateTime:<fuseau> », VariableFormat.isDateType) reçoit quand même le préréglage par défaut, sans heure, lu dans le fuseau de la colonne, une
+    // Numérique ou Entier s'écrit comme la barre flottante l'annonce (FR : espaces entre les milliers, virgule ; US quand l'interface est en anglais),
+    // un Oui / Non en « vrai » / « faux » (« true » / « false » en anglais). Seul un vrai nombre est mis en forme :
     // un texte saisi dans une colonne numérique (Grist le garde tel quel) reste ce qu'il est, « 12 EUR » ne deviendrait pas « 12 ». `opts.rawNumbers` :
     // les champs texte (nom du fichier, Objet, À, Cc, Cci) gardent nombre, zéro et booléen tels quels (« Facture 2026012 » ne doit pas devenir
     // « Facture 2 026 012 », ni un nom de fichier changer d'écriture d'un jour à l'autre). `opts.keepZero` : la valeur d'une cellule montrée comme
@@ -453,6 +618,9 @@ const Variables = (function () {
     function formatValue(val, format, varTable, varColumn, opts) {
       opts = opts || {};
       if (val === null || val === undefined) return '';
+      // Une cellule dont la formule a échoué s'écrit comme Grist la montre (« #DIV/0! »), dans une colonne de n'importe quel type : ni nombre ni date à mettre
+      // en forme, et la même écriture que la ligne vienne de grist.onRecord ou de fetchTable (VariableFormat.cellError).
+      if (VariableFormat.isCellError(val)) return String(val);
       const colType = typeOfValue(varTable, varColumn, opts);
       const drop = dropsZero(format, colType, opts);
       if (Array.isArray(val)) return formatList(val, format, varTable, varColumn, opts, drop);
@@ -462,23 +630,30 @@ const Variables = (function () {
       if (typeof val === 'boolean') return opts.rawNumbers || opts.keepZero ? String(val) : VariableFormat.formatBool(val, format);
       const effectiveFormat = effectiveFormatOf(format, colType, val, opts);
       if (effectiveFormat && effectiveFormat.type === 'number') return VariableFormat.formatNumber(val, effectiveFormat);
-      if (effectiveFormat && effectiveFormat.type === 'date') return VariableFormat.formatDate(val, effectiveFormat);
+      if (effectiveFormat && effectiveFormat.type === 'date') return VariableFormat.formatDate(val, effectiveFormat, colType);
       return String(val);
     }
     // Une liste (une valeur par ligne liée d'une règle « match », ou une colonne liste) se formate élément par élément, le zéro masqué en est retiré
-    // sans laisser de trou entre deux virgules ; avec un réglage de la fenêtre « Liste » (js/variable-list.js) elle s'écrit à plat, sinon les valeurs
-    // sont jointes par « , ».
+    // sans laisser de trou entre deux virgules, comme toute valeur qui s'écrit vide (une fiche sans date, un texte vide : « 12/09/2026 », pas
+    // « , 12/09/2026 ») ; avec un réglage de la fenêtre « Liste » (js/variable-list.js) elle s'écrit à plat, sinon les valeurs sont jointes par « , ».
     function formatList(val, format, varTable, varColumn, opts, drop) {
       const style = VariableFormat.listStyle(format);
-      const texts = withoutZeros(style ? VariableFormat.flattenList(val) : val, drop).map(v => formatValue(v, format, varTable, varColumn, opts));
+      const texts = withoutZeros(style ? VariableFormat.flattenList(val) : val, drop).map(v => formatValue(v, format, varTable, varColumn, opts)).filter(text => text !== '');
       return style ? VariableFormat.listText(texts, style) : texts.join(', ');
     }
-    // Le réglage que la valeur reçoit : celui de la bulle s'il dit son type, sinon celui que sa colonne appelle (une Date ou DateTime reçoit le
-    // préréglage par défaut ; un nombre d'une colonne Numérique ou Entier, sauf dans un champ texte, s'écrit comme la barre flottante l'annonce).
+    // Le réglage que la valeur reçoit : celui de la bulle s'il dit son type, sinon celui que sa colonne appelle (une Date ou Date et heure reçoit le
+    // préréglage par défaut, comme la Référence ou la liste de références qui montre une date - son type est « Ref:… » mais sa valeur est une date, cf.
+    // decodeShown ; un nombre d'une colonne Numérique ou Entier, sauf dans un champ texte, s'écrit comme la barre flottante l'annonce). Le nombre que montre
+    // une Référence (un prix, un numéro, un identifiant de ligne) prend la virgule de la langue, sans espace des milliers ni décimale forcée : « 1,5 » et
+    // « 2024 », jamais « 1.5 » ni « 2 024 » - la colonne montrée peut être un prix comme une année, le type de la Référence ne le dit pas.
     function effectiveFormatOf(format, colType, val, opts) {
       if ((format && format.type) || !colType) return format;
-      if (colType === 'Date' || colType === 'DateTime') return Object.assign({}, format, { type: 'date', preset: VariableFormat.DATE_PRESETS[0].key });
+      if (VariableFormat.isDateType(colType) || (val instanceof Date && GristAPI.referenceOf(colType))) return Object.assign({}, format, { type: 'date', preset: VariableFormat.DATE_PRESETS[0].key });
+      // Une colonne « Any » (une formule sans type) qui calcule une date l'écrit comme une colonne Date ; un instant, qui porte son fuseau, garde son heure :
+      // la barre d'une colonne « Any » n'a pas de réglage de date, rien ne la lui retirerait.
+      if (colType === 'Any' && val instanceof Date) return Object.assign({}, format, { type: 'date', preset: VariableFormat.DATE_PRESETS[0].key }, val.timezone ? { time: 'colon' } : {});
       if (!opts.rawNumbers && typeof val === 'number' && (colType === 'Numeric' || colType === 'Int')) return Object.assign({}, format, { type: 'number' });
+      if (!opts.rawNumbers && typeof val === 'number' && GristAPI.referenceOf(colType)) return Object.assign({}, format, { type: 'number', style: 'none', decimals: 0, maxDecimals: REFERENCE_MAX_DECIMALS });
       return format;
     }
     // Les valeurs d'une liste, une écriture chacune, dans l'ordre et au compte où « La n-ième » (fenêtre « Liste ») les prend : à plat, le zéro caché
@@ -493,26 +668,72 @@ const Variables = (function () {
     }
     return { zeroHidden, formatValue, listTexts };
   })();
-  const { unwrapRefValue, cellValue, rawRowOf, referencedRowId } = (function () {
+  const { unwrapRefValue, listItems, decodeShown, cellValue, shownValue, rawRowOf, referencedRowId } = (function () {
     // La valeur d'une cellule et la ligne brute de la ligne courante
 
     const unwrapRefValue = v => (Array.isArray(v) ? v[1] : v);
+    // Les éléments d'une cellule liste en forme brute (['L', id, id…] ; vide : null ou rien) ; une valeur seule est une liste d'un élément.
+    function listItems(value) {
+      if (value === null || value === undefined || value === '') return [];
+      if (!Array.isArray(value)) return [value];
+      return value[0] === 'L' ? value.slice(1) : value.slice();
+    }
+
+    // La valeur que montre une Référence, lue dans la colonne d'affichage d'une ligne brute (fetchTable), ramenée à ce que grist.onRecord livre déjà : une
+    // liste ["L", …] devient un tableau, et une date, qui n'y est qu'un nombre de secondes sous une étiquette, ['d', secondes] (colonne Date) ou ['D', secondes,
+    // fuseau] (Date et heure), devient un objet Date, le fuseau en `timezone` comme GristDateTime. La Référence qui montre une date s'écrit, se compare et
+    // se trie alors comme celle de la ligne affichée (VariableFormat.formatDate, ConditionRules.compareDates), au lieu de « d, 1789171200 ». Une cellule en
+    // erreur, ['E', nom, …], devient le même objet que le RaisedException de la ligne affichée (VariableFormat.cellError), au lieu de « E, ZeroDivisionError ».
+    function decodeShown(value) {
+      if (!Array.isArray(value)) return value;
+      if (value[0] === 'L') return value.slice(1).map(decodeShown);
+      if (value[0] === 'E' && typeof value[1] === 'string') return VariableFormat.cellError(value.slice(1));
+      if ((value[0] === 'd' || value[0] === 'D') && typeof value[1] === 'number' && isFinite(value[1])) {
+        const date = new Date(value[1] * 1000);
+        if (value[0] === 'D' && value[2]) date.timezone = value[2];
+        return date;
+      }
+      return value;
+    }
 
     // Valeur d'une cellule telle que Grist l'affiche, pour une ligne lue par fetchTable (autre table, export en lot, aperçu de la fenêtre de
     // condition) : la forme brute donne l'id de la ligne référencée pour une Référence (0 si vide) et ["L", …] pour une liste, là où grist.onRecord
     // livre déjà la valeur affichée pour la table de la page. Une Référence ou une liste de références prend donc la valeur de sa colonne d'affichage
     // (GristAPI.getDisplayColumn : la colonne « gristHelper_Display… » que Grist calcule dans la même table et que fetchTable livre,
-    // engine.py:fetch_table dans grist-core).
+    // engine.py:fetch_table dans grist-core), décodée par decodeShown. Une cellule en erreur est, de même, l'objet que livre la ligne affichée, et une date
+    // que porte une colonne « Any » (une formule sans type), ['d', secondes] ou ['D', secondes, fuseau], l'objet Date de la ligne affichée.
     function cellValue(table, column, row) {
       if (!row) return null;
       let value = row[column];
+      // Une cellule en erreur (['E', nom, …]) passe avant tout : dans une colonne Référence aussi, c'est elle qu'on écrit, pas la colonne d'affichage.
+      if (Array.isArray(value) && value[0] === 'E') return decodeShown(value);
       const reference = GristAPI.referenceOf(GristAPI.getColumnType(table, column));
       if (reference) {
         if (!reference.list && value === 0) return null;
         const displayCol = GristAPI.getDisplayColumn(table, column);
         if (displayCol && displayCol in row) value = row[displayCol];
+        return decodeShown(value);
       }
-      return (Array.isArray(value) && value[0] === 'L') ? value.slice(1) : value;
+      return decodeShown(value);
+    }
+
+    // Une Référence qui montre un nombre arrive de grist.onRecord en objet Reference { tableId, rowId } (objtypes.ts:decodeObject dans grist-core) dont
+    // `rowId` est ce nombre - l'identifiant de la ligne quand elle montre « l'identifiant de ligne » - et qu'on ne peut pas écrire tel quel : String() en
+    // fait « Produits[2024] ». Ce 0 vaut aussi bien pour une Référence qui ne désigne aucune ligne que pour la ligne dont le nombre est 0, et un Oui / Non
+    // montré vaut `false` pour une Référence vide comme pour une vraie ligne à faux : la ligne brute, lue une fois par ligne livrée (rawRowOf), dit si la
+    // Référence désigne une ligne, comme cellValue le lit pour la ligne du lot. Tout le reste (un texte, une date, null, une liste) se lit tel quel.
+    const isReferenceObject = v => !!v && typeof v === 'object' && !Array.isArray(v) && !(v instanceof Date) && typeof v.tableId === 'string' && typeof v.rowId === 'number';
+    async function shownValue(table, column, record) {
+      const value = record[column];
+      const reference = GristAPI.referenceOf(GristAPI.getColumnType(table, column));
+      if (!reference || reference.list) return value;
+      const wrapped = isReferenceObject(value);
+      if (!wrapped && value !== false) return value;
+      if (wrapped && value.rowId !== 0) return value.rowId;
+      // Sans ligne brute (ligne « nouvelle »), une Référence à 0 ne désigne rien et un Oui / Non faux reste faux.
+      const raw = await rawRowOf(table, record);
+      if (raw ? !raw[column] : wrapped) return null;
+      return wrapped ? 0 : value;
     }
 
     // La ligne brute (fetchTable) de la ligne courante de la page, pour une colonne que grist.onRecord n'a pas livrée (`record[colonne] === undefined`,
@@ -537,7 +758,7 @@ const Variables = (function () {
       }
       return unwrapRefValue(record[column]);
     }
-    return { unwrapRefValue, cellValue, rawRowOf, referencedRowId };
+    return { unwrapRefValue, listItems, decodeShown, cellValue, shownValue, rawRowOf, referencedRowId };
   })();
 
   const { ruleSourceValue, lowestRow, matchingRows, resolveLinkedRows } = (function () {
@@ -572,11 +793,27 @@ const Variables = (function () {
     }
     // La ligne d'identifiant le plus petit (la « ligne fixe » d'une règle « singleton »), null pour une table vide.
     const lowestRow = rows => rows.reduce((min, r) => (!min || r.id < min.id ? r : min), null);
-    // Les lignes dont la colonne cible de la règle vaut `sourceVal` : comparées en texte, sans espaces autour.
-    function matchingRows(rows, rule, sourceVal) {
+    // Les lignes dont la colonne cible de la règle vaut `sourceVal` : comparées en texte, sans espaces autour. Une colonne Référence côté cible garde en vrai le
+    // numéro de la ligne qu'elle désigne (c'est lui qu'on compare à l'identifiant de ligne) mais montre le texte de sa colonne affichée (« Dossier A ») : quand la
+    // colonne source n'est pas l'identifiant de ligne, une ligne correspond aussi si le texte que sa Référence montre est la valeur cherchée - « Titre = Dossier »
+    // trouve ce que la personne voit dans la table, comme « Auto = Dossier » (l'identifiant de ligne) trouve ce que la Référence désigne. Le numéro compte toujours (une
+    // règle qui trouvait des lignes en trouve au moins autant) ; un texte vide ne compte pas (une Référence vide ne ressemble à aucune cellule vide). Une liste de
+    // références correspond dès que l'UN de ses éléments correspond, numéro ou texte : un projet rattaché à deux instances est sous chacune, pas seulement sous la
+    // première. `targetTable` : la table des lignes, pour le type de la colonne.
+    function matchingRows(rows, rule, sourceVal, targetTable) {
       const wanted = String(sourceVal).trim();
-      const keyOf = rule.colonneCible === 'id' ? (row => row.id) : (row => unwrapRefValue(row[rule.colonneCible]));
-      return rows.filter(row => String(keyOf(row)).trim() === wanted);
+      const is = value => String(value).trim() === wanted;
+      const column = rule.colonneCible;
+      if (column === 'id') return rows.filter(row => is(row.id));
+      const reference = targetTable ? GristAPI.referenceOf(GristAPI.getColumnType(targetTable, column)) : null;
+      if (!reference) return rows.filter(row => is(unwrapRefValue(row[column])));
+      const byText = rule.colonneSource !== 'id' && wanted !== '';
+      // Ce que montre la Référence de la ligne : un texte, ou les textes de la liste (cellValue décode `["L", …]` en tableau) ; rien pour une Référence vide.
+      const shown = row => { const value = cellValue(targetTable, column, row); return value == null ? [] : Array.isArray(value) ? value : [value]; };
+      return rows.filter(row => {
+        const numbers = reference.list ? listItems(row[column]) : [unwrapRefValue(row[column])];
+        return numbers.some(is) || (byText && shown(row).some(text => text != null && is(text)));
+      });
     }
     // Les lignes de `varTable` qui correspondent à la ligne courante selon la règle de liaison de cette table (aucune : vide), pour la résolution d'une
     // variable comme pour la fenêtre « Autres attributs » (js/variable-linked-attrs.js), qui lit plusieurs colonnes de la même ligne.
@@ -590,7 +827,7 @@ const Variables = (function () {
       }
       const sourceVal = await ruleSourceValue(rule, record, currentTableId, fetchRows);
       if (sourceVal === undefined || sourceVal === null) return [];
-      return matchingRows(await fetchRows(varTable), rule, sourceVal);
+      return matchingRows(await fetchRows(varTable), rule, sourceVal, varTable);
     }
     return { ruleSourceValue, lowestRow, matchingRows, resolveLinkedRows };
   })();
@@ -599,7 +836,8 @@ const Variables = (function () {
   // bulle, suit la colonne Référence Accompagnateur jusqu'à la ligne de l'annuaire qu'elle désigne, et lit Email sur cette ligne, comme
   // $Projet.Accompagnateur.Email dans une formule Grist. Aucune règle de liaison n'est ajoutée pour les tables traversées : le chemin lui-même dit
   // quelle ligne, et deux références vers la même table (Accompagnateur et Porteur vers l'annuaire) donnent chacune la leur. Une colonne ordinaire
-  // est un chemin sans maillon à suivre.
+  // est un chemin sans maillon à suivre. Une liste de références (« Membres.Email ») se suit aussi : elle désigne plusieurs lignes, et l'on lit
+  // Email sur chacune, dans l'ordre de la liste - une valeur par ligne, comme pour une table liée par une règle « match » (`multi`).
 
   const { resolveRows } = (function () {
     // Descendre de référence en référence
@@ -609,7 +847,8 @@ const Variables = (function () {
     // les lignes que trouve la règle de liaison de la table, à défaut la colonne Référence de la page qui y mène. `multi` : plusieurs lignes possibles
     // (règle « match »), à lire une par une.
     async function baseRows(varTable, tableId, record, opts) {
-      const loopRow = opts && opts.loop && opts.loop.rows && opts.loop.rows[varTable];
+      const turn = opts && opts.loop && opts.loop.rows;
+      const loopRow = turn && turn[varTable];
       if (loopRow) return { rows: [loopRow] };
       if (!tableId) return { error: I18n.t('variables.error.noCurrentTable') };
       if (varTable === tableId) {
@@ -617,50 +856,62 @@ const Variables = (function () {
         const row = record.id != null ? await GristAPI.fetchRowById(varTable, record.id) : null;
         return { rows: row ? [row] : [] };
       }
-      const rule = GristAPI.getLinkRule(varTable);
-      if (rule) return { rows: await resolveLinkedRows(varTable, rule, record, tableId, opts), multi: rule.mode !== 'singleton' };
+      // Dans une zone répétée pour chaque ligne de la table de la page (boucle sur toutes les lignes), la règle de liaison et la colonne Référence partent de la
+      // ligne du tour - les lignes de la facture n° 2, pas celles de la ligne choisie.
+      const start = (turn && turn[tableId]) || record;
+      const rule = GristAPI.getLinkRule(varTable, tableId);
+      if (rule) return { rows: await resolveLinkedRows(varTable, rule, start, tableId, opts), multi: rule.mode !== 'singleton' };
       const refCols = await GristAPI.findReferenceColumns(tableId, varTable);
       if (refCols.length === 0) return { error: I18n.t('variables.error.noMatching', { table: varTable }) };
-      const refId = await referencedRowId(tableId, refCols[0], record);
+      const refId = await referencedRowId(tableId, refCols[0], start);
       if (!refId) return { rows: [] };
       const linkedRow = await GristAPI.fetchRowById(varTable, refId);
       if (!linkedRow) return { error: I18n.t('variables.error.rowNotFound', { table: varTable }) };
       return { rows: [linkedRow] };
     }
     // Un pas de plus : la ligne que désigne la colonne Référence `column` sur chacune des `rows` (null quand la cellule est vide ou que la ligne
-    // référencée n'existe plus). Rend { table, rows } : la table atteinte et une ligne (ou null) par ligne de départ, ou { error } quand `column` n'est
-    // pas une Référence.
+    // référencée n'existe plus). Rend { table, rows, many } : la table atteinte et une ligne (ou null) par ligne de départ, ou { error } quand `column` n'est
+    // pas une Référence. Pour une liste de références, `rows` regroupe les lignes que désignent toutes les lignes de départ, dans l'ordre de leurs listes (celles
+    // qui n'existent plus sont ignorées, une liste vide ne donne rien) et `many` est vrai : il n'y a plus une ligne par ligne de départ.
     async function followReference(table, column, rows, opts) {
       const reference = GristAPI.referenceOf(GristAPI.getColumnType(table, column));
-      if (!reference || reference.list) return { error: I18n.t('variables.error.notReference', { table, column }) };
-      if (!rows.some(Boolean)) return { table: reference.table, rows: rows.map(() => null) };
+      if (!reference) return { error: I18n.t('variables.error.notReference', { table, column }) };
+      if (!rows.some(Boolean)) return { table: reference.table, rows: reference.list ? [] : rows.map(() => null), many: reference.list };
       const fetchRows = (opts && opts.fetchRows) || GristAPI.fetchTableRows;
       const byId = new Map((await fetchRows(reference.table)).map(r => [r.id, r]));
-      return { table: reference.table, rows: rows.map(r => (r && byId.get(unwrapRefValue(r[column]))) || null) };
+      if (reference.list) {
+        const listed = [];
+        rows.forEach(r => { if (r) listItems(r[column]).forEach(id => { if (byId.has(id)) listed.push(byId.get(id)); }); });
+        return { table: reference.table, rows: listed, many: true };
+      }
+      return { table: reference.table, rows: rows.map(r => (r && byId.get(unwrapRefValue(r[column]))) || null), many: false };
     }
-    // Les lignes de la table où mène le chemin `hops` (suite de colonnes Référence) à partir de la ligne courante de `varTable` : { table, rows,
-    // multi } (une ligne, ou null si le chemin s'arrête sur une référence vide, par ligne de départ) ou { error }. Sans `hops`, les lignes de départ
-    // elles-mêmes. Partagé avec la fenêtre « Autres attributs » (js/variable-linked-attrs.js), qui montre les valeurs de chaque niveau du chemin.
+    // Les lignes de la table où mène le chemin `hops` (suite de colonnes Référence ou liste de références) à partir de la ligne courante de `varTable` :
+    // { table, rows, multi } (une ligne, ou null si le chemin s'arrête sur une référence vide, par ligne de départ ; toutes celles des listes quand le chemin en
+    // traverse une, `multi` vrai) ou { error }. Sans `hops`, les lignes de départ elles-mêmes. Partagé avec la fenêtre « Autres attributs »
+    // (js/variable-linked-attrs.js), qui montre les valeurs de chaque niveau du chemin.
     async function resolveRows(varTable, hops, currentTableId, record, opts) {
       if (!record) return { table: varTable, rows: [], multi: false };
       const base = await baseRows(varTable, currentTableId || GristAPI.getCurrentTableId(), record, opts);
       if (base.error) return { error: base.error };
       let table = varTable;
       let rows = base.rows;
+      let multi = !!base.multi;
       for (const hop of hops) {
         const step = await followReference(table, hop, rows, opts);
         if (step.error) return { error: step.error };
         ({ table, rows } = step);
+        multi = multi || step.many;
       }
-      return { table, rows, multi: !!base.multi };
+      return { table, rows, multi };
     }
     return { resolveRows };
   })();
   const { resolveRawValue, resolveVariableResult, resolveVariable, resolveListTexts } = (function () {
     // La valeur brute d'une variable, son texte et ses valeurs de liste
 
-    // La valeur de `column` lue au bout du chemin `hops` : { value }, { value: [...], multi: true } quand la règle de la table trouve plusieurs lignes,
-    // ou { error }.
+    // La valeur de `column` lue au bout du chemin `hops` : { value }, { value: [...], multi: true } quand la règle de la table trouve plusieurs lignes ou
+    // que le chemin traverse une liste de références (une valeur par ligne), ou { error }.
     async function resolvePathValue(varTable, hops, column, currentTableId, record, opts) {
       const found = await resolveRows(varTable, hops, currentTableId, record, opts);
       if (found.error) return { error: found.error };
@@ -680,7 +931,7 @@ const Variables = (function () {
       }
       // Une ligne de fetchTable (export en lot, aperçu de la fenêtre de condition) : ramenée à la valeur affichée, comme celle de grist.onRecord.
       if (GristAPI.isRawRow(record)) return { value: cellValue(table, column, record) };
-      if (record[column] !== undefined) return { value: record[column] };
+      if (record[column] !== undefined) return { value: await shownValue(table, column, record) };
       // Colonne que grist.onRecord n'a pas livrée (champ rapporté de la page, cf. rawRowOf) : lue sur la ligne brute, ramenée à la valeur affichée ;
       // vide si la table ne l'a pas non plus.
       const row = await rawRowOf(table, record);
@@ -688,8 +939,8 @@ const Variables = (function () {
     }
     // La valeur brute d'une #Variable, avant tout formatage (resolveAttachmentIds ne doit jamais passer par formatValue ni String) : { value }, ou
     // { error } (message déjà rédigé dans la langue de l'interface, clés 'variables.error.*' de js/i18n.js). Pour une table liée par une règle
-    // « match », `value` est un tableau (une valeur par ligne liée) et `multi` le signale : js/condition-rules.js:matches teste alors chaque ligne
-    // liée, sans confondre avec une ChoiceList, elle aussi un tableau.
+    // « match », ou un chemin qui traverse une liste de références, `value` est un tableau (une valeur par ligne liée) et `multi` le signale :
+    // js/condition-rules.js:matches teste alors chaque ligne liée, sans confondre avec une ChoiceList, elle aussi un tableau.
     async function resolveRawValue(varTable, varColumn, currentTableId, record, opts) {
       if (!record) return { value: null };
       const hops = String(varColumn).split('.');
@@ -754,10 +1005,13 @@ const Variables = (function () {
       if (!end) return { error: I18n.t('formula.error.unknownColumn', { column: variable.column, table: variable.table }) };
       // La clé est dite comme la bulle l'écrit, avec sa touche de déclenchement.
       const shown = triggerChar() + variable.key;
-      if (end.type === 'Date' || end.type === 'DateTime') return { error: I18n.t('formula.error.dateColumn', { key: shown }) };
+      if (VariableFormat.isDateType(end.type)) return { error: I18n.t('formula.error.dateColumn', { key: shown }) };
       if (end.type === 'Attachments') return { error: I18n.t('formula.error.attachments', { key: shown }) };
       const { value, error } = await resolveRawValue(variable.table, variable.column, currentTableId, record, opts);
       if (error) return { error };
+      // Une Référence qui montre une date vaut une date (decodeShown) : le calcul la refuse comme une colonne Date.
+      const hasDate = v => v instanceof Date || (Array.isArray(v) && v.some(hasDate));
+      if (hasDate(value)) return { error: I18n.t('formula.error.dateColumn', { key: shown }) };
       const read = raw => {
         const found = Formula.toNumber(raw);
         return found.error ? { error: formulaErrorText(Object.assign({ key: shown }, found.error)) } : found;
@@ -798,7 +1052,7 @@ const Variables = (function () {
     }
     return { formulaErrorText, resolveCalcResult };
   })();
-  const { resolveCalc, badgeProblem, calcProblem, findTextVariables } = (function () {
+  const { resolveCalc, badgeProblem, pageReferencesTo, isUnlinked, calcProblem, findTextVariables } = (function () {
     // Les problèmes d'un calcul et la lecture des variables d'un champ texte
 
     async function resolveCalc(stored, currentTableId, record, format, opts) {
@@ -813,6 +1067,23 @@ const Variables = (function () {
       if (!column) return null;
       if (String(column).indexOf('.') !== -1) return GristAPI.resolveColumnPath(table, column) ? null : 'path';
       return GristAPI.getColumns(table).indexOf(column) === -1 ? 'column' : null;
+    }
+    // Nombre de colonnes Référence simples de la page qui désignent `table`. Une liste de références n'en compte pas : un lien ne la suit pas
+    // (GristAPI.findReferenceColumns, que lit baseRows).
+    function pageReferencesTo(table) {
+      const page = GristAPI.getCurrentTableId();
+      return GristAPI.getColumns(page).filter(column => {
+        const ref = GristAPI.referenceOf(GristAPI.getColumnType(page, column));
+        return !!ref && !ref.list && ref.table === table;
+      }).length;
+    }
+    // Vrai quand une variable de `table` n'a aucune ligne à lire pour la ligne de la page - ni la table de la page, ni une règle de liaison, ni une
+    // colonne Référence de la page qui y mène - : celle que baseRows refuse par « aucune correspondance configurée ». Sans lire aucune cellule, comme
+    // badgeProblem ; le bleu de la bulle de l'éditeur devient orange (Editor.markBadgeValidity). Une zone répétée qui parcourt cette table lit
+    // pourtant la ligne du tour : à l'endroit de la bulle, VariableColumn.isUnlinkedAt le sait.
+    function isUnlinked(table) {
+      const page = GristAPI.getCurrentTableId();
+      return !!table && !!page && table !== page && !GristAPI.getLinkRule(table) && pageReferencesTo(table) === 0;
     }
     // Ce qui empêche une bulle « Calcul » de se calculer, sans lire aucune cellule : la formule ne se lit pas, ou elle cite une table ou une colonne
     // qui n'existe plus. '' quand tout va bien. La bulle de l'éditeur devient rouge avec ce message en info-bulle
@@ -871,7 +1142,7 @@ const Variables = (function () {
       }
       return { column: path, end };
     }
-    return { resolveCalc, badgeProblem, calcProblem, findTextVariables };
+    return { resolveCalc, badgeProblem, pageReferencesTo, isUnlinked, calcProblem, findTextVariables };
   })();
 
   const { replaceTextVariables, resolveTextVariables, resolveAttachmentIds } = (function () {
@@ -898,6 +1169,8 @@ const Variables = (function () {
     // ou une adresse.
     async function resolveTextVariables(text, currentTableId, record) {
       if (!text) return '';
+      // Un champ dont une bulle porte un réglage est enregistré en HTML (js/field-codec.js) : la Lecture le déroule comme le corps d'un modèle.
+      if (FieldCodec.isRich(text)) return ReaderMode.fieldText(text, currentTableId, record);
       return replaceTextVariables(text, m => resolveVariable(m.table, m.column, currentTableId, record, null, { rawNumbers: true }));
     }
 
@@ -922,12 +1195,12 @@ const Variables = (function () {
   // === Règles de liaison entre tables ===
   // Configurées à l'insertion d'une variable d'une autre table et dans le panneau de gestion (#link-rules-modal), deux fenêtres de index.html.
 
-  const { fillColumnSelect, describeRule, guessLinkRule, linkRulePreview } = (function () {
+  const { fillColumnSelect, describeRule, linkRuleLabel, guessLinkRule, linkRulePreview } = (function () {
     // Fenêtre de liaison : indications de colonne, listes, règle devinée, aperçu
 
     // Où se trouve la donnée réelle d'une colonne, pour les listes de la fenêtre de liaison, entre parenthèses derrière son nom. Une Référence ou une
     // liste de références : la table visée, avec la mention qu'elle stocke un identifiant de ligne et non un texte - sans cela, rien n'indique de la
-    // comparer à l'Identifiant de ligne. La colonne d'aide « gristHelper_Display… » que Grist crée derrière une Référence (elle porte le texte affiché,
+    // comparer à « Auto » (le numéro de la ligne). La colonne d'aide « gristHelper_Display… » que Grist crée derrière une Référence (elle porte le texte affiché,
     // ex. le nom de la personne) : la table de cette Référence, où se trouve ce texte. Toute autre colonne : sa propre table.
     function columnHint(tableId, colId) {
       const reference = GristAPI.referenceOf(GristAPI.getColumnType(tableId, colId));
@@ -940,28 +1213,34 @@ const Variables = (function () {
       return tableId;
     }
     // Remplit une liste de colonnes de la fenêtre de liaison. Un choix désactivé en première position force un choix explicite : sans lui, un <select>
-    // que personne n'a touché reste sur « Identifiant de ligne » (la première option), pour une règle qui a l'air valide mais compare deux identifiants
+    // que personne n'a touché reste sur « Auto » (la première option), pour une règle qui a l'air valide mais compare deux identifiants
     // de ligne sans rapport. Les options sont construites par le DOM (du texte, jamais du HTML) : un identifiant créé par l'API REST de Grist ne peut
-    // rien injecter. Le nom et l'indice sont aussi en data-name et data-hint, pour SearchSelect.
+    // rien injecter. Le nom et l'indice sont aussi en data-name et data-hint, pour SearchSelect ; « Auto » garde son ancien nom cherchable (data-search).
     function fillColumnSelect(select, tableId) {
       select.textContent = '';
       const placeholder = Dom.option('', I18n.t('linkConfig.columnPlaceholder'));
       placeholder.disabled = true;
       placeholder.selected = true;
       select.appendChild(placeholder);
-      const add = (value, name, hint) => {
+      const add = (value, name, hint, search) => {
         const option = Dom.option(value, name + ' (' + hint + ')');
         option.dataset.name = name;
         option.dataset.hint = hint;
+        if (search) option.dataset.search = search;
         select.appendChild(option);
       };
-      add('id', I18n.t('linkConfig.rowId'), tableId);
-      GristAPI.getColumns(tableId).forEach(colId => add(colId, colId, columnHint(tableId, colId)));
+      add('id', I18n.t('linkConfig.rowId'), tableId, I18n.t('linkConfig.rowIdSearch'));
+      GristAPI.getColumns(tableId).forEach(colId => add(colId, colId, columnHint(tableId, colId), columnSearchText(tableId, colId)));
     }
     function describeRule(rule) {
       if (rule.mode === 'singleton') return I18n.t('linkConfig.describeSingleton');
-      const rowIdLabel = I18n.t('linkConfig.describeRowId');
+      const rowIdLabel = I18n.t('linkConfig.rowId');
       return `${rule.colonneCible === 'id' ? rowIdLabel : rule.colonneCible} = ${rule.colonneSource === 'id' ? rowIdLabel : rule.colonneSource}`;
+    }
+    // Une règle comme « Tables liées » et le coin d'état la nomment : « Table de la page → Table liée : clé », la table de la page étant « Toutes les
+    // tables » pour le lien commun d'avant les liens par table.
+    function linkRuleLabel(rule) {
+      return `${rule.tableSource || I18n.t('linkRules.allTables')} → ${rule.tableCible} : ${describeRule(rule)}`;
     }
     // La règle proposée d'office quand une seule colonne Référence relie les deux tables : de la table de la page vers la table liée (une commande vers
     // son client), sinon de la table liée vers celle de la page (les congés d'un employé : c'est Congés.Employe qui référence Employés, pas l'inverse).
@@ -984,12 +1263,12 @@ const Variables = (function () {
           : { text: I18n.t('linkConfig.previewTableEmpty', { table: targetTable }) };
       }
       const sourceVal = await ruleSourceValue(rule, record, currentTableId, GristAPI.fetchTableRows);
-      const matches = matchingRows(rows, rule, sourceVal);
+      const matches = matchingRows(rows, rule, sourceVal, targetTable);
       return matches.length
         ? { text: I18n.t('linkConfig.previewMatches', { count: matches.length, table: targetTable, ids: matches.map(r => r.id).join(', ') }), good: true }
         : { text: I18n.t('linkConfig.previewNoMatch', { table: targetTable, value: sourceVal }) };
     }
-    return { fillColumnSelect, describeRule, guessLinkRule, linkRulePreview };
+    return { fillColumnSelect, describeRule, linkRuleLabel, guessLinkRule, linkRulePreview };
   })();
   const { showLinkConfigModal } = (function () {
     // La fenêtre d'une règle de liaison : ouverture, remplissage, listes à recherche
@@ -1021,6 +1300,7 @@ const Variables = (function () {
     function fillLinkConfigForm(form) {
       const { $, selectCible, selectSource, targetTable, currentTableId } = form;
       $('title').textContent = `${currentTableId} → ${targetTable}`;
+      $('scope').textContent = I18n.t('linkConfig.scope', { table: currentTableId });
       $('table-cible-name').textContent = targetTable;
       $('table-source-name').textContent = currentTableId;
       fillColumnSelect(selectCible, targetTable);
@@ -1106,16 +1386,23 @@ const Variables = (function () {
   const { ensureLinkConfigured, editLinkRule, describeLinkVia, refreshLinkRulesPanel } = (function () {
     // Enregistrer, modifier et supprimer une règle ; le panneau de gestion
 
-    // Ouvre la fenêtre de la règle de `targetTable` et l'enregistre ; faux quand la personne annule.
+    // Les règles viennent de changer : le panneau les relit, et les bulles de l'éditeur reprennent la couleur que leur donne ce lien (orange tant que
+    // leur table n'en a plus, isUnlinked), leur barre aussi.
+    function rulesChanged() {
+      refreshLinkRulesPanel();
+      Editor.refreshLinkState();
+    }
+    // Ouvre la fenêtre de la règle de `targetTable` et l'enregistre pour la table de la page : les autres tables gardent la leur ; faux quand la personne
+    // annule. Le lien posé ou changé est un pas de l'historique d'Annuler (js/link-rule-history.js).
     async function configureLink(targetTable, currentTableId, existingRule) {
       const rule = await showLinkConfigModal(targetTable, currentTableId, existingRule);
       if (!rule) return false;
-      try { await GristAPI.saveLinkRule(targetTable, rule); }
+      try { await LinkRuleHistory.track(targetTable, () => GristAPI.saveLinkRule(targetTable, Object.assign({}, rule, { tableSource: currentTableId }))); }
       catch (e) {
         if (GristAPI.isTablesDeclined(e)) return false; // la personne refuse de créer la table des règles : comme une annulation, rien n'est inséré
         throw e;
       }
-      refreshLinkRulesPanel();
+      rulesChanged();
       return true;
     }
     // Si la variable vient d'une autre table sans règle encore configurée, ouvre la fenêtre et enregistre la règle avant l'insertion. Faux quand la
@@ -1126,10 +1413,12 @@ const Variables = (function () {
       return configureLink(item.table, currentTableId, null);
     }
     // Modifie la règle d'une table déjà liée (même fenêtre qu'à l'insertion), pour le panneau « Tables liées » ci-dessous et le lien « Modifier le
-    // lien » de la fenêtre de condition d'une variable (js/variable-condition.js). Vrai si une nouvelle règle a été enregistrée.
-    async function editLinkRule(tableCible) {
+    // lien » de la fenêtre de condition d'une variable (js/variable-condition.js). La fenêtre part de `fromRule` (la ligne du panneau) ou, à défaut, du
+    // lien que la table de la page suit aujourd'hui ; l'enregistrement est celui de la table de la page, jamais celui d'une autre. Vrai si une nouvelle
+    // règle a été enregistrée.
+    async function editLinkRule(tableCible, fromRule) {
       const currentTableId = GristAPI.getCurrentTableId();
-      return !!currentTableId && configureLink(tableCible, currentTableId, GristAPI.getLinkRule(tableCible));
+      return !!currentTableId && configureLink(tableCible, currentTableId, fromRule || GristAPI.getLinkRule(tableCible));
     }
     // La colonne qui porte le lien d'une règle « match », pour les libellés des fenêtres d'une variable (condition, autres attributs) : côté table de
     // la page (« Dossiers.Responsable ») ou côté table liée (« Planning.Dossier »), sinon les deux colonnes comparées. Vide pour « singleton » (pas de
@@ -1140,11 +1429,33 @@ const Variables = (function () {
       if (rule.colonneSource === 'id') return tableCible + '.' + rule.colonneCible;
       return currentTableId + '.' + rule.colonneSource + ' = ' + tableCible + '.' + rule.colonneCible;
     }
-    // Les modèles dont le contenu contient au moins une bulle #Variable vers `tableCible` : une recherche brute sur l'attribut sérialisé suffit, sans
-    // DOMParser. Sert à avertir avant de supprimer une règle encore utilisée ailleurs.
+    // Les modèles dont le contenu contient au moins une bulle #Variable vers `tableCible`, ou une bulle dont le sinon (js/variable-otherwise.js) y va : une
+    // recherche brute sur l'attribut sérialisé suffit, sans DOMParser. Les champs texte (Objet, À, Cc, Cci, nom du PDF) y comptent aussi : leurs variables
+    // suivent la même règle de liaison. Sert à avertir avant de supprimer une règle encore utilisée ailleurs.
+    // Les variables du sinon d'un bloc ou d'une valeur conditionnels (js/conditional-text.js) sont dans l'attribut `data-otherwise`, en texte brut ou en HTML, dont les guillemets
+    // sont écrits en entités : la recherche brute ne les voit pas, l'attribut est lu (le navigateur défait les entités).
+    function otherwiseCites(contenu, tableCible) {
+      if (contenu.indexOf('data-otherwise="') === -1) return false;
+      return Array.from(contenu.matchAll(/data-otherwise="([^"]*)"/g)).some(found => {
+        const value = Dom.inertTemplate('<i data-x="' + found[1] + '"></i>').content.firstChild.getAttribute('data-x');
+        return FieldCodec.variablesIn(value).some(v => v.table === tableCible);
+      });
+    }
+    // Le texte « Si aucune ligne » d'une boucle (js/loop-rules.js) est un champ à variables rangé dans le JSON de l'attribut `data-loop` : lu comme le sinon.
+    function loopCites(contenu, tableCible) {
+      if (contenu.indexOf('data-loop="') === -1) return false;
+      return Array.from(contenu.matchAll(/data-loop="([^"]*)"/g)).some(found => {
+        const raw = Dom.inertTemplate('<i data-x="' + found[1] + '"></i>').content.firstChild.getAttribute('data-x');
+        let loop = null;
+        try { loop = JSON.parse(raw); } catch (e) { return false; }
+        return !!loop && typeof loop.emptyText === 'string' && FieldCodec.variablesIn(loop.emptyText).some(v => v.table === tableCible);
+      });
+    }
     function findTemplatesUsingTable(tableCible) {
-      const needle = 'data-table="' + tableCible + '"';
-      return Templates.getCached().filter(tpl => tpl.contenu && tpl.contenu.indexOf(needle) !== -1);
+      const needles = ['data-table="' + tableCible + '"', 'data-otherwise-table="' + tableCible + '"'];
+      const fields = tpl => [tpl.nomFichierPDF, tpl.objet, tpl.destinataires, tpl.cc, tpl.cci];
+      return Templates.getCached().filter(tpl => (tpl.contenu && (needles.some(needle => tpl.contenu.indexOf(needle) !== -1) || otherwiseCites(tpl.contenu, tableCible) || loopCites(tpl.contenu, tableCible)))
+        || fields(tpl).some(value => value && FieldCodec.variablesIn(value).some(v => v.table === tableCible)));
     }
     async function confirmDeleteLinkRule(rule) {
       const affected = findTemplatesUsingTable(rule.tableCible);
@@ -1156,32 +1467,44 @@ const Variables = (function () {
           plural: affected.length > 1 ? I18n.t('linkRules.theseTemplates') : I18n.t('linkRules.thisTemplate'),
         }).trim()
         : '';
-      if (!(await Dialogs.confirm({ title: I18n.t('linkRules.confirmDelete', { table: rule.tableCible }), message, confirmLabel: I18n.t('common.delete'), danger: true }))) return;
-      await GristAPI.deleteLinkRule(rule.tableCible);
-      refreshLinkRulesPanel();
+      const title = rule.tableSource
+        ? I18n.t('linkRules.confirmDeletePair', { source: rule.tableSource, table: rule.tableCible })
+        : I18n.t('linkRules.confirmDelete', { table: rule.tableCible });
+      if (!(await Dialogs.confirm({ title, message, confirmLabel: I18n.t('common.delete'), danger: true }))) return;
+      await LinkRuleHistory.track(rule.tableCible, () => GristAPI.deleteLinkRule(rule.tableCible, rule.tableSource));
+      rulesChanged();
     }
+    // Une ligne du panneau : « Table de la page → Table liée : clé », la table de la page étant « Toutes les tables » pour le lien commun d'avant les
+    // liens par table. Modifier ne vaut que pour la table de la page : le lien d'une autre table se modifie depuis elle (le bouton est grisé et dit
+    // laquelle ouvrir, ou que la table n'existe plus) ; supprimer reste possible depuis n'importe quelle table.
     function linkRuleRow(rule) {
-      const iconButton = (kind, label, onClick) => {
+      const iconButton = (kind, label, onClick, disabled) => {
         const button = Dom.button('link-rule-btn link-rule-btn-' + kind);
         button.setAttribute('aria-label', label);
         button.title = label;
+        button.disabled = !!disabled;
         button.addEventListener('click', onClick);
         return button;
       };
+      const source = rule.tableSource;
+      const gone = !!source && GristAPI.getTables().indexOf(source) === -1;
+      const elsewhere = !!source && source !== GristAPI.getCurrentTableId();
+      const label = linkRuleLabel(rule) + (gone ? ` (${I18n.t('linkRules.tableGone')})` : '');
+      const editLabel = !elsewhere ? I18n.t('linkRules.edit') : I18n.t(gone ? 'linkRules.editGone' : 'linkRules.editElsewhere', { table: source });
       const row = Dom.el('div', 'link-rule-row');
       row.append(
-        Dom.el('span', 'link-rule-label', `${rule.tableCible} : ${describeRule(rule)}`),
-        iconButton('edit', I18n.t('linkRules.edit'), () => editLinkRule(rule.tableCible)),
+        Dom.el('span', 'link-rule-label', label),
+        iconButton('edit', editLabel, () => editLinkRule(rule.tableCible, rule), elsewhere),
         iconButton('delete', I18n.t('linkRules.delete'), () => confirmDeleteLinkRule(rule)),
       );
       return row;
     }
-    // Le panneau de gestion (#link-rules-modal) : les tables déjà configurées, avec un bouton pour modifier ou supprimer chaque règle. Appelé au
-    // démarrage et à chaque ouverture de la fenêtre (js/main.js).
+    // Le panneau de gestion (#link-rules-modal) : les liens déjà configurés, par table liée puis par table de la page (le lien commun en tête), avec un
+    // bouton pour modifier ou supprimer chacun. Appelé au démarrage et à chaque ouverture de la fenêtre (js/main.js).
     function refreshLinkRulesPanel() {
       const list = document.getElementById('link-rules-list');
       if (!list) return;
-      const rules = GristAPI.getAllLinkRules();
+      const rules = GristAPI.getAllLinkRules().sort((a, b) => a.tableCible.localeCompare(b.tableCible) || a.tableSource.localeCompare(b.tableSource));
       list.replaceChildren(...(rules.length ? rules.map(linkRuleRow) : [Dom.el('p', 'link-rules-empty', I18n.t('linkRules.empty'))]));
     }
     return { ensureLinkConfigured, editLinkRule, describeLinkVia, refreshLinkRulesPanel };
@@ -1189,12 +1512,16 @@ const Variables = (function () {
 
   // Exporté pour d'autres modules : resolveRawValue (js/condition-rules.js évalue une condition sur la valeur brute, par le même chemin qu'une
   // #Variable) ; ensureLinkConfigured, editLinkRule, describeLinkVia, resolveLinkedRows, resolveRows, formatValue, cellValue (les fenêtres de
-  // condition et d'autres attributs, js/variable-condition.js et js/variable-linked-attrs.js) ; zeroHidden (la barre flottante d'une bulle nombre,
+  // condition et d'autres attributs, js/variable-condition.js et js/variable-linked-attrs.js) ; listItems (les éléments d'une cellule liste brute, que
+  // la boucle sur une liste de références, js/loop-rules.js, lit aussi) ; zeroHidden (la barre flottante d'une bulle nombre,
   // js/floating-toolbars.js, lit la même règle que le rendu) ; currentTables et prioritizeTables (le menu Image de la barre, js/main-toolbar.js,
-  // classe ses colonnes comme la liste « # »).
+  // classe ses colonnes comme la liste « # ») ; isAttachmentColumn et insertAttachmentImage (le même menu en tire ses colonnes Pièces jointes et pose
+  // l'image que la liste « # » pose pour l'une d'elles) ; crossedListTable et writesList (la fenêtre « Liste » d'une bulle, js/variable-list.js, et
+  // « Remplacer » d'Autres attributs, js/variable-linked-attrs.js : un chemin qui traverse une liste de références s'écrit en liste) ; linkRuleLabel
+  // (le coin d'état d'Annuler, js/link-rule-history.js, nomme un lien comme « Tables liées »).
   return {
-    createExtension, resolveVariable, resolveVariableResult, resolveRawValue, resolveTextVariables, replaceTextVariables, findTextVariables, resolveAttachmentIds, refreshLinkRulesPanel, initFilenameInput, triggerChar,
-    preferChipsTab, ensureLinkConfigured, editLinkRule, describeLinkVia, resolveLinkedRows, resolveRows, formatValue, listTexts, resolveListTexts, zeroHidden, cellValue, currentTables, prioritizeTables,
-    resolveCalcResult, resolveCalc, badgeProblem, calcProblem, formulaErrorText,
+    createExtension, createFieldExtension, isAttachmentColumn, insertAttachmentImage, resolveVariable, resolveVariableResult, resolveRawValue, resolveTextVariables, replaceTextVariables, findTextVariables, resolveAttachmentIds, refreshLinkRulesPanel, initFilenameInput, triggerChar,
+    preferChipsTab, ensureLinkConfigured, editLinkRule, describeLinkVia, linkRuleLabel, resolveLinkedRows, resolveRows, formatValue, listTexts, resolveListTexts, zeroHidden, listItems, decodeShown, cellValue, currentTables, prioritizeTables, columnSearchText, referencedTable, crossedListTable, writesList, columnsBelow,
+    resolveCalcResult, resolveCalc, badgeProblem, pageReferencesTo, isUnlinked, calcProblem, formulaErrorText,
   };
 })();

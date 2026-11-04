@@ -62,16 +62,20 @@ const XlsxExport = (function () {
 
   function numberFormatCode(format, value) {
     // Format d'affichage des vrais nombres et des vraies dates Code de format d'Excel, écrit dans sa convention (virgule des milliers, point des
-    // décimales) : Excel l'affiche selon la langue de la personne qui ouvre le fichier ; seuls le groupement, le nombre de décimales et la devise
-    // viennent de la bulle.
+    // décimales) : Excel l'affiche selon la langue de la personne qui ouvre le fichier ; seuls le groupement, le nombre de décimales, la devise et le
+    // pourcentage viennent de la bulle. La devise passe devant le nombre en anglais, avec l'espace de VariableFormat.currencyGap (« "CHF "#,##0.00 »).
+    // « 0.00## » : au moins deux décimales, jusqu'à quatre (« Comme dans Grist »). Un nombre sans décimale à écrire
+    // n'a pas de point (Excel écrit « 1 235. » pour « 0.### » et un entier) ; avec le pourcentage, c'est la valeur fois cent qui s'écrit.
     const f = format || {};
-    const decimals = f.decimals == null ? (Number.isInteger(value) ? 0 : null) : f.decimals;
+    const digits = VariableFormat.decimalDigits(f);
+    const shown = f.percent ? Math.round(value * 1e11) / 1e9 : value;
     let code = f.style === 'none' ? '0' : '#,##0';
-    if (decimals === null) code += '.###';
-    else if (decimals > 0) code += '.' + '0'.repeat(decimals);
+    if (!digits) { if (!Number.isInteger(shown)) code += '.###'; }
+    else if (digits.max > 0 && (digits.min > 0 || !Number.isInteger(shown))) code += '.' + '0'.repeat(digits.min) + '#'.repeat(digits.max - digits.min);
+    if (f.percent) return VariableFormat.numberLang(f.style) === 'fr' ? code + ' %' : code + '%';
     if (f.currency) {
       const literal = String(f.currency).replace(/"/g, '');
-      code = VariableFormat.numberLang(f.style) === 'fr' ? code + ' "' + literal + '"' : '"' + literal + '"' + code;
+      code = VariableFormat.numberLang(f.style) === 'fr' ? code + ' "' + literal + '"' : '"' + literal + (VariableFormat.currencyGap(literal) ? ' ' : '') + '"' + code;
     }
     return code;
   }
@@ -85,19 +89,31 @@ const XlsxExport = (function () {
     ddd_d_mmm_yyyy: { fr: 'ddd d mmm yyyy', en: 'ddd, mmm d, yyyy' },
     dddd_d_mmmm_yyyy: { fr: 'dddd d mmmm yyyy', en: 'dddd, mmmm d, yyyy' },
   };
-  function dateFormatCode(format) {
+  // L'heure d'une colonne « Date et heure » (VariableFormat.TIME_STYLES) et ce qui la lie à la date : une espace (une virgule en anglais) derrière une date en
+  // chiffres, « à » (« at ») derrière un mois écrit en lettres, comme VariableFormat.formatDate l'écrit.
+  const TIME_CODES = {
+    colon: { fr: 'hh:mm', en: 'hh:mm' }, natural: { fr: 'h "h" mm', en: 'h:mm AM/PM' }, ampm: { fr: 'h:mm AM/PM', en: 'h:mm AM/PM' },
+    // am / pm en minuscules, collés aux minutes : Excel écrit la casse du code (« am/pm » donne « pm »).
+    ampmlower: { fr: 'h:mmam/pm', en: 'h:mmam/pm' },
+  };
+  function dateFormatCode(format, withTime) {
     const key = (format && format.preset) || VariableFormat.DATE_PRESETS[0].key;
     const codes = DATE_CODES[key] || DATE_CODES[VariableFormat.DATE_PRESETS[0].key];
-    return (typeof I18n !== 'undefined' && I18n.getLang() === 'en') ? codes.en : codes.fr;
+    const lang = (typeof I18n !== 'undefined' && I18n.getLang() === 'en') ? 'en' : 'fr';
+    if (!withTime) return codes[lang];
+    const spelledMonth = /mmm/.test(codes.fr);
+    const joiner = spelledMonth ? (lang === 'en' ? ' "at" ' : ' "à" ') : (lang === 'en' && key !== 'iso' ? ', ' : ' ');
+    return codes[lang] + joiner + TIME_CODES[format.time][lang];
   }
 
   const BUBBLES = '.var-badge, .calc-badge';
   function isSoleBadge(cell, badge) {
     // Vrai si `badge` est tout le contenu de sa case : une seule bulle, pas d'autre texte ni d'image, pas de boucle « dans la phrase » ou de zone
-    // répétée.
+    // répétée, pas de texte « Avant » / « Après » (la case écrit alors « 1 200, » : du texte, pas un nombre).
     // Les bulles qui prennent une valeur : celles d'une variable et celles d'un calcul (js/variable-calc.js), comme BADGE_SELECTOR de
     // js/reader-mode.js.
     if (cell.querySelectorAll(BUBBLES).length !== 1 || cell.querySelector('img') || badge.hasAttribute('data-loop')) return false;
+    if (VariableFormat.affixes(badge.getAttribute('data-before'), badge.getAttribute('data-after'))) return false;
     const rest = cell.cloneNode(true);
     rest.querySelector(BUBBLES).remove();
     return rest.textContent.replace(/[\s\u00a0]+/g, '') === '';
@@ -120,27 +136,36 @@ const XlsxExport = (function () {
     // ne tient pas.
     try { return !!(await ConditionRules.conditionHolds(JSON.parse(rawCondition), tableId, record, loopOpts)); } catch (e) { return false; }
   }
-  async function resolvedFiniteNumber(table, column, tableId, record, loopOpts) {
-    // La valeur d'une colonne pour la ligne exportée, si c'est un nombre fini ; null pour tout le reste (valeur absente ou en erreur, texte, liste).
+  async function resolvedFiniteNumber(table, column, colType, tableId, record, loopOpts) {
+    // La valeur d'une colonne pour la ligne exportée, si c'est un nombre fini ; null pour tout le reste (valeur absente ou en erreur, texte, liste). Une colonne
+    // Date ou Date et heure arrive en secondes de la ligne brute (fetchTable : l'export en lot, les boucles) mais en objet Date de la ligne que grist.onRecord
+    // affiche (l'export de la ligne courante) : ses secondes, pour que les deux écrivent la même vraie date.
     let resolved;
     try { resolved = await Variables.resolveRawValue(table, column, tableId, record, loopOpts); } catch (e) { return null; }
     if (!resolved || resolved.error) return null;
-    return typeof resolved.value === 'number' && Number.isFinite(resolved.value) ? resolved.value : null;
+    const value = resolved.value instanceof Date && VariableFormat.isDateType(colType) ? resolved.value.getTime() / 1000 : resolved.value;
+    return typeof value === 'number' && Number.isFinite(value) ? value : null;
   }
-  function typedDate(value, format) {
-    // Un nombre de secondes d'une colonne Date ou DateTime : { kind: 'date', value, numFmt } ; null = du texte (nombre en toutes lettres, jour, mois
-    // ou année retiré).
+  function typedDate(value, format, colType) {
+    // Un nombre de secondes d'une colonne Date ou Date et heure : { kind: 'date', value, numFmt } ; null = du texte (nombre en toutes lettres, jour, mois
+    // ou année retiré). `value` est le jour de la colonne (« 2026-09-12 »), suivi de l'heure (« T23:30:00 ») quand la bulle l'écrit : le mur du fuseau
+    // de la colonne, comme VariableFormat.formatDate le lit, car Excel garde la date et l'heure telles qu'on les lit, sans fuseau.
     if (format && (format.words || format.day === false || format.month === false || format.year === false)) return null;
     const instant = new Date(value * 1000);
+    if (Number.isNaN(instant.getTime())) return null;
+    const clock = VariableFormat.wallClock(instant, VariableFormat.dateTimeZone(colType));
     // Une date avant le 1er mars 1900 n'a pas de numéro de série fiable dans Excel (jour fantôme du 29 février 1900, numéros négatifs) : elle reste
     // un texte.
-    if (Number.isNaN(instant.getTime()) || instant.getTime() < MIN_EXCEL_DATE_MS || instant.getUTCFullYear() > 9999) return null;
-    return { kind: 'date', value: instant.toISOString().slice(0, 10), numFmt: dateFormatCode(format) };
+    if (clock.year < 1900 || clock.year > 9999 || Date.UTC(clock.year, clock.month - 1, clock.day) < MIN_EXCEL_DATE_MS) return null;
+    const two = n => String(n).padStart(2, '0');
+    const withTime = VariableFormat.writesTime(format, colType);
+    const day = String(clock.year).padStart(4, '0') + '-' + two(clock.month) + '-' + two(clock.day);
+    return { kind: 'date', value: withTime ? day + 'T' + two(clock.hour) + ':' + two(clock.minute) + ':00' : day, numFmt: dateFormatCode(format, withTime) };
   }
   function typedFromColumn(colType, value, format) {
-    // Le verdict d'une valeur numérique selon sa colonne et le réglage de la bulle : une date pour une colonne Date ou DateTime (sauf réglage d'un
+    // Le verdict d'une valeur numérique selon sa colonne et le réglage de la bulle : une date pour une colonne Date ou Date et heure (sauf réglage d'un
     // autre type), un nombre pour une colonne Numérique, Entier ou une bulle réglée en nombre ; le reste est du texte.
-    if (colType === 'Date' || colType === 'DateTime') return !format || !format.type || format.type === 'date' ? typedDate(value, format) : null;
+    if (VariableFormat.isDateType(colType)) return !format || !format.type || format.type === 'date' ? typedDate(value, format, colType) : null;
     return colType === 'Numeric' || colType === 'Int' || (format && format.type === 'number') ? typedNumber(value, format, colType) : null;
   }
   async function typedValueOf(badge, tableId, record, binding) {
@@ -156,7 +181,7 @@ const XlsxExport = (function () {
     if (rawCondition && !(await conditionAllows(rawCondition, tableId, record, loopOpts))) return null;
     const colType = GristAPI.getColumnType(table, column);
     if (colType === 'Attachments') return null;
-    const value = await resolvedFiniteNumber(table, column, tableId, record, loopOpts);
+    const value = await resolvedFiniteNumber(table, column, colType, tableId, record, loopOpts);
     return value === null ? null : typedFromColumn(colType, value, format);
   }
   async function typedCalcValueOf(badge, tableId, record, binding) {
@@ -190,7 +215,8 @@ const XlsxExport = (function () {
     const kind = td.getAttribute('data-xl-kind');
     const raw = td.getAttribute('data-xl-value');
     if (!kind || raw === null) return null;
-    const value = kind === 'date' ? new Date(raw + 'T00:00:00Z') : Number(raw);
+    // « 2026-09-12 » (un jour) ou « 2026-09-12T23:30:00 » (avec l'heure du mur) : lus en UTC, ExcelJS écrit alors le numéro de série de ce même mur.
+    const value = kind === 'date' ? new Date(raw.indexOf('T') === -1 ? raw + 'T00:00:00Z' : raw + 'Z') : Number(raw);
     if (kind === 'date' ? Number.isNaN(value.getTime()) : !Number.isFinite(value)) return null;
     return { value, numFmt: td.getAttribute('data-xl-fmt') || undefined };
   }
@@ -213,13 +239,16 @@ const XlsxExport = (function () {
     ['S', { strike: true }], ['STRIKE', { strike: true }], ['DEL', { strike: true }], ['CODE', { name: CODE_FONT }], ['PRE', { name: CODE_FONT }],
   ]);
   function applyTagRun(node, css, out) {
-    // Ce que la balise de `node` change au texte : gras et taille des titres, lien, surlignage de <mark>, puis la table ci-dessus.
+    // Ce que la balise de `node` change au texte : gras et taille des titres, lien, surlignage de <mark>, exposant et indice, puis la table ci-dessus.
     // Les réglages de texte qu'une balise pose à elle seule.
     const tag = node.tagName;
     Object.assign(out, TAG_RUNS.get(tag));
     if (/^H[1-6]$/.test(tag)) { out.bold = true; out.size = HEADING_PT[tag]; }
     if (tag === 'A' && HtmlSanitize.safeLinkHref(node.getAttribute('href'))) { out.color = LINK_COLOR; out.underline = true; }
     if (tag === 'MARK') out.background = cssColorArgb(css('background-color')) || 'FFFFFF00';
+    // Exposant et indice (js/script-marks.js) : le vrai exposant ou indice d'Excel (`vertAlign` de la police), dont Excel règle taille et décalage.
+    const script = ScriptMarks.kindOf(node);
+    if (script) out.vertAlign = script;
   }
   function applyEmphasisCss(css, out) {
     // Gras, italique, souligné et barré posés par le style en ligne.
@@ -238,7 +267,7 @@ const XlsxExport = (function () {
     if (css('color')) out.color = cssColorArgb(css('color')) || out.color;
     if (css('background-color')) out.background = cssColorArgb(css('background-color')) || out.background;
   }
-  const sameRunStyle = (a, b) => ['bold', 'italic', 'underline', 'strike', 'name', 'size', 'color', 'background'].every(k => a[k] === b[k]);
+  const sameRunStyle = (a, b) => ['bold', 'italic', 'underline', 'strike', 'vertAlign', 'name', 'size', 'color', 'background'].every(k => a[k] === b[k]);
 
   const BLOCK_TAGS = /^(P|H[1-6]|DIV|BLOCKQUOTE|PRE|LI|UL|OL|TABLE)$/;
   function createLineBuilder() {
@@ -357,6 +386,7 @@ const XlsxExport = (function () {
     if (style.italic) font.italic = true;
     if (style.underline) font.underline = true;
     if (style.strike) font.strike = true;
+    if (style.vertAlign) font.vertAlign = style.vertAlign;
     if (style.color) font.color = { argb: style.color };
     return font;
   }
@@ -407,6 +437,173 @@ const XlsxExport = (function () {
     if (h) return { width: h / ratio, height: h };
     return { width: 320, height: 320 * ratio };
   }
+
+  // Les graphiques créés (« Créer un graphique… », extensions/graphique/) : un graphique NATIF d'Excel, que la personne modifie dans Excel (« Sélectionner des données » montre les cellules du classeur). ExcelJS ne
+  // sait pas écrire de graphique : le classeur s'écrit sans (la case n'a pas d'image non plus), puis `workbookToBlob` ajoute à l'archive la partie xl/charts/chartN.xml de chacun et son ancre dans le dessin de sa
+  // feuille. La partie est celle que DocxExport.chartPartsOf tire de la bibliothèque docx (le même `c:chartSpace` dans Word, PowerPoint et Excel) ; ses formules ne visent plus le classeur embarqué (« Sheet1 »)
+  // mais la feuille « Données des graphiques », la dernière du classeur, où les cellules de chaque graphique sont écrites. Ce qu'Excel ne saurait pas lire garde l'image PNG, comme avant.
+  const chartsOf = new WeakMap(); // classeur -> ses graphiques natifs, dans l'ordre où ils se posent : { sheetName, col, row, width, height, alt, title, chartXml, rows, img }
+  const chartListOf = (workbook) => { if (!chartsOf.has(workbook)) chartsOf.set(workbook, []); return chartsOf.get(workbook); };
+  async function dataRowsOf(bytes) {
+    // Les cellules de la première feuille du classeur embarqué d'un graphique : [{ number (la ligne, depuis 1), cells: [{ col, value, numFmt }] }].
+    const source = new ExcelJS.Workbook();
+    await source.xlsx.load(bytes);
+    const rows = [];
+    if (source.worksheets[0]) {
+      source.worksheets[0].eachRow({ includeEmpty: false }, (row, number) => {
+        const cells = [];
+        // ExcelJS perd le résultat « 0 » d'une formule à la lecture (`<v>0</v>` donne une formule sans résultat) : celles de la cascade portent toutes leur valeur en cache, un résultat absent est donc un zéro.
+        const kept = value => (value && typeof value === 'object' && typeof value.formula === 'string' && value.result === undefined ? { formula: value.formula, result: 0 } : value);
+        row.eachCell({ includeEmpty: false }, (cell, col) => cells.push({ col, value: kept(cell.value), numFmt: cell.numFmt }));
+        rows.push({ number, cells });
+      });
+    }
+    return rows;
+  }
+  async function addNativeChart(workbook, sheet, entry, size) {
+    // Le graphique créé de l'image `entry.img`, noté pour `workbookToBlob` (rien n'est posé sur la feuille), ou false : l'image n'est pas un graphique créé, le moteur Word (qui porte la bibliothèque des
+    // graphiques) ne se charge pas, ou Office refuserait ses données ; l'appelant pose alors l'image.
+    const img = entry.img;
+    if (!img.hasAttribute('data-chart-office')) return false;
+    try { await ExportEngines.ensure('docx'); }
+    catch (e) { console.warn('[XlsxExport] graphique natif impossible (moteur Word injoignable), l\'image est gardée :', e); return false; }
+    const part = await DocxExport.chartPartsOf(img, size.width, size.height);
+    if (!part) return false;
+    let rows;
+    try { rows = await dataRowsOf(part.workbook); }
+    catch (e) { console.warn('[XlsxExport] graphique natif impossible (données illisibles), l\'image est gardée :', e); return false; }
+    if (!rows.length) return false;
+    chartListOf(workbook).push({
+      sheetName: sheet.name, col: entry.col, row: entry.row, width: Math.round(size.width), height: Math.round(size.height),
+      alt: (img.getAttribute('alt') || '').trim(), title: part.model.title || '', chartXml: part.chartXml, rows, img,
+    });
+    return true;
+  }
+
+  // L'écriture de l'archive : les parties d'Office, écrites à la main (le classeur est un zip de fichiers XML liés par des relations).
+  const EMU_PER_PX = 9525;
+  const NS_CHART = 'http://schemas.openxmlformats.org/drawingml/2006/chart';
+  const NS_REL = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
+  const CHART_CT = 'application/vnd.openxmlformats-officedocument.drawingml.chart+xml';
+  const DRAWING_CT = 'application/vnd.openxmlformats-officedocument.drawing+xml';
+  const XML_HEAD = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n';
+  const EMPTY_DRAWING = XML_HEAD + '<xdr:wsDr xmlns:xdr="http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"></xdr:wsDr>';
+  // L'élément `drawing` d'une feuille se place avant ceux qui le suivent dans le schéma (legacyDrawing, picture, tableParts, extLst...), sinon à la fin.
+  const AFTER_DRAWING = ['<legacyDrawing', '<legacyDrawingHF', '<drawingHF', '<picture', '<oleObjects', '<controls', '<webPublishItems', '<tableParts', '<extLst'];
+  const xmlText = text => String(text == null ? '' : text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const xmlAttr = text => xmlText(text).replace(/"/g, '&quot;');
+  const xmlRead = text => String(text).replace(/&quot;/g, '"').replace(/&apos;/g, '\'').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+  const relationsXml = list => XML_HEAD + '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+    + list.map(rel => `<Relationship Id="${rel.id}" Type="${rel.type}" Target="${xmlAttr(rel.target)}"/>`).join('') + '</Relationships>';
+  const relationsOf = text => Array.from(String(text || '').matchAll(/<Relationship\b[^>]*>/g), (found) => {
+    const get = name => { const m = new RegExp('\\s' + name + '="([^"]*)"').exec(found[0]); return m ? xmlRead(m[1]) : ''; };
+    return { id: get('Id'), type: get('Type'), target: get('Target') };
+  });
+  const nextRelId = list => 'rId' + (list.reduce((top, rel) => Math.max(top, parseInt(String(rel.id).replace(/\D/g, ''), 10) || 0), 0) + 1);
+
+  function retargetedChartXml(chartXml, sheetName, shift) {
+    // Les formules `c:f` d'un graphique de docx visent la feuille « Sheet1 » de son classeur embarqué ; ici ses cellules sont dans la feuille `sheetName`, ses lignes décalées de `shift` ; un graphique d'un
+    // classeur n'a pas de `c:externalData` (le classeur embarqué de Word et de PowerPoint).
+    const quoted = xmlText('\'' + String(sheetName).replace(/'/g, '\'\'') + '\'');
+    return chartXml
+      .replace(/<c:externalData\b[\s\S]*?<\/c:externalData>/g, '')
+      .replace(/<c:f>Sheet1!\$([A-Z]+)\$(\d+)(?::\$([A-Z]+)\$(\d+))?<\/c:f>/g, (all, c1, r1, c2, r2) => `<c:f>${quoted}!$${c1}$${Number(r1) + shift}${c2 ? `:$${c2}$${Number(r2) + shift}` : ''}</c:f>`);
+  }
+  function chartAnchorXml(chart, id, relId, name) {
+    // L'ancre d'un graphique dans le dessin de sa feuille : son coin haut gauche est celui de la case de l'image, sa taille celle de l'image.
+    return `<xdr:oneCellAnchor><xdr:from><xdr:col>${chart.col}</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>${chart.row}</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:from>`
+      + `<xdr:ext cx="${Math.round(chart.width * EMU_PER_PX)}" cy="${Math.round(chart.height * EMU_PER_PX)}"/>`
+      + `<xdr:graphicFrame macro=""><xdr:nvGraphicFramePr><xdr:cNvPr id="${id}" name="${xmlAttr(name)}"${chart.alt ? ` descr="${xmlAttr(chart.alt)}"` : ''}/><xdr:cNvGraphicFramePr/></xdr:nvGraphicFramePr>`
+      + '<xdr:xfrm><a:off x="0" y="0"/><a:ext cx="0" cy="0"/></xdr:xfrm>'
+      + `<a:graphic><a:graphicData uri="${NS_CHART}"><c:chart xmlns:c="${NS_CHART}" xmlns:r="${NS_REL}" r:id="${relId}"/></a:graphicData></a:graphic></xdr:graphicFrame><xdr:clientData/></xdr:oneCellAnchor>`;
+  }
+  function withDrawingElement(sheetXml, relId) {
+    const at = AFTER_DRAWING.map(tag => sheetXml.indexOf(tag)).filter(i => i >= 0).sort((a, b) => a - b)[0];
+    const place = at === undefined ? sheetXml.lastIndexOf('</worksheet>') : at;
+    return sheetXml.slice(0, place) + `<drawing r:id="${relId}"/>` + sheetXml.slice(place);
+  }
+  async function injectCharts(zip, items) {
+    // Ajoute au zip du classeur les graphiques `items` ([{ chart (la ligne de chartListOf), xml (sa partie, formules retournées), name }]) : leur partie xl/charts/chartN.xml, leur ancre dans le dessin de leur
+    // feuille (celui d'ExcelJS quand la feuille porte des images, un neuf sinon), les relations et les types de contenu.
+    const read = async name => (zip.file(name) ? zip.file(name).async('string') : null);
+    const workbookXml = await read('xl/workbook.xml');
+    const workbookRels = relationsOf(await read('xl/_rels/workbook.xml.rels'));
+    const sheetPathOf = (name) => {
+      const tag = Array.from(workbookXml.matchAll(/<sheet\b[^>]*>/g), m => m[0]).find(t => xmlRead((/\sname="([^"]*)"/.exec(t) || [])[1] || '') === name);
+      const rel = tag && workbookRels.find(r => r.id === (/\sr:id="([^"]*)"/.exec(tag) || [])[1]);
+      return rel ? 'xl/' + rel.target.replace(/^\//, '').replace(/^xl\//, '') : null;
+    };
+    let types = await read('[Content_Types].xml');
+    const addOverride = (part, type) => { if (types.indexOf('PartName="' + part + '"') < 0) types = types.replace('</Types>', `<Override PartName="${part}" ContentType="${type}"/></Types>`); };
+    const names = Object.keys(zip.files);
+    let chartNumber = names.filter(n => /^xl\/charts\/chart\d+\.xml$/.test(n)).length;
+    let drawingNumber = names.filter(n => /^xl\/drawings\/drawing\d+\.xml$/.test(n)).reduce((top, n) => Math.max(top, parseInt(n.replace(/\D/g, ''), 10)), 0);
+    const drawings = new Map(); // chemin de la feuille -> son dessin { path, xml, rels }
+    for (const item of items) {
+      const sheetPath = sheetPathOf(item.chart.sheetName);
+      if (!sheetPath) continue;
+      let drawing = drawings.get(sheetPath);
+      if (!drawing) {
+        const sheetRelsPath = sheetPath.replace(/([^/]+)$/, '_rels/$1.rels');
+        const sheetRels = relationsOf(await read(sheetRelsPath));
+        const own = sheetRels.find(r => r.type === NS_REL + '/drawing');
+        if (own) {
+          const path = 'xl/' + own.target.replace(/^\.\.\//, '');
+          drawing = { path, xml: await read(path), rels: relationsOf(await read(path.replace(/([^/]+)$/, '_rels/$1.rels'))) };
+        } else {
+          drawingNumber += 1;
+          const id = nextRelId(sheetRels);
+          sheetRels.push({ id, type: NS_REL + '/drawing', target: `../drawings/drawing${drawingNumber}.xml` });
+          zip.file(sheetRelsPath, relationsXml(sheetRels), { createFolders: false });
+          zip.file(sheetPath, withDrawingElement(await read(sheetPath), id), { createFolders: false });
+          addOverride(`/xl/drawings/drawing${drawingNumber}.xml`, DRAWING_CT);
+          drawing = { path: `xl/drawings/drawing${drawingNumber}.xml`, xml: EMPTY_DRAWING, rels: [] };
+        }
+        drawings.set(sheetPath, drawing);
+      }
+      chartNumber += 1;
+      zip.file(`xl/charts/chart${chartNumber}.xml`, item.xml, { createFolders: false });
+      addOverride(`/xl/charts/chart${chartNumber}.xml`, CHART_CT);
+      const relId = nextRelId(drawing.rels);
+      drawing.rels.push({ id: relId, type: NS_REL + '/chart', target: `../charts/chart${chartNumber}.xml` });
+      const taken = Array.from(drawing.xml.matchAll(/<xdr:cNvPr\b[^>]*\sid="(\d+)"/g), m => Number(m[1]));
+      drawing.xml = drawing.xml.replace('</xdr:wsDr>', chartAnchorXml(item.chart, Math.max(0, ...taken) + 1, relId, item.name) + '</xdr:wsDr>');
+    }
+    drawings.forEach((drawing) => {
+      zip.file(drawing.path, drawing.xml, { createFolders: false });
+      zip.file(drawing.path.replace(/([^/]+)$/, '_rels/$1.rels'), relationsXml(drawing.rels), { createFolders: false });
+    });
+    zip.file('[Content_Types].xml', types, { createFolders: false });
+  }
+  // Une cellule du classeur embarqué d'un graphique, posée `shift` lignes plus bas dans la feuille des données : une formule (celles d'une cascade, dont les cellules se visent entre elles) voit chacune de ses références
+  // descendre d'autant ; un texte ou un nombre reste tel quel. Les références sont celles de la forme `B2`, `$B$2`, `I$2:I5` (aucune fonction de nos formules n'a de chiffre dans son nom).
+  const shiftedValue = (value, shift) => (value && typeof value === 'object' && typeof value.formula === 'string'
+    ? { formula: value.formula.replace(/(\$?[A-Z]{1,3}\$?)(\d+)/g, (all, column, row) => column + (Number(row) + shift)), result: value.result }
+    : value);
+  function writeChartData(workbook, charts) {
+    // La feuille des données des graphiques, ajoutée en dernier : par graphique, un titre (« Graphique 2 - Ventes ») puis les cellules de son classeur embarqué, une ligne vide avant le suivant. Rend la feuille et,
+    // pour chaque graphique, sa partie dont les formules visent ses cellules.
+    const taken = new Set(workbook.worksheets.map(sheet => sheet.name.toLowerCase()));
+    const sheet = workbook.addWorksheet(sheetNameFrom(I18n.t('xlsx.chart.sheet'), taken));
+    sheet.getColumn(1).width = 28;
+    let top = 1;
+    const parts = charts.map((chart, index) => {
+      const head = sheet.getCell(top, 1);
+      head.value = chartName(index) + (chart.title ? ' - ' + chart.title : '');
+      head.font = fontOf({ bold: true });
+      chart.rows.forEach(row => row.cells.forEach((cell) => {
+        const target = sheet.getCell(top + row.number, cell.col);
+        target.value = shiftedValue(cell.value, top);
+        target.font = fontOf({});
+        if (cell.numFmt && cell.numFmt !== 'General') target.numFmt = cell.numFmt;
+      }));
+      const xml = retargetedChartXml(chart.chartXml, sheet.name, top);
+      top += chart.rows[chart.rows.length - 1].number + 2;
+      return xml;
+    });
+    return { sheet, parts };
+  }
+  const chartName = index => I18n.t('xlsx.chart.name') + ' ' + (index + 1);
 
   function sheetNameFrom(name, used) {
     // Feuille
@@ -539,10 +736,14 @@ const XlsxExport = (function () {
     return content.images.map(img => ({ img, row: p.row, col: p.col }));
   }
   async function addSheetImage(workbook, sheet, entry) {
-    // Pose l'image d'une case sur la feuille, à sa taille ; une image illisible est laissée de côté.
+    // Pose l'image d'une case sur la feuille, à sa taille ; une image illisible est laissée de côté. Un graphique créé qui devient un graphique natif d'Excel (addNativeChart) n'a pas d'image.
     const data = await imageForWorkbook(entry.img);
     if (!data) return;
     const size = imageSizePx(entry.img, data);
+    if (await addNativeChart(workbook, sheet, entry, size)) return;
+    placePicture(workbook, sheet, entry, data, size);
+  }
+  function placePicture(workbook, sheet, entry, data, size) {
     const id = workbook.addImage({ base64: data.base64, extension: data.extension });
     sheet.addImage(id, { tl: { col: entry.col, row: entry.row }, ext: { width: Math.round(size.width), height: Math.round(size.height) }, editAs: 'oneCell' });
   }
@@ -596,8 +797,29 @@ const XlsxExport = (function () {
   const resolveRecord = (htmlContent, tableId, record, filenameTemplate) =>
     ExportCommon.resolveRecord(htmlContent, tableId, record, filenameTemplate, null, typedCellHook(tableId, record));
   async function workbookToBlob(workbook) {
-    const buffer = await workbook.xlsx.writeBuffer();
-    return new Blob([buffer], { type: XLSX_MIME });
+    // Le classeur en fichier. Les graphiques natifs (addNativeChart) dont la feuille est encore là (un enregistrement qui échoue retire la sienne) entrent après l'écriture d'ExcelJS : la feuille des données
+    // s'ajoute, l'archive s'écrit, puis chaque graphique y prend sa place. Si cela échoue, la feuille des données s'en va et les images prennent la place des graphiques.
+    const charts = chartListOf(workbook).filter(chart => workbook.getWorksheet(chart.sheetName));
+    if (charts.length) {
+      let data = null;
+      try {
+        await ExportCommon.ensureJsZipLoaded();
+        data = writeChartData(workbook, charts);
+        const zip = await JSZip.loadAsync(await workbook.xlsx.writeBuffer());
+        await injectCharts(zip, charts.map((chart, index) => ({ chart, xml: data.parts[index], name: chartName(index) })));
+        return await zip.generateAsync({ type: 'blob', mimeType: XLSX_MIME, compression: 'DEFLATE' });
+      } catch (e) {
+        console.warn('[XlsxExport] graphiques natifs impossibles, les images sont gardées :', e);
+        chartListOf(workbook).length = 0;
+        for (const chart of charts) {
+          const picture = await imageForWorkbook(chart.img);
+          if (picture) placePicture(workbook, workbook.getWorksheet(chart.sheetName), chart, picture, chart);
+        }
+      } finally {
+        if (data) workbook.removeWorksheet(data.sheet.id);
+      }
+    }
+    return new Blob([await workbook.xlsx.writeBuffer()], { type: XLSX_MIME });
   }
 
   async function getXlsxBlobForRecord(htmlContent, tableId, record, filenameTemplate, options) {
@@ -640,10 +862,12 @@ const XlsxExport = (function () {
         await ExternalImages.confirmExport(htmlContent, null);
         const { resolvedHtml, filename } = await resolveRecord(htmlContent, tableId, record, filenameTemplate);
         const before = workbook.worksheets.length;
+        const chartsBefore = chartListOf(workbook).length;
         try {
           await addRecordSheet(workbook, nameWithValue(filename, valueName), resolvedHtml, Object.assign(pageOptionsFromLayout(), options || {}, pageOptions || {}, { usedNames }));
         } catch (e) {
           workbook.worksheets.slice(before).forEach(sheet => { usedNames.delete(sheet.name.toLowerCase()); workbook.removeWorksheet(sheet.id); });
+          chartListOf(workbook).length = chartsBefore;
           throw e;
         }
         return { filename };

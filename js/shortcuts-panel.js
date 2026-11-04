@@ -1,7 +1,7 @@
 // Réglages > Raccourcis > Touches (js/shortcuts.js) : la liste de toutes les actions, rangées par groupe, avec leur touche actuelle. Un clic sur la
 // touche écoute la combinaison suivante ; Échap abandonne, Retour arrière retire la touche, « Par défaut » rend celle d'origine. Une combinaison
 // refusée dit pourquoi, sous la touche concernée, et la liste continue d'écouter. Pendant l'écoute, Shortcuts envoie toutes les touches ici : aucune
-// action ne part et Échap ne ferme pas la fenêtre.
+// action ne part et Échap ne ferme pas la fenêtre. Changer, retirer ou rétablir une touche (une seule, ou toutes d'un coup) est un pas d'Annuler : Ctrl + Z la rend, une fois la fenêtre refermée (js/settings-history.js).
 //
 // L'onglet réunit deux choses, qu'un commutateur montre l'une après l'autre : « Touches » (ici) et « Abréviations » (js/text-expansion.js). Le choix
 // est gardé par navigateur.
@@ -12,18 +12,33 @@ const ShortcutsPanel = (function () {
   const byId = id => document.getElementById(id);
   const t = (key, vars) => I18n.t(key, vars);
 
+  // Les touches choisies dans l'historique d'Annuler (js/settings-history.js) : l'état est tout le choix de la personne, un pas rend celui d'avant. Le coin d'état nomme l'action dont la touche a changé, ou dit combien de touches l'ont fait.
+  const KEYS_SETTING = {
+    read: () => Shortcuts.chosen(),
+    write: choices => Shortcuts.restore(choices),
+    say: (choices, was) => {
+      const ids = Shortcuts.ACTIONS.map(action => action.id).filter(id => choices[id] !== was[id]);
+      if (ids.length !== 1) return t('status.keysChanged', { count: ids.length });
+      const name = t(Shortcuts.action(ids[0]).label);
+      const key = Shortcuts.label(ids[0]);
+      return key ? t('status.keySet', { action: name, key }) : t('status.keyNone', { action: name });
+    },
+  };
+
   let listEl = null;
   let resetAllButton = null;
   let rows = {};           // id d'action -> { id, li, nameEl, keyButton, resetButton, errorEl }
   let recordingId = null;
 
   function storedView() {
-    try { const v = localStorage.getItem(VIEW_STORAGE); return VIEWS.indexOf(v) !== -1 ? v : 'keys'; } catch (e) { return 'keys'; }
+    const v = PersonStore.get(VIEW_STORAGE);
+    return VIEWS.indexOf(v) !== -1 ? v : 'keys';
   }
 
-  function showView(view) {
+  // `remember` faux : la vue se montre sans être gardée (le démarrage, l'arrivée de l'espace de GFS) ; lire ne doit jamais écrire (js/person-store.js).
+  function showView(view, remember = true) {
     if (VIEWS.indexOf(view) === -1) view = 'keys';
-    try { localStorage.setItem(VIEW_STORAGE, view); } catch (e) { /* le choix ne survivra pas au rechargement */ }
+    if (remember) PersonStore.set(VIEW_STORAGE, view); // non retenu (stockage indisponible) : le choix ne survivra pas au rechargement
     VIEWS.forEach(name => {
       const tab = byId('settings-switch-' + name);
       const section = byId('settings-' + name + '-section');
@@ -81,11 +96,11 @@ const ShortcutsPanel = (function () {
     if (id == null || event.repeat) return;
     const plain = !event.ctrlKey && !event.altKey && !event.metaKey && !event.shiftKey;
     if (plain && event.key === 'Escape') { stopRecording(); return; }
-    if (plain && (event.key === 'Backspace' || event.key === 'Delete')) { Shortcuts.setKey(id, ''); stopRecording(); return; }
-    const { combo, altGr } = Shortcuts.fromEvent(event);
+    if (plain && (event.key === 'Backspace' || event.key === 'Delete')) { SettingsHistory.track(KEYS_SETTING, () => Shortcuts.setKey(id, '')); stopRecording(); return; }
+    const { combo } = Shortcuts.fromEvent(event);
     if (!combo) return; // un modificateur seul : on attend la suite
-    if (altGr) { showError(id, t('settings.keys.problem.altGr')); return; }
-    const result = Shortcuts.setKey(id, combo);
+    if (Shortcuts.isAltGr(event)) { showError(id, t('settings.keys.problem.altGr')); return; } // sauf Ctrl+Alt+M, la touche de départ de « Commenter la sélection »
+    const result = SettingsHistory.track(KEYS_SETTING, () => Shortcuts.setKey(id, combo));
     if (result.problem) { showError(id, problemText(combo, result)); return; }
     stopRecording();
   }
@@ -102,8 +117,11 @@ const ShortcutsPanel = (function () {
     row.keyButton.textContent = key || t('settings.keys.none');
     row.keyButton.classList.toggle('is-none', !key);
     row.keyButton.setAttribute('aria-label', key ? t('settings.keys.keyAria', { action: name, key }) : t('settings.keys.keyAriaNone', { action: name }));
-    row.resetButton.disabled = !Shortcuts.isChanged(id);
+    const changed = Shortcuts.isChanged(id);
+    row.resetButton.disabled = !changed;
     row.resetButton.setAttribute('aria-label', t('settings.keys.resetAria', { action: name }));
+    // Grisé, « Par défaut » dit pourquoi en info-bulle (js/lock-reasons.js, cause « state » : un bouton `disabled` ne reçoit pas le clic).
+    LockReasons.set(row.resetButton, 'state', changed ? '' : t('lock.keyDefault'));
   }
 
   function build() {
@@ -134,7 +152,7 @@ const ShortcutsPanel = (function () {
         resetButton.type = 'button';
         resetButton.className = 'settings-key-reset';
         resetButton.textContent = t('settings.keys.reset');
-        resetButton.addEventListener('click', () => { Shortcuts.resetKey(action.id); showError(action.id, ''); });
+        resetButton.addEventListener('click', () => { SettingsHistory.track(KEYS_SETTING, () => Shortcuts.resetKey(action.id)); showError(action.id, ''); });
         const errorEl = document.createElement('p');
         errorEl.className = 'settings-key-error';
         errorEl.setAttribute('role', 'alert');
@@ -150,7 +168,11 @@ const ShortcutsPanel = (function () {
 
   function renderAll() {
     Object.keys(rows).forEach(renderRow);
-    if (resetAllButton) resetAllButton.disabled = !Shortcuts.ACTIONS.some(a => Shortcuts.isChanged(a.id));
+    if (resetAllButton) {
+      const anyChanged = Shortcuts.ACTIONS.some(a => Shortcuts.isChanged(a.id));
+      resetAllButton.disabled = !anyChanged;
+      LockReasons.set(resetAllButton, 'state', anyChanged ? '' : t('lock.keysAllDefault'));
+    }
   }
 
   function wire() {
@@ -159,12 +181,11 @@ const ShortcutsPanel = (function () {
     if (!listEl) return;
     build();
     Shortcuts.onChange(renderAll);
-    I18n.onChange(() => { stopRecording(); build(); });
     VIEWS.forEach(name => { const tab = byId('settings-switch-' + name); if (tab) tab.addEventListener('click', () => showView(name)); });
     if (resetAllButton) {
       resetAllButton.addEventListener('click', async () => {
         if (!(await Dialogs.confirm({ title: t('settings.keys.confirmResetAll'), confirmLabel: t('settings.keys.resetAll'), danger: true }))) return;
-        Shortcuts.resetAll();
+        SettingsHistory.track(KEYS_SETTING, () => Shortcuts.resetAll());
         Object.keys(rows).forEach(id => showError(id, ''));
         resetAllButton.focus();
       });
@@ -173,7 +194,9 @@ const ShortcutsPanel = (function () {
     document.querySelectorAll('.settings-tab').forEach(tab => tab.addEventListener('click', stopRecording));
     const close = byId('settings-close');
     if (close) close.addEventListener('click', stopRecording);
-    showView(storedView());
+    showView(storedView(), false);
+    // Hébergé par GFS, la vue gardée vient de l'espace de l'app, qui arrive avec le contexte, après ce chargement.
+    PersonStore.onLoaded(() => showView(storedView(), false));
   }
 
   wire();

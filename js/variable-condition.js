@@ -2,11 +2,29 @@
 // (js/reader-mode.js, ConditionRules.conditionHolds). La condition vit dans l'attribut `condition` du nœud : { mode: 'all'|'any', rules: [{ column,
 // operator, value }] }. Mêmes lignes Colonne / Opérateur / Valeur que les macro-modèles (js/condition-fields.js), avec les colonnes de toutes les
 // tables dans une seule liste avec recherche ; une colonne d'une table pas encore liée ouvre le choix de la clé
-// (js/variables.js:ensureLinkConfigured). Aperçu en direct : la ligne sélectionnée, puis combien de lignes de la table remplissent la condition et la
+// (js/variables.js:ensureLinkConfigured). La colonne choisie s'affiche dans le champ comme une variable du document ; un clic sur elle, un bouton à droite de
+// la zone de recherche de la liste ou Ctrl+Entrée ouvrent la fenêtre « Autres attributs » pour y choisir la colonne en voyant sa valeur sur la ligne
+// sélectionnée, de Référence en Référence (options.attributesWindow, js/variable-linked-attrs.js:pickColumn). Le champ Valeur a un bouton « autre colonne » : la règle compare alors la colonne à une autre colonne de la
+// même ligne, { column, operator, valueColumn } (options.compareColumn, js/condition-rules.js:compareOperands), au lieu d'une valeur saisie.
+// La combinaison des règles (`mode`, la même pour toutes) se choisit dans la liste « toutes / au moins une » du haut ou en cliquant le « Et » / « Ou » devant
+// une règle (js/condition-fields.js:buildConnector) : les deux se suivent. Pour mêler « et » et « ou » - « A et (B ou C) » - « + Groupe » pose un encadré, les
+// parenthèses : un élément de `rules` qui est lui-même { mode, rules }, avec sa propre combinaison (js/condition-fields.js:renderItems, ConditionRules.isGroup).
+// Aperçu en direct : la ligne sélectionnée, puis combien de lignes de la table remplissent la condition et la
 // première d'entre elles. « Copier » / « Coller » recolle la condition d'une fenêtre dans une autre, comme un brouillon : « Enregistrer » l'applique.
 // Ouverte depuis la barre flottante (js/floating-toolbars.js:wireVariableFloatingToolbar). La même fenêtre sert aux nœuds conditionnels - bloc de
 // texte (js/conditional-text.js), valeur dans la phrase (js/conditional-value.js), case à cocher (js/conditional-checkbox.js) - avec leurs propres
 // phrases ; « Défaire le bloc » / « Défaire la valeur » retire le cadre et la condition, le texte reste.
+// Une bulle a en plus deux petits champs, « Avant » et « Après » : le texte collé à sa valeur (une virgule, une parenthèse), écrit seulement quand
+// la variable s'affiche avec une valeur (attributs `before` et `after` du nœud, VariableFormat.withAffixes ; js/reader-mode.js les écrit). Ils se règlent
+// ici parce que le cas d'usage est la virgule d'une variable conditionnelle, mais valent aussi pour une bulle sans condition.
+// Et une ligne « Sinon afficher » : ce que la bulle écrit à sa place quand la condition n'est pas remplie - un champ à variables, le même pour une bulle, une valeur dans la
+// phrase et un bloc de texte : du texte et des variables tapées avec « # » (le champ de l'objet d'un e-mail, js/field-editor.js), une ligne pour la bulle et la valeur, plusieurs
+// pour le bloc, qui fait un paragraphe de chacune. Il s'enregistre dans l'attribut `otherwise` du nœud d'une valeur ou d'un bloc (js/conditional-text.js:otherwiseText), dans
+// `otherwise` ou `otherwiseText` pour une bulle (js/variable-otherwise.js:storedOf). Les variables s'y cliquent et ont leur barre, comme dans le document ; leur condition et leur
+// « Avant » / « Après » se règlent dans une seconde fenêtre, la même, ouverte par-dessus (qui grise alors sa propre ligne : un sinon ne se met pas dans un sinon). La ligne est
+// grisée sans règle complète, puisqu'un sinon n'a de sens que pour une condition. Elle est la dernière de la fenêtre, sous l'aperçu : à 700 × 400 la fenêtre défile déjà, et rien
+// de ce qui s'y voyait à l'ouverture (les règles, « Avant » / « Après », l'aperçu) ne doit descendre. L'aperçu dit ce que la ligne sélectionnée écrit, sinon compris ; une case à
+// cocher n'a pas de sinon.
 const VariableCondition = (function () {
   const { el, option, button } = Dom;
   const { setLine, shorten } = VariableModal;
@@ -16,15 +34,18 @@ const VariableCondition = (function () {
     varBadge: {
       title: 'varCond.title', intro: 'varCond.intro', modeBefore: 'varCond.modeBefore', saveLost: 'varCond.saveLost', pasted: 'varCond.clip.pastedStatus',
       met: 'varCond.debug.currentMet', notMet: 'varCond.debug.currentNotMet', first: 'varCond.debug.first',
+      notMetOtherwise: 'varCond.debug.currentNotMetOtherwise',
     },
     conditionalText: {
       title: 'varCond.title', intro: 'varCond.introBlock', modeBefore: 'varCond.modeBefore', saveLost: 'varCond.saveLostBlock', pasted: 'varCond.clip.pastedStatusBlock',
       met: 'varCond.debug.currentMetBlock', notMet: 'varCond.debug.currentNotMetBlock', first: 'varCond.debug.firstBlock',
+      notMetOtherwise: 'varCond.debug.currentNotMetBlockOtherwise',
       unwrap: { label: 'varCond.unwrapBlock', title: 'varCond.unwrapBlockTitle', lost: 'varCond.unwrapLostBlock' },
     },
     conditionalValue: {
       title: 'varCond.title', intro: 'varCond.introValue', modeBefore: 'varCond.modeBefore', saveLost: 'varCond.saveLostValue', pasted: 'varCond.clip.pastedStatusValue',
       met: 'varCond.debug.currentMetValue', notMet: 'varCond.debug.currentNotMetValue', first: 'varCond.debug.firstBlock',
+      notMetOtherwise: 'varCond.debug.currentNotMetValueOtherwise',
       unwrap: { label: 'varCond.unwrapValue', title: 'varCond.unwrapValueTitle', lost: 'varCond.unwrapLostValue' },
     },
     conditionalCheckbox: {
@@ -33,339 +54,567 @@ const VariableCondition = (function () {
     },
   };
 
-  let win = null; // la fenêtre de js/modal-base.js, créée à la première ouverture
-  let refs = null;
-  // { editor, pos, node, hadCondition, working: { mode, rules } } - `working` est une copie : rien n'est écrit dans le nœud avant « Enregistrer ».
-  let state = null;
-  const previewRun = VariableModal.previewRunner(updatePreview);
+  // Les nœuds dont le sinon est un champ de texte et de variables (js/conditional-text.js:otherwiseText, js/variable-otherwise.js) : la bulle de variable et la valeur dans la
+  // phrase, un champ d'une ligne, et le bloc de texte, un champ de plusieurs lignes dont chacune fait un paragraphe. `id`, `row` et `input` nomment le champ et sa ligne, en toutes
+  // lettres pour que les règles de css/variable-actions.css se retrouvent dans le code (la bulle et la valeur ont le même aspect, donc les mêmes classes) ; `max` : les caractères
+  // qu'il accepte (lus à la création de la fenêtre : ces modules se chargent après celui-ci) ; `title` et `placeholder` : ses phrases ; `keepSpaces` : les espaces des deux bouts
+  // comptent (celles du sinon d'une bulle ou d'une valeur, écrit tel qu'il est tapé).
+  const TEXT_OTHERWISE = {
+    varBadge: {
+      id: 'var-condition-otherwise-bubble', row: 'var-condition-otherwise-text-row', input: 'var-condition-otherwise-text-input', multiline: false, keepSpaces: true,
+      max: () => VariableOtherwise.TEXT_MAX, title: 'varCond.otherwiseBubbleTitle', placeholder: 'varCond.otherwiseBubblePlaceholder',
+    },
+    conditionalValue: {
+      id: 'var-condition-otherwise-text', row: 'var-condition-otherwise-text-row', input: 'var-condition-otherwise-text-input', multiline: false, keepSpaces: true,
+      max: () => ConditionalValue.OTHERWISE_MAX, title: 'varCond.otherwiseTextTitle', placeholder: 'varCond.otherwiseTextPlaceholder',
+    },
+    conditionalText: {
+      id: 'var-condition-otherwise-area', row: 'var-condition-otherwise-area-row', input: 'var-condition-otherwise-area-input', multiline: true, keepSpaces: false,
+      max: () => ConditionalText.OTHERWISE_MAX, title: 'varCond.otherwiseBlockTitle', placeholder: 'varCond.otherwiseBlockPlaceholder',
+    },
+  };
+
   // Presse-papier interne : une copie { mode, rules } gardée le temps de la session du widget, d'une fenêtre et d'un modèle à l'autre. Jamais celui
-  // du système : un widget dans l'iframe d'un document Grist n'a pas l'autorisation de le lire.
+  // du système : un widget dans l'iframe d'un document Grist n'a pas l'autorisation de le lire. Le même pour toutes les fenêtres de condition.
   let clipboard = null;
-  let copiedFlashTimer = null;
 
-  const isOpen = () => !!state;
-  const texts = () => TEXTS[state.node.type.name];
-  // Seule une bulle a une valeur à montrer dans l'aperçu : un bloc, une valeur conditionnelle ou une case s'affiche, ou se coche, sans valeur à lire.
-  const showsValue = () => state.node.type.name === 'varBadge';
-
-  // « Statut = Urgent et VcContacts.Role = Avocat » : une condition sur une ligne, sans valeur pour « vide » / « non vide ». Ce que « Coller » va
-  // poser (info-bulle du bouton) et la condition que reprennent les attributs insérés (js/variable-linked-attrs.js), qui la donnent en entier
-  // (`full`) ; sinon coupée à 110 caractères.
+  // « Statut = Urgent et VcContacts.Role = Avocat » : une condition sur une ligne, sans valeur pour « vide » / « non vide ». Une règle qui compare à une
+  // autre colonne la nomme entre accolades, comme une colonne dans un calcul : « Montant = {Paye} », qui ne se lit pas comme la valeur « Paye ». Un groupe
+  // s'écrit entre parenthèses : « Statut = Urgent et (Montant ≥ 100 ou Client = Dupont) » (sans elles quand il n'a qu'une ligne). Ce que « Coller » va poser
+  // (info-bulle du bouton) et la condition que reprennent les attributs insérés (js/variable-linked-attrs.js), qui la donnent en entier (`full`) ; sinon coupée
+  // à 110 caractères.
   function conditionSummary(condition, opts) {
-    const glue = ' ' + I18n.t(condition.mode === 'any' ? 'varCond.ruleOr' : 'varCond.ruleAnd').toLowerCase() + ' ';
-    const text = condition.rules.map(r => {
+    const ruleText = r => {
       const operator = r.operator || '=';
-      const noValue = operator === 'vide' || operator === 'non vide' || r.value == null;
-      return (r.column + ' ' + operator + (noValue ? '' : ' ' + r.value)).trim();
-    }).join(glue);
+      const noValue = ConditionRules.VALUELESS_OPERATORS.indexOf(operator) !== -1 || (!ConditionRules.comparesColumn(r) && r.value == null);
+      const shown = ConditionRules.comparesColumn(r) ? '{' + r.valueColumn + '}' : r.value;
+      return (r.column + ' ' + operator + (noValue ? '' : ' ' + shown)).trim();
+    };
+    const itemsText = (mode, items) => {
+      const glue = ' ' + I18n.t(mode === 'any' ? 'varCond.ruleOr' : 'varCond.ruleAnd').toLowerCase() + ' ';
+      return items.map(item => {
+        if (!ConditionRules.isGroup(item)) return ruleText(item);
+        const inner = itemsText(item.mode, item.rules);
+        return item.rules.length > 1 ? '(' + inner + ')' : inner;
+      }).join(glue);
+    };
+    const text = itemsText(condition.mode, condition.rules);
     return opts && opts.full ? text : shorten(text, 110);
   }
 
-  function ensureModal() {
-    if (win) return;
-    // Échap ferme la fenêtre où que soit le focus (sauf si le choix de la clé est ouvert par-dessus : la base lui laisse le clavier) ; le focus
-    // revient à l'éditeur (cf. close), pas à l'élément qui l'avait à l'ouverture.
-    win = ModalBase.create({
-      id: 'var-condition-modal', titleId: 'var-condition-title', boxClass: 'var-modal-content var-condition-modal-content', actionsClass: 'var-modal-actions',
-      onEscape: close, restoreFocus: false,
+  // Une fenêtre de condition. Il peut y en avoir deux ouvertes, l'une sur l'autre : le « Sinon afficher » d'une bulle, d'une valeur ou d'un bloc est un champ où l'on tape des
+  // variables, et la condition de l'une d'elles - ou son « Avant » / « Après » - se règle dans une seconde fenêtre, la même, ouverte par-dessus la première (`level` 1).
+  // Chacune a son état, ses champs et ses identifiants (`suffix`) ; la première garde ceux d'avant.
+  function createWindow(level) {
+    const suffix = level ? '-' + (level + 1) : '';
+    let win = null; // la fenêtre de js/modal-base.js, créée à la première ouverture
+    let refs = null;
+    // { editor, pos, node, hadCondition, working: { mode, rules } } - `working` est une copie : rien n'est écrit dans le nœud avant « Enregistrer ».
+    let state = null;
+    // Le texte du sinon se tape sous l'aperçu : quand celui-ci prend une ligne de plus, le champ qui a le focus est repoussé sous le bord visible de
+    // la fenêtre (son corps défile) ; une fois l'aperçu tracé, on le ramène.
+    function keepTypedFieldInView() {
+      const free = textField();
+      if (free && free.input.contains(document.activeElement)) free.input.scrollIntoView({ block: 'nearest' });
+    }
+    const previewRun = VariableModal.previewRunner(async () => {
+      try { await updatePreview(); } finally { keepTypedFieldInView(); }
     });
-    const intro = el('p', 'var-modal-intro');
-    const modeBefore = el('span');
-    const modeSelect = el('select');
-    const modeAfter = el('span');
-    const modeRow = el('div', 'var-condition-mode');
-    modeRow.append(modeBefore, modeSelect, modeAfter);
-    const rulesBox = el('div', 'var-condition-rules');
-    const { box: previewArea, lines: [currentLine, countLine] } = VariableModal.previewBox(2);
-    // « Défaire le bloc » / « Défaire la valeur » vient juste après « Retirer la condition » : le premier `.var-modal-danger` reste celui-ci (les
-    // tests et les autres fenêtres trouvent « Annuler » par `button:not(.var-modal-primary):not(.var-modal-danger)`) ; son texte garde la couleur du
-    // texte (css/variable-actions.css).
-    const removeBtn = button('var-modal-danger');
-    const unwrapBtn = button('var-modal-danger var-modal-unwrap');
-    const cancelBtn = button();
-    const saveBtn = button('var-modal-primary');
-    // Deux groupes - les retraits à gauche, Annuler et Enregistrer à droite - qui passent sur deux lignes, chacun entier, quand les quatre boutons ne
-    // tiennent pas côte à côte (le français dans les 480 px de la fenêtre) : « Enregistrer » sortirait de la fenêtre.
-    const startGroup = el('div', 'var-modal-actions-start');
-    startGroup.append(removeBtn, unwrapBtn);
-    const endGroup = el('div', 'var-modal-actions-end');
-    endGroup.append(cancelBtn, saveBtn);
-    win.actions.append(startGroup, endGroup);
-    // Copier / Coller : un seul groupe de nœuds, replacé à chaque tracé des règles sur la ligne de « + Ajouter une condition » (cf. renderRules).
-    const copyBtn = button('var-condition-clip-btn');
-    const pasteBtn = button('var-condition-clip-btn');
-    const clipStatus = el('span', 'var-condition-clip-status');
-    clipStatus.setAttribute('role', 'status');
-    const clip = el('span', 'var-condition-clip');
-    clip.append(copyBtn, pasteBtn, clipStatus);
-    win.body.append(intro, modeRow, rulesBox, previewArea);
-    refs = {
-      title: win.title, intro, modeRow, modeBefore, modeSelect, modeAfter, rulesBox, clip, copyBtn, pasteBtn, clipStatus, currentLine, countLine,
-      removeBtn, unwrapBtn, cancelBtn, saveBtn,
-    };
+    let copiedFlashTimer = null;
 
-    modeSelect.addEventListener('change', () => {
+    const isOpen = () => !!state;
+    const texts = () => TEXTS[state.node.type.name];
+    // Seule une bulle a une valeur à montrer dans l'aperçu : un bloc, une valeur conditionnelle ou une case s'affiche, ou se coche, sans valeur à lire.
+    const showsValue = () => state.node.type.name === 'varBadge';
+    // Les champs du sinon du nœud de la fenêtre (TEXT_OTHERWISE : sa ligne, son étiquette, son champ et ses réglages), ou null : une case n'en a pas.
+    const textField = () => (state && refs ? refs.textOtherwise[state.node.type.name] || null : null);
+    // Le texte « Avant » / « Après » tel qu'il est tapé dans la fenêtre ({ before, after }), ou null : sans bulle, sans texte ou fenêtre fermée.
+    const draftAffixes = () => (state && refs && showsValue() ? VariableFormat.affixes(refs.beforeInput.value, refs.afterInput.value) : null);
+    // Le sinon tel qu'il est tapé dans la fenêtre (la valeur enregistrée du champ), ou null : sans texte ni variable (que des espaces et des lignes vides n'en font pas un) ou fenêtre
+    // fermée.
+    const draftOtherwiseText = () => { const free = textField(); return free ? ConditionalText.otherwiseText(free.input.value) : null; };
+
+    // La ligne « Sinon afficher » (TEXT_OTHERWISE) : l'étiquette puis un champ à variables, dans la grille de celle de « Avant » / « Après ». Le champ est dans un conteneur dont
+    // l'info-bulle - le grisé dit pourquoi - passe à travers lui quand il est grisé. L'élément `input` n'est qu'un <div> : le champ y est monté par `mountTextFields`
+    // (FieldEditor.attach), qui lui rend la valeur, l'indication, le grisé et la limite d'un <input>.
+    function buildOtherwiseTextFields(kind) {
+      const label = el('label');
+      label.id = kind.id + suffix + '-label';
+      label.htmlFor = kind.id + suffix;
+      const input = el('div', kind.input);
+      input.id = kind.id + suffix;
+      input.setAttribute('aria-labelledby', label.id);
+      input.spellcheck = false;
+      const field = el('div', 'var-condition-otherwise-field');
+      field.appendChild(input);
+      const row = el('div', 'var-condition-affix ' + kind.row);
+      row.append(label, field);
+      return { kind, row, label, field, input, mounted: false };
+    }
+
+    // Monte les champs du sinon d'une bulle, d'une valeur et d'un bloc : à la première ouverture, quand les classes de TipTap sont chargées (le document dont la fenêtre règle un
+    // nœud a déjà chargé l'éditeur). Chaque champ lit le contexte de répétition du nœud réglé (VariableLoop.setContext) : ses variables s'écrivent à la place du nœud, dans la même
+    // zone répétée, et y lisent la ligne du tour.
+    function mountTextFields() {
+      const libs = Editor.loadedLibraries();
+      if (!libs) return;
+      Object.values(refs.textOtherwise).forEach(free => {
+        if (free.mounted) return;
+        const editor = FieldEditor.attach(free.input, libs, {
+          hostWindow: 'condition', windowEl: win.overlay, multiline: free.kind.multiline, keepSpaces: free.kind.keepSpaces, limit: free.kind.max,
+        });
+        VariableLoop.setContext(editor.schema, () => (state ? VariableLoop.zonesAt(state.editor.state, state.pos) : []));
+        free.mounted = true;
+      });
+    }
+
+    function ensureModal() {
+      if (win) return;
+      // Échap ferme la fenêtre où que soit le focus (sauf si le choix de la clé est ouvert par-dessus : la base lui laisse le clavier) ; le focus
+      // revient à l'éditeur (cf. close), pas à l'élément qui l'avait à l'ouverture.
+      win = ModalBase.create({
+        id: 'var-condition-modal' + suffix, titleId: 'var-condition-title' + suffix, boxClass: 'var-modal-content var-condition-modal-content', actionsClass: 'var-modal-actions',
+        onEscape: close, restoreFocus: false,
+      });
+      const intro = el('p', 'var-modal-intro');
+      const modeBefore = el('span');
+      const modeSelect = el('select');
+      const modeAfter = el('span');
+      const modeRow = el('div', 'var-condition-mode');
+      modeRow.append(modeBefore, modeSelect, modeAfter);
+      const rulesBox = el('div', 'var-condition-rules');
+      // « Avant » / « Après » : propres à la bulle (cachés pour un bloc, une valeur ou une case, qui n'ont pas de valeur à entourer). Deux champs de
+      // texte libre, espaces compris, et une indication qui commence sous le premier (css/variable-actions.css).
+      const affixRow = el('div', 'var-condition-affix');
+      const beforeField = VariableModal.labelledInput('var-condition-before' + suffix, 'var-condition-affix-input');
+      const afterField = VariableModal.labelledInput('var-condition-after' + suffix, 'var-condition-affix-input');
+      afterField.label.className = 'var-condition-affix-after';
+      const affixHint = el('span', 'var-loop-hint');
+      for (const input of [beforeField.input, afterField.input]) {
+        input.maxLength = VariableFormat.AFFIX_MAX;
+        input.autocomplete = 'off';
+        input.spellcheck = false;
+        // L'aperçu montre le texte tel qu'il s'écrira : il se recalcule à chaque saisie, comme pour une règle.
+        input.addEventListener('input', () => previewRun.schedule());
+      }
+      affixRow.append(beforeField.label, beforeField.input, afterField.label, afterField.input, affixHint);
+      // « Sinon afficher » : une seconde grille, la même, tout en bas. L'aperçu garde sa place, entre les deux : à 700 × 400 ce qui se voyait dès l'ouverture - les règles,
+      // « Avant » / « Après », la première ligne de l'aperçu - reste où c'était, la ligne nouvelle vient en dessous. Une fenêtre ne montre que la ligne du nœud qu'elle règle.
+      const textOtherwise = Object.fromEntries(Object.entries(TEXT_OTHERWISE).map(([type, kind]) => [type, buildOtherwiseTextFields(kind)]));
+      const { box: previewArea, lines: [currentLine, countLine] } = VariableModal.previewBox(2);
+      // « Défaire le bloc » / « Défaire la valeur » vient juste après « Retirer la condition » : le premier `.var-modal-danger` reste celui-ci (les
+      // tests et les autres fenêtres trouvent « Annuler » par `button:not(.var-modal-primary):not(.var-modal-danger)`) ; son texte garde la couleur du
+      // texte (css/variable-actions.css).
+      const removeBtn = button('var-modal-danger');
+      const unwrapBtn = button('var-modal-danger var-modal-unwrap');
+      const cancelBtn = button();
+      const saveBtn = button('var-modal-primary');
+      // Deux groupes - les retraits à gauche, Annuler et Enregistrer à droite - qui passent sur deux lignes, chacun entier, quand les quatre boutons ne
+      // tiennent pas côte à côte (le français dans les 480 px de la fenêtre) : « Enregistrer » sortirait de la fenêtre.
+      const startGroup = el('div', 'var-modal-actions-start');
+      startGroup.append(removeBtn, unwrapBtn);
+      const endGroup = el('div', 'var-modal-actions-end');
+      endGroup.append(cancelBtn, saveBtn);
+      win.actions.append(startGroup, endGroup);
+      // Copier / Coller : un seul groupe de nœuds, replacé à chaque tracé des règles sur la ligne de « + Ajouter une condition » (cf. renderRules).
+      const copyBtn = button('var-condition-clip-btn');
+      const pasteBtn = button('var-condition-clip-btn');
+      const clipStatus = el('span', 'var-condition-clip-status');
+      clipStatus.setAttribute('role', 'status');
+      const clip = el('span', 'var-condition-clip');
+      clip.append(copyBtn, pasteBtn, clipStatus);
+      win.body.append(intro, modeRow, rulesBox, affixRow, previewArea, ...Object.values(textOtherwise).map(free => free.row));
+      refs = {
+        title: win.title, intro, modeRow, modeBefore, modeSelect, modeAfter, rulesBox, clip, copyBtn, pasteBtn, clipStatus, currentLine, countLine,
+        removeBtn, unwrapBtn, cancelBtn, saveBtn,
+        affixRow, beforeLabel: beforeField.label, beforeInput: beforeField.input, afterLabel: afterField.label, afterInput: afterField.input, affixHint,
+        textOtherwise,
+      };
+
+      modeSelect.addEventListener('change', () => {
+        if (!state) return;
+        state.working.mode = modeSelect.value === 'any' ? 'any' : 'all';
+        redraw();
+      });
+      removeBtn.addEventListener('click', () => { if (state) { applyAttrs(Object.assign({ condition: null }, noOtherwise())); close(); } });
+      unwrapBtn.addEventListener('click', unwrapNode);
+      cancelBtn.addEventListener('click', close);
+      saveBtn.addEventListener('click', save);
+      copyBtn.addEventListener('click', copyCondition);
+      pasteBtn.addEventListener('click', pasteCondition);
+      // Toute saisie dans les lignes (colonne, opérateur, valeur, « au moins une ») relance l'aperçu, et dégrise - ou regrise - tout de suite la ligne « Sinon afficher » selon que
+      // les règles sont complètes.
+      const edited = () => { syncOtherwiseRow(); previewRun.schedule(); };
+      win.box.addEventListener('input', edited);
+      win.box.addEventListener('change', edited);
+    }
+
+    // « ligne d'Annuaire trouvée via Dossiers.Responsable · Modifier le lien » sous une règle portant sur une autre table déjà liée.
+    function updateLinkHint(hint, table) {
+      hint.replaceChildren();
+      const currentTableId = GristAPI.getCurrentTableId();
+      const rule = (table && table !== currentTableId) ? GristAPI.getLinkRule(table) : null;
+      hint.hidden = !rule;
+      if (!rule) return;
+      const text = rule.mode === 'singleton'
+        ? I18n.t('varCond.linkHint.singleton', { table })
+        : I18n.t('varCond.linkHint.match', { table, via: Variables.describeLinkVia(table, rule, currentTableId) });
+      const editBtn = button(null, I18n.t('varCond.linkHint.edit'));
+      editBtn.addEventListener('click', async () => {
+        if (await Variables.editLinkRule(table)) redraw();
+      });
+      hint.append(document.createTextNode(text + ' · '), editBtn);
+    }
+
+    function redraw() {
       if (!state) return;
-      state.working.mode = modeSelect.value === 'any' ? 'any' : 'all';
-      redraw();
-    });
-    removeBtn.addEventListener('click', () => { if (state) { applyCondition(null); close(); } });
-    unwrapBtn.addEventListener('click', unwrapNode);
-    cancelBtn.addEventListener('click', close);
-    saveBtn.addEventListener('click', save);
-    copyBtn.addEventListener('click', copyCondition);
-    pasteBtn.addEventListener('click', pasteCondition);
-    // Toute saisie dans les lignes (colonne, opérateur, valeur, « au moins une ») relance l'aperçu.
-    win.box.addEventListener('input', previewRun.schedule);
-    win.box.addEventListener('change', previewRun.schedule);
-  }
+      renderRules();
+      syncOtherwiseRow();
+      previewRun.schedule();
+    }
 
-  // « ligne d'Annuaire trouvée via Dossiers.Responsable · Modifier le lien » sous une règle portant sur une autre table déjà liée.
-  function updateLinkHint(hint, table) {
-    hint.replaceChildren();
-    const currentTableId = GristAPI.getCurrentTableId();
-    const rule = (table && table !== currentTableId) ? GristAPI.getLinkRule(table) : null;
-    hint.hidden = !rule;
-    if (!rule) return;
-    const text = rule.mode === 'singleton'
-      ? I18n.t('varCond.linkHint.singleton', { table })
-      : I18n.t('varCond.linkHint.match', { table, via: Variables.describeLinkVia(table, rule, currentTableId) });
-    const editBtn = button(null, I18n.t('varCond.linkHint.edit'));
-    editBtn.addEventListener('click', async () => {
-      if (await Variables.editLinkRule(table)) redraw();
-    });
-    hint.append(document.createTextNode(text + ' · '), editBtn);
-  }
-
-  function redraw() {
-    if (!state) return;
-    renderRules();
-    previewRun.schedule();
-  }
-
-  function renderRules() {
-    if (!state || !refs) return;
-    const { rulesBox, modeRow, modeSelect, clip } = refs;
-    const { rules, mode } = state.working;
-    modeRow.hidden = rules.length < 2;
-    modeSelect.value = mode;
-    // Le groupe Copier / Coller est retiré puis replacé à chaque tracé : un de ses boutons qui avait le focus (Coller au clavier) le perdrait sans
-    // ça.
-    const clipFocus = clip.contains(document.activeElement) ? document.activeElement : null;
-    rulesBox.replaceChildren();
-    rules.forEach((rule, index) => {
+    // La ligne d'une règle de la fenêtre : les options de la condition d'une variable (toutes les tables, « autre colonne », « Autres attributs »), avec sous la
+    // règle le lien de la table de sa colonne, et celui de l'autre colonne quand la règle en compare une (bouton « autre colonne »). `row` : ce que
+    // ConditionFields.renderItems donne (index, mode, onMode, onRemove, inGroup).
+    function buildRuleRow(rule, row) {
       const linkHint = el('span', 'var-condition-link-hint');
       linkHint.hidden = true;
-      rulesBox.appendChild(ConditionFields.buildRuleRow(rule, index, {
-        mode,
+      const valueLinkHint = el('span', 'var-condition-link-hint');
+      valueLinkHint.hidden = true;
+      return ConditionFields.buildRuleRow(rule, row.index, Object.assign({}, row, {
         options: {
           allTables: true,
-          onColumnChosen: ref => ConditionFields.ensureTableLinked(ref, redraw),
+          compareColumn: true,
+          attributesWindow: true,
+          onColumnChosen: ref => ConditionFields.ensureTableLinked(ref, redraw, state ? VariableLoop.loopTablesAt(state.editor.state, state.pos) : null),
           onColumnResolved: table => updateLinkHint(linkHint, table),
+          onValueColumnResolved: table => updateLinkHint(valueLinkHint, table),
         },
-        onRemove: () => {
+        extra: [linkHint, valueLinkHint],
+      }));
+    }
+
+    function renderRules() {
+      if (!state || !refs) return;
+      const { rulesBox, modeRow, modeSelect, clip } = refs;
+      const { rules, mode } = state.working;
+      // Les règles et les groupes comptent chacun pour un élément : « toutes / au moins une » ne dit rien d'un seul.
+      modeRow.hidden = rules.length < 2;
+      modeSelect.value = mode;
+      // Le groupe Copier / Coller est retiré puis replacé à chaque tracé : un de ses boutons qui avait le focus (Coller au clavier) le perdrait sans
+      // ça.
+      const clipFocus = clip.contains(document.activeElement) ? document.activeElement : null;
+      rulesBox.replaceChildren();
+      ConditionFields.renderItems(rulesBox, {
+        items: rules,
+        mode,
+        // « Et » / « Ou » devant une ligne est un bouton : un clic relie toutes les lignes du niveau par l'autre mot ; pour la condition entière, la liste
+        // « toutes / au moins une » du haut suit.
+        setMode: next => { if (state) state.working.mode = next; },
+        buildRow: buildRuleRow,
+        removeItem: index => {
           rules.splice(index, 1);
           if (!rules.length) rules.push(ConditionFields.emptyRule());
           redraw();
         },
-        extra: [linkHint],
-      }));
-    });
-    // Copier / Coller portent sur l'ensemble des règles : sur la même ligne que « + Ajouter », à droite, sans hauteur en plus dans un panneau bas.
-    const foot = el('div', 'var-condition-foot');
-    foot.append(ConditionFields.buildAddRuleButton(rulesBox, rules, redraw), clip);
-    rulesBox.appendChild(foot);
-    if (clipFocus) clipFocus.focus();
-    syncClipboardButtons();
+        redraw,
+      });
+      // Copier / Coller portent sur l'ensemble des règles : sur la même ligne que « + Ajouter une condition » et « + Groupe », à droite, sans hauteur en plus dans un
+      // panneau bas.
+      const foot = el('div', 'var-condition-foot');
+      foot.append(ConditionFields.buildAddRuleButton(rulesBox, rules, redraw), ConditionFields.buildAddGroupButton(rulesBox, rules, () => state.working.mode, redraw), clip);
+      rulesBox.appendChild(foot);
+      if (clipFocus) clipFocus.focus();
+      syncClipboardButtons();
+    }
+
+    // === Copier / Coller === Grisés (aria-disabled plutôt que disabled, pour que l'info-bulle qui explique pourquoi reste visible) : Copier sans règle
+    // complète à copier, Coller tant que rien n'a été copié. Le clic revérifie l'état réel : la colonne d'une règle n'est adoptée qu'après le `change`
+    // du champ.
+    function setClipButton(btn, enabled, title) {
+      btn.classList.toggle('is-disabled', !enabled);
+      btn.setAttribute('aria-disabled', enabled ? 'false' : 'true');
+      btn.title = title;
+    }
+    function syncClipboardButtons() {
+      if (!state || !refs) return;
+      const canCopy = !!ConditionRules.plainCondition(state.working);
+      setClipButton(refs.copyBtn, canCopy, I18n.t(canCopy ? 'varCond.clip.copyTitle' : 'varCond.clip.copyEmpty'));
+      setClipButton(refs.pasteBtn, !!clipboard, clipboard ? I18n.t('varCond.clip.pasteTitle', { summary: conditionSummary(clipboard) }) : I18n.t('varCond.clip.pasteEmpty'));
+    }
+    // « Copiée » pendant un instant : seul retour visible d'une copie, qui ne change rien d'autre à l'écran.
+    function resetCopyLabel() {
+      clearTimeout(copiedFlashTimer);
+      if (!refs) return;
+      refs.copyBtn.textContent = I18n.t('varCond.clip.copy');
+      refs.copyBtn.classList.remove('is-done');
+    }
+    function copyCondition() {
+      const condition = state && ConditionRules.plainCondition(state.working);
+      if (!condition) return;
+      clipboard = condition;
+      syncClipboardButtons();
+      resetCopyLabel();
+      refs.copyBtn.textContent = I18n.t('varCond.clip.copied');
+      refs.copyBtn.classList.add('is-done');
+      refs.clipStatus.textContent = I18n.t('varCond.clip.copiedStatus');
+      copiedFlashTimer = setTimeout(resetCopyLabel, 1600);
+    }
+    // Remplace les règles ET la combinaison (toutes / au moins une) de la fenêtre ; Annuler abandonne.
+    function pasteCondition() {
+      if (!state || !clipboard) return;
+      state.working = ConditionRules.plainCondition(clipboard);
+      redraw();
+      refs.clipStatus.textContent = I18n.t(texts().pasted);
+    }
+
+    // === Sinon afficher === L'état de la ligne : son champ est grisé tant qu'aucune règle n'est complète (jamais retiré : l'info-bulle de la ligne dit pourquoi, sur l'étiquette et
+    // sur le champ) ; le texte déjà tapé y reste à l'écran, et part avec la condition à « Enregistrer ». Dans la fenêtre du second niveau - celle d'une variable d'un sinon - il est
+    // toujours grisé : un sinon ne se met pas dans un sinon.
+    function syncOtherwiseRow() {
+      const free = textField();
+      if (!free) return;
+      const ready = !!ConditionRules.plainCondition(state.working);
+      const title = I18n.t(level ? 'varCond.otherwiseNested' : (ready ? free.kind.title : 'varCond.otherwiseTextNeedsRule'));
+      free.input.disabled = !!level || !ready;
+      free.label.title = title;
+      free.field.title = title;
+    }
+    // Ce que « Retirer la condition » et une condition sans règle complète font au sinon : il s'en va avec elle (un sinon n'a de sens que pour une condition).
+    const noOtherwise = () => (showsValue() ? { otherwise: null, otherwiseText: null } : (textField() ? { otherwise: null } : {}));
+
+    // === Aperçu === Même évaluation que le mode Lecture (ConditionRules.conditionHolds) : d'abord la ligne sélectionnée dans Grist, puis toutes les
+    // lignes de la table de la page, chaque table n'étant lue qu'une fois (LoopRules.createContext : sinon chaque ligne relirait chaque table liée).
+    // `shown` : la bulle à lire ({ table, column, format, before, after }), celle que la fenêtre règle (`shownMain`).
+    async function displayValue(record, tableId, shown) {
+      const { table, column, format } = shown;
+      if (GristAPI.getColumnType(table, column) === 'Attachments') return I18n.t('varCond.debug.imageValue');
+      const value = await Variables.resolveVariable(table, column, tableId, record, format);
+      // Avec son texte « Avant » / « Après » comme la Lecture l'écrira ; une valeur vide n'en reçoit pas.
+      return value === '' ? I18n.t('varCond.debug.emptyValue') : VariableFormat.withAffixes(value, VariableFormat.affixes(shown.before, shown.after));
+    }
+    // La bulle telle que la fenêtre la règle : sa variable, son format et son texte « Avant » / « Après » du moment (pas ceux du nœud, qui ne bougent
+    // qu'à « Enregistrer »).
+    function shownMain() {
+      const { table, column, format } = state.node.attrs;
+      const around = draftAffixes();
+      return { table, column, format, before: around && around.before, after: around && around.after };
+    }
+    // Repère lisible de la première ligne trouvée : le texte de la première colonne de la table, s'il y en a un (un identifiant de ligne seul ne se
+    // voit pas dans Grist).
+    function rowLabel(row, tableId) {
+      const firstCol = GristAPI.getColumns(tableId)[0];
+      const value = firstCol ? row[firstCol] : null;
+      return typeof value !== 'string' || !value.trim() ? '' : ' (' + shorten(value.trim(), 40) + ')';
+    }
+    // Ce que le sinon écrit pour la ligne `record` : ses lignes, séparées par « / ». Ses variables sont lues comme le document les lira
+    // (ReaderMode.preview : formats, « Avant » / « Après », condition). Un sinon sans variable ni puce n'a rien à lire : son texte, tout de suite.
+    async function typedOtherwiseText(typed, tableId, record) {
+      const lines = textField().kind.multiline ? ConditionalText.otherwiseItems(typed) : [ConditionalText.otherwiseValueItems(typed)];
+      if (lines.every(items => items.every(FieldCodec.isText))) return lines.map(FieldCodec.serializePlain).join(' / ');
+      const resolved = Dom.inertTemplate(await ReaderMode.preview(lines.map(items => '<p>' + FieldCodec.itemsHtml(items) + '</p>').join(''), tableId, record)).content;
+      return Array.from(resolved.children).map(paragraph => paragraph.textContent).join(' / ');
+    }
+    // Première ligne de l'aperçu : la condition pour la ligne sélectionnée dans Grist - ou, sans condition mais avec du texte « Avant » / « Après », ce que
+    // la variable écrit, toujours. Rend faux quand la fenêtre a changé pendant le calcul.
+    async function previewSelectedRow({ condition, tableId, t, stale, currentLine }, record) {
+      const holds = await ConditionRules.conditionHolds(condition, tableId, record);
+      // Condition non remplie : ce que le sinon réglé dans la fenêtre écrit à la place, quand il y en a un - le texte et les variables d'une bulle ou d'une valeur, les
+      // paragraphes d'un bloc (ses lignes, séparées par « / »).
+      const typed = !holds && condition ? draftOtherwiseText() : null;
+      let shown = '';
+      if (showsValue() && holds) shown = await displayValue(record, tableId, shownMain());
+      else if (typed) shown = shorten(await typedOtherwiseText(typed, tableId, record), 80);
+      if (stale()) return false;
+      const key = !condition ? 'varCond.debug.currentShown' : (holds ? t.met : (typed ? t.notMetOtherwise : t.notMet));
+      setLine(currentLine, I18n.t(key, { id: record.id, value: shown }), holds || !!typed);
+      return true;
+    }
+    // Combien de lignes remplissent la condition, et la première. Rend null quand la fenêtre a changé pendant le parcours.
+    async function countHolding(condition, tableId, rows, fetchRows, stale) {
+      let count = 0;
+      let first = null;
+      for (let i = 0; i < rows.length; i++) {
+        if (await ConditionRules.conditionHolds(condition, tableId, rows[i], { fetchRows })) {
+          count += 1;
+          if (!first) first = rows[i];
+        }
+        // Rend la main au navigateur de temps en temps sur une grande table, et abandonne si la condition a changé entre-temps.
+        if (i % 250 === 249) { await new Promise(r => setTimeout(r, 0)); if (stale()) return null; }
+      }
+      return { count, first };
+    }
+    // Seconde ligne de l'aperçu : toutes les lignes de la table de la page, leur nombre et ce que donne la première.
+    async function previewAllRows({ condition, tableId, t, stale, countLine }) {
+      const { fetchRows } = LoopRules.createContext();
+      const rows = await fetchRows(tableId);
+      if (stale()) return;
+      if (!rows.length) { setLine(countLine, I18n.t('linkConfig.previewTableEmpty', { table: tableId }), false); return; }
+      const found = await countHolding(condition, tableId, rows, fetchRows, stale);
+      if (!found || stale()) return;
+      const { count, first } = found;
+      // Avec un sinon réglé, les lignes qui ne remplissent pas la condition ne sont plus masquées : la phrase dit qu'elles affichent le sinon.
+      const withOtherwise = !!draftOtherwiseText();
+      if (!count) { setLine(countLine, I18n.t(withOtherwise ? 'varCond.debug.noneOtherwise' : 'varCond.debug.none', { table: tableId, total: rows.length }), false); return; }
+      const firstValue = showsValue() ? await displayValue(first, tableId, shownMain()) : '';
+      if (stale()) return;
+      const others = rows.length - count;
+      const countKey = withOtherwise && others > 0 ? 'varCond.debug.countOtherwise' : 'varCond.debug.count';
+      setLine(countLine, I18n.t(countKey, { table: tableId, count, total: rows.length, others }) + ' '
+        + I18n.t(t.first, { id: first.id, label: rowLabel(first, tableId), value: firstValue }), false);
+    }
+    async function updatePreview() {
+      if (!state || !refs) return;
+      syncClipboardButtons();
+      syncOtherwiseRow();
+      const outdated = previewRun.begin();
+      const stale = () => outdated() || !state;
+      const { currentLine, countLine } = refs;
+      const condition = ConditionRules.normalizeCondition(state.working);
+      const tableId = GristAPI.getCurrentTableId();
+      const record = GristAPI.getCurrentRecord();
+      const view = { condition, tableId, t: texts(), stale, currentLine, countLine };
+      setLine(countLine, '', false);
+      // Sans condition mais avec du texte « Avant » / « Après » : la variable s'affiche toujours, il n'y a pas de lignes à compter.
+      const alwaysShown = !condition && !!draftAffixes();
+      if (!condition && !alwaysShown) { setLine(currentLine, I18n.t('varCond.debug.chooseColumn'), false); return; }
+      if (!record || !tableId) { setLine(currentLine, I18n.t('varCond.debug.noRecord'), false); return; }
+      setLine(currentLine, I18n.t('varCond.debug.computing'), false);
+      try {
+        if ((await previewSelectedRow(view, record)) && !alwaysShown) await previewAllRows(view);
+      } catch (e) {
+        console.warn('[VariableCondition] aperçu indisponible', e);
+        if (!stale()) setLine(currentLine, I18n.t('linkConfig.previewUnavailable'), false);
+      }
+    }
+
+    // Réécrit des attributs du nœud d'origine (`condition`, `otherwise` - et `otherwiseText` pour une bulle -, et pour une bulle `before` et `after`), retrouvé à sa position
+    // capturée au clic.
+    // Ce que `patch` ne nomme pas reste tel quel.
+    function applyAttrs(patch) {
+      const { editor, pos } = state;
+      const node = VariableModal.nodeAtOrigin(state, texts().saveLost, 'VariableCondition');
+      if (!node) return;
+      const attrs = Object.assign({}, node.attrs, patch);
+      // Une valeur garde le curseur là où il était, dans son texte : une NodeSelection posée sur elle ferait remplacer la valeur entière par la
+      // prochaine frappe.
+      if (node.type.name === 'conditionalValue') editor.view.dispatch(editor.state.tr.setNodeMarkup(pos, undefined, attrs));
+      else EditorCore.patchNodeAndReselect(editor, pos, attrs);
+    }
+    function save() {
+      if (!state) return;
+      const condition = ConditionRules.plainCondition(state.working);
+      const patch = { condition };
+      if (showsValue()) {
+        const around = draftAffixes();
+        patch.before = around && around.before;
+        patch.after = around && around.after;
+      }
+      // Un sinon n'a de sens que pour une condition : sans règle complète, il s'en va avec elle. La fenêtre du second niveau ne règle pas le sien (sa ligne est grisée) : il reste
+      // tel qu'il est tant que la condition reste.
+      if (!condition) Object.assign(patch, noOtherwise());
+      else if (textField() && !level) {
+        const typed = draftOtherwiseText();
+        // Une bulle garde l'écriture d'avant tant que son sinon dit la même chose (VariableOtherwise.storedOf).
+        Object.assign(patch, showsValue() ? VariableOtherwise.storedOf(typed, state.node.attrs.format) : { otherwise: typed });
+      }
+      applyAttrs(patch);
+      close();
+    }
+    // « Défaire le bloc » / « Défaire la valeur » : le cadre et la condition disparaissent, le texte reste (js/conditional-text.js:unwrap,
+    // js/conditional-value.js:unwrap). Le brouillon n'est pas enregistré : le nœud n'existe plus. S'il n'est plus à sa position d'origine, la fenêtre
+    // le dit.
+    function unwrapNode() {
+      const unwrap = state && texts().unwrap;
+      if (!unwrap) return;
+      const { editor, pos } = state;
+      const done = state.node.type.name === 'conditionalValue' ? ConditionalValue.unwrap(editor, pos) : ConditionalText.unwrap(editor, pos);
+      if (!done) alert(I18n.t(unwrap.lost));
+      close();
+    }
+
+    function close() {
+      if (!win) return;
+      // La barre d'une variable choisie dans un champ du sinon part avec la fenêtre.
+      if (refs) Object.values(refs.textOtherwise).forEach(free => FieldEditor.hidePanels(free.input));
+      VariableModal.closeWindow(win, state && state.editor, previewRun, () => { state = null; clearTimeout(copiedFlashTimer); });
+    }
+
+    // `pos` : position de la bulle, du bloc, de la valeur ou de la case dans le document, capturée au clic sur l'icône (la sélection de l'éditeur est
+    // une NodeSelection sur elle).
+    function openAt(editor, pos) {
+      const node = editor && editor.state.doc.nodeAt(pos);
+      if (!node || !TEXTS[node.type.name]) return;
+      ensureModal();
+      mountTextFields();
+      const existing = ConditionRules.plainCondition(node.attrs.condition);
+      state = { editor, pos, node, hadCondition: !!existing, working: existing || { mode: 'all', rules: [ConditionFields.emptyRule()] } };
+      const t = texts();
+      const r = refs;
+      r.title.textContent = I18n.t(t.title);
+      if (showsValue()) r.intro.replaceChildren(el('span', 'var-badge', VariableModal.badgeText(node)), document.createTextNode(' ' + I18n.t(t.intro)));
+      else r.intro.textContent = I18n.t(t.intro);
+      r.modeBefore.textContent = I18n.t(t.modeBefore);
+      r.modeAfter.textContent = I18n.t('varCond.modeAfter');
+      r.modeSelect.setAttribute('aria-label', I18n.t('varCond.modeAria'));
+      r.modeSelect.replaceChildren(option('all', I18n.t('varCond.modeAll')), option('any', I18n.t('varCond.modeAny')));
+      r.removeBtn.textContent = I18n.t('varCond.remove');
+      r.removeBtn.hidden = !state.hadCondition;
+      r.unwrapBtn.hidden = !t.unwrap;
+      if (t.unwrap) {
+        r.unwrapBtn.textContent = I18n.t(t.unwrap.label);
+        r.unwrapBtn.title = I18n.t(t.unwrap.title);
+      }
+      r.cancelBtn.textContent = I18n.t('common.cancel');
+      r.saveBtn.textContent = I18n.t('common.save');
+      r.affixRow.hidden = !showsValue();
+      for (const [type, free] of Object.entries(r.textOtherwise)) free.row.hidden = type !== node.type.name;
+      r.beforeLabel.textContent = I18n.t('varCond.affixBefore');
+      r.afterLabel.textContent = I18n.t('varCond.affixAfter');
+      r.beforeInput.title = I18n.t('varCond.affixBeforeTitle');
+      r.afterInput.title = I18n.t('varCond.affixAfterTitle');
+      r.affixHint.textContent = I18n.t('varCond.affixHint');
+      r.beforeInput.value = VariableFormat.affix(node.attrs.before) || '';
+      r.afterInput.value = VariableFormat.affix(node.attrs.after) || '';
+      const free = textField();
+      if (free) {
+        free.label.textContent = I18n.t('varCond.otherwiseLabel');
+        free.input.placeholder = I18n.t(free.kind.placeholder);
+        // Une bulle d'avant les variables montre son sinon comme une bulle du champ (VariableOtherwise.fieldOf).
+        free.input.value = (showsValue() ? VariableOtherwise.fieldOf(node.attrs) : ConditionalText.otherwiseText(node.attrs.otherwise)) || '';
+      }
+      resetCopyLabel();
+      r.pasteBtn.textContent = I18n.t('varCond.clip.paste');
+      r.clipStatus.textContent = '';
+      renderRules();
+      syncOtherwiseRow();
+      // La barre flottante de la bulle reste masquée tant que la fenêtre est ouverte ; elle est sous le voile de toute façon (--z-floating-toolbar,
+      // css/style.css).
+      EditorCore.hideFloatingContextToolbars();
+      win.show(() => r.rulesBox.querySelector('select.macro-rule-column'));
+      updatePreview();
+    }
+
+    // Vrai quand `editor` est celui d'un champ « Sinon afficher » de cette fenêtre : la condition d'une variable qu'on y tape s'ouvre dans la fenêtre d'après.
+    const owns = editor => !!refs && Object.values(refs.textOtherwise).some(free => free.mounted && FieldEditor.of(free.input) === editor);
+
+    return { openAt, isOpen, owns, syncClipboard: syncClipboardButtons };
   }
 
-  // === Copier / Coller === Grisés (aria-disabled plutôt que disabled, pour que l'info-bulle qui explique pourquoi reste visible) : Copier sans règle
-  // complète à copier, Coller tant que rien n'a été copié. Le clic revérifie l'état réel : la colonne d'une règle n'est adoptée qu'après le `change`
-  // du champ.
-  function setClipButton(btn, enabled, title) {
-    btn.classList.toggle('is-disabled', !enabled);
-    btn.setAttribute('aria-disabled', enabled ? 'false' : 'true');
-    btn.title = title;
+  const windows = [];
+  const windowAt = level => windows[level] || (windows[level] = createWindow(level));
+
+  // `pos` : position de la bulle, du bloc, de la valeur ou de la case dans le document, capturée au clic sur l'icône (la sélection de l'éditeur est une NodeSelection sur elle).
+  // Un nœud qui est dans le champ « Sinon afficher » d'une fenêtre s'ouvre dans la fenêtre d'après, au-dessus.
+  function openAt(editor, pos) {
+    windowAt(windows.findIndex(w => w && w.owns(editor)) + 1).openAt(editor, pos);
   }
-  function syncClipboardButtons() {
-    if (!state || !refs) return;
-    const canCopy = !!ConditionRules.plainCondition(state.working);
-    setClipButton(refs.copyBtn, canCopy, I18n.t(canCopy ? 'varCond.clip.copyTitle' : 'varCond.clip.copyEmpty'));
-    setClipButton(refs.pasteBtn, !!clipboard, clipboard ? I18n.t('varCond.clip.pasteTitle', { summary: conditionSummary(clipboard) }) : I18n.t('varCond.clip.pasteEmpty'));
-  }
-  // « Copiée » pendant un instant : seul retour visible d'une copie, qui ne change rien d'autre à l'écran.
-  function resetCopyLabel() {
-    clearTimeout(copiedFlashTimer);
-    if (!refs) return;
-    refs.copyBtn.textContent = I18n.t('varCond.clip.copy');
-    refs.copyBtn.classList.remove('is-done');
-  }
-  function copyCondition() {
-    const condition = state && ConditionRules.plainCondition(state.working);
-    if (!condition) return;
-    clipboard = condition;
-    syncClipboardButtons();
-    resetCopyLabel();
-    refs.copyBtn.textContent = I18n.t('varCond.clip.copied');
-    refs.copyBtn.classList.add('is-done');
-    refs.clipStatus.textContent = I18n.t('varCond.clip.copiedStatus');
-    copiedFlashTimer = setTimeout(resetCopyLabel, 1600);
-  }
-  // Remplace les règles ET la combinaison (toutes / au moins une) de la fenêtre ; Annuler abandonne.
-  function pasteCondition() {
-    if (!state || !clipboard) return;
-    state.working = ConditionRules.plainCondition(clipboard);
-    redraw();
-    refs.clipStatus.textContent = I18n.t(texts().pasted);
-  }
+  // Une fenêtre de condition est ouverte ; `fromLevel` 1 : une fenêtre ouverte par-dessus une autre (celle d'une variable du « Sinon afficher » d'une fenêtre).
+  const isOpen = fromLevel => windows.some((w, level) => w && level >= (fromLevel || 0) && w.isOpen());
   function clearClipboard() {
     clipboard = null;
-    syncClipboardButtons();
+    windows.forEach(w => w && w.syncClipboard());
   }
 
-  // === Aperçu === Même évaluation que le mode Lecture (ConditionRules.conditionHolds) : d'abord la ligne sélectionnée dans Grist, puis toutes les
-  // lignes de la table de la page, chaque table n'étant lue qu'une fois (LoopRules.createContext : sinon chaque ligne relirait chaque table liée).
-  async function displayValue(record, tableId) {
-    const { table, column, format } = state.node.attrs;
-    if (GristAPI.getColumnType(table, column) === 'Attachments') return I18n.t('varCond.debug.imageValue');
-    const value = await Variables.resolveVariable(table, column, tableId, record, format);
-    return value === '' ? I18n.t('varCond.debug.emptyValue') : value;
-  }
-  // Repère lisible de la première ligne trouvée : le texte de la première colonne de la table, s'il y en a un (un identifiant de ligne seul ne se
-  // voit pas dans Grist).
-  function rowLabel(row, tableId) {
-    const firstCol = GristAPI.getColumns(tableId)[0];
-    const value = firstCol ? row[firstCol] : null;
-    return typeof value !== 'string' || !value.trim() ? '' : ' (' + shorten(value.trim(), 40) + ')';
-  }
-  // Première ligne de l'aperçu : la condition pour la ligne sélectionnée dans Grist. Rend faux quand la fenêtre a changé pendant le calcul.
-  async function previewSelectedRow({ condition, tableId, t, stale, currentLine }, record) {
-    const holds = await ConditionRules.conditionHolds(condition, tableId, record);
-    const shown = holds && showsValue() ? await displayValue(record, tableId) : '';
-    if (stale()) return false;
-    setLine(currentLine, I18n.t(holds ? t.met : t.notMet, { id: record.id, value: shown }), holds);
-    return true;
-  }
-  // Combien de lignes remplissent la condition, et la première. Rend null quand la fenêtre a changé pendant le parcours.
-  async function countHolding(condition, tableId, rows, fetchRows, stale) {
-    let count = 0;
-    let first = null;
-    for (let i = 0; i < rows.length; i++) {
-      if (await ConditionRules.conditionHolds(condition, tableId, rows[i], { fetchRows })) {
-        count += 1;
-        if (!first) first = rows[i];
-      }
-      // Rend la main au navigateur de temps en temps sur une grande table, et abandonne si la condition a changé entre-temps.
-      if (i % 250 === 249) { await new Promise(r => setTimeout(r, 0)); if (stale()) return null; }
-    }
-    return { count, first };
-  }
-  // Seconde ligne de l'aperçu : toutes les lignes de la table de la page, leur nombre et ce que donne la première.
-  async function previewAllRows({ condition, tableId, t, stale, countLine }) {
-    const { fetchRows } = LoopRules.createContext();
-    const rows = await fetchRows(tableId);
-    if (stale()) return;
-    if (!rows.length) { setLine(countLine, I18n.t('linkConfig.previewTableEmpty', { table: tableId }), false); return; }
-    const found = await countHolding(condition, tableId, rows, fetchRows, stale);
-    if (!found || stale()) return;
-    const { count, first } = found;
-    if (!count) { setLine(countLine, I18n.t('varCond.debug.none', { table: tableId, total: rows.length }), false); return; }
-    const firstValue = showsValue() ? await displayValue(first, tableId) : '';
-    if (stale()) return;
-    setLine(countLine, I18n.t('varCond.debug.count', { table: tableId, count, total: rows.length }) + ' '
-      + I18n.t(t.first, { id: first.id, label: rowLabel(first, tableId), value: firstValue }), false);
-  }
-  async function updatePreview() {
-    if (!state || !refs) return;
-    syncClipboardButtons();
-    const outdated = previewRun.begin();
-    const stale = () => outdated() || !state;
-    const { currentLine, countLine } = refs;
-    const condition = ConditionRules.normalizeCondition(state.working);
-    const tableId = GristAPI.getCurrentTableId();
-    const record = GristAPI.getCurrentRecord();
-    const view = { condition, tableId, t: texts(), stale, currentLine, countLine };
-    setLine(countLine, '', false);
-    if (!condition) { setLine(currentLine, I18n.t('varCond.debug.chooseColumn'), false); return; }
-    if (!record || !tableId) { setLine(currentLine, I18n.t('varCond.debug.noRecord'), false); return; }
-    setLine(currentLine, I18n.t('varCond.debug.computing'), false);
-    try {
-      if (await previewSelectedRow(view, record)) await previewAllRows(view);
-    } catch (e) {
-      console.warn('[VariableCondition] aperçu indisponible', e);
-      if (!stale()) setLine(currentLine, I18n.t('linkConfig.previewUnavailable'), false);
-    }
-  }
-
-  // Réécrit l'attribut `condition` du nœud d'origine, retrouvé à sa position capturée au clic.
-  function applyCondition(condition) {
-    const { editor, pos } = state;
-    const node = VariableModal.nodeAtOrigin(state, texts().saveLost, 'VariableCondition');
-    if (!node) return;
-    const attrs = Object.assign({}, node.attrs, { condition });
-    // Une valeur garde le curseur là où il était, dans son texte : une NodeSelection posée sur elle ferait remplacer la valeur entière par la
-    // prochaine frappe.
-    if (node.type.name === 'conditionalValue') editor.view.dispatch(editor.state.tr.setNodeMarkup(pos, undefined, attrs));
-    else EditorCore.patchNodeAndReselect(editor, pos, attrs);
-  }
-  function save() {
-    if (!state) return;
-    applyCondition(ConditionRules.plainCondition(state.working));
-    close();
-  }
-  // « Défaire le bloc » / « Défaire la valeur » : le cadre et la condition disparaissent, le texte reste (js/conditional-text.js:unwrap,
-  // js/conditional-value.js:unwrap). Le brouillon n'est pas enregistré : le nœud n'existe plus. S'il n'est plus à sa position d'origine, la fenêtre
-  // le dit.
-  function unwrapNode() {
-    const unwrap = state && texts().unwrap;
-    if (!unwrap) return;
-    const { editor, pos } = state;
-    const done = state.node.type.name === 'conditionalValue' ? ConditionalValue.unwrap(editor, pos) : ConditionalText.unwrap(editor, pos);
-    if (!done) alert(I18n.t(unwrap.lost));
-    close();
-  }
-
-  function close() {
-    if (!win) return;
-    VariableModal.closeWindow(win, state && state.editor, previewRun, () => { state = null; clearTimeout(copiedFlashTimer); });
-  }
-
-  // `pos` : position de la bulle, du bloc, de la valeur ou de la case dans le document, capturée au clic sur l'icône (la sélection de l'éditeur est
-  // une NodeSelection sur elle).
-  function open(editor, pos) {
-    const node = editor && editor.state.doc.nodeAt(pos);
-    if (!node || !TEXTS[node.type.name]) return;
-    ensureModal();
-    const existing = ConditionRules.plainCondition(node.attrs.condition);
-    state = { editor, pos, node, hadCondition: !!existing, working: existing || { mode: 'all', rules: [ConditionFields.emptyRule()] } };
-    const t = texts();
-    const r = refs;
-    r.title.textContent = I18n.t(t.title);
-    if (showsValue()) r.intro.replaceChildren(el('span', 'var-badge', VariableModal.badgeText(node)), document.createTextNode(' ' + I18n.t(t.intro)));
-    else r.intro.textContent = I18n.t(t.intro);
-    r.modeBefore.textContent = I18n.t(t.modeBefore);
-    r.modeAfter.textContent = I18n.t('varCond.modeAfter');
-    r.modeSelect.setAttribute('aria-label', I18n.t('varCond.modeAria'));
-    r.modeSelect.replaceChildren(option('all', I18n.t('varCond.modeAll')), option('any', I18n.t('varCond.modeAny')));
-    r.removeBtn.textContent = I18n.t('varCond.remove');
-    r.removeBtn.hidden = !state.hadCondition;
-    r.unwrapBtn.hidden = !t.unwrap;
-    if (t.unwrap) {
-      r.unwrapBtn.textContent = I18n.t(t.unwrap.label);
-      r.unwrapBtn.title = I18n.t(t.unwrap.title);
-    }
-    r.cancelBtn.textContent = I18n.t('common.cancel');
-    r.saveBtn.textContent = I18n.t('common.save');
-    resetCopyLabel();
-    r.pasteBtn.textContent = I18n.t('varCond.clip.paste');
-    r.clipStatus.textContent = '';
-    renderRules();
-    // La barre flottante de la bulle reste masquée tant que la fenêtre est ouverte ; elle est sous le voile de toute façon (--z-floating-toolbar,
-    // css/style.css).
-    EditorCore.hideFloatingContextToolbars();
-    win.show(() => r.rulesBox.querySelector('select.macro-rule-column'));
-    updatePreview();
-  }
-
-  return { open, isOpen, clearClipboard, describe: conditionSummary };
+  return { openAt, isOpen, clearClipboard, describe: conditionSummary };
 })();

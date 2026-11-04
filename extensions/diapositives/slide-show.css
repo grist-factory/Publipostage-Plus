@@ -1,0 +1,69 @@
+/* « Présenter » (extensions/diapositives/slide-show.js) : le bouton ▶ à gauche de la pastille du zoom, son menu ▾, et le diaporama.
+   - Le bouton a l'allure de la pastille (css/page-zoom.css : même hauteur, même cadre, mêmes jetons) ; le script pose le groupe ▾ ▶ sur sa ligne, à sa gauche (`right` et `bottom` en
+     ligne), au même niveau --z-page-zoom, le ▶ contre la pastille. Grisés, jamais retirés, quand l'extension est éteinte.
+   - Le diaporama couvre tout (plein écran, sinon tout le panneau, au niveau des info-bulles, --z-tip), fond noir ; la page est dessinée dans l'arbre ombre du rendu
+     (js/print-export.js:stage), que `.pp-slide-show-host` sort de sa place hors de l'écran. La barre du bas et les messages reprennent les jetons de css/style.css (texte ≥ 4,5:1,
+     clair et sombre). Ce fichier ne se charge qu'avec l'extension. */
+.pp-slide-show-split { position: fixed; z-index: var(--z-page-zoom); display: inline-flex; align-items: center; gap: 2px; }
+.pp-slide-show-split[hidden] { display: none; }
+.pp-slide-show-open, .pp-slide-show-more { display: inline-flex; align-items: center; justify-content: center; box-sizing: border-box; height: 24px; margin: 0; padding: 0; border: 1px solid var(--border-strong); border-radius: var(--radius-md, 8px); background: var(--surface); color: var(--text); box-shadow: var(--shadow-card); cursor: pointer; }
+.pp-slide-show-open { width: 30px; }
+.pp-slide-show-more { width: 20px; }
+.pp-slide-show-open[hidden] { display: none; }
+.pp-slide-show-open svg { width: 16px; height: 16px; }
+.pp-slide-show-more svg { width: 14px; height: 14px; }
+.pp-slide-show-open:hover, .pp-slide-show-more:hover, .pp-slide-show-more[aria-expanded="true"] { background: var(--surface-sunken); }
+.pp-slide-show-open:focus-visible, .pp-slide-show-more:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.pp-slide-show-open[aria-disabled="true"], .pp-slide-show-more[aria-disabled="true"] { opacity: .35; cursor: default; }
+.pp-slide-show-open[aria-disabled="true"]:hover, .pp-slide-show-more[aria-disabled="true"]:hover { background: var(--surface); }
+
+/* Le menu de ▾ : deux départs et l'interrupteur « Plein écran » (coché d'un ✓, grisé avec sa raison dessous quand le cadre ne le permet pas). */
+.pp-show-menu { display: none; position: absolute; top: 0; left: 0; z-index: var(--z-menu); flex-direction: column; min-width: 200px; padding: 4px; border: 1px solid var(--border); border-radius: var(--radius-md, 8px); background: var(--surface); box-shadow: 0 4px 16px rgba(20, 28, 46, .18); font-family: var(--font-ui); }
+.pp-show-menu.visible { display: flex; }
+.pp-show-menu button { display: block; margin: 0; padding: 6px 9px; border: none; border-radius: var(--radius-xs, 5px); background: transparent; color: var(--text); font: inherit; font-size: 12.5px; text-align: left; white-space: nowrap; cursor: pointer; }
+.pp-show-menu button:hover { background: var(--surface-sunken); }
+.pp-show-menu button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.pp-show-menu button[aria-disabled="true"] { cursor: not-allowed; }
+.pp-show-menu button[aria-disabled="true"] .pp-show-menu-name { color: var(--text-muted); }
+.pp-show-menu button[aria-disabled="true"]:hover { background: transparent; }
+.pp-show-menu-sep { height: 1px; margin: 4px 2px; background: var(--border); }
+.pp-show-menu button[role="menuitemcheckbox"] { position: relative; padding-left: 26px; }
+.pp-show-menu button[role="menuitemcheckbox"][aria-checked="true"]::before { content: ""; position: absolute; left: 10px; top: 50%; width: 8px; height: 4px; border-left: 2px solid currentColor; border-bottom: 2px solid currentColor; transform: translateY(-70%) rotate(-45deg); }
+.pp-show-menu-name { display: block; }
+.pp-show-menu-note { display: block; max-width: 240px; margin-top: 2px; color: var(--text-muted); font-size: 11.5px; white-space: normal; overflow-wrap: anywhere; }
+.pp-show-menu-note[hidden] { display: none; }
+@media print { .pp-slide-show-split, .pp-show-menu, .pp-slide-show { display: none; } }
+
+.pp-slide-show { position: fixed; inset: 0; z-index: var(--z-tip); overflow: hidden; background: #000; outline: none; cursor: none; font-family: var(--font-ui); font-size: 13px; }
+.pp-slide-show.pp-slide-show-awake { cursor: default; }
+.pp-slide-show:fullscreen { width: 100%; height: 100%; }
+/* Le rendu de la Lecture (`.pp-print-host`, posé hors de l'écran par css/print.css pour l'impression) remplit le diaporama ; il ne prend pas les clics, qui avancent. */
+.pp-slide-show > .pp-print-host.pp-slide-show-host { position: absolute; inset: 0; left: 0; width: auto; opacity: 1; pointer-events: none; }
+
+/* « Préparation du diaporama… » et l'écran de fin, au centre. */
+.pp-slide-show-card { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); max-width: calc(100% - 32px); box-sizing: border-box; padding: 10px 16px; border: 1px solid var(--border-strong); border-radius: var(--radius-md, 8px); background: var(--surface); color: var(--text); text-align: center; }
+.pp-slide-show-card[hidden] { display: none; }
+/* Une ligne d'information au bas de l'écran, au-dessus de la barre et du rendu (qui la couvrirait, venu après elle dans la page) : le plein écran de la fenêtre à part (« Un clic ou une touche pour… »), la fenêtre refusée par le navigateur. */
+.pp-slide-show-note { top: auto; bottom: 56px; transform: translateX(-50%); z-index: 1; }
+
+/* La barre du bas, à gauche : précédente, numéro, suivante, quitter. Cachée tant que la souris ne bouge pas (le clavier sur l'un de ses boutons la garde). Devant la page (z-index, comme la ligne d'information ci-dessus) : le rendu, venu après elle dans le
+   diaporama, la couvrirait, et sur un écran 16:9, où la diapositive remplit tout, on ne la verrait jamais. */
+.pp-slide-show-bar { position: absolute; z-index: 1; left: 12px; bottom: 12px; display: inline-flex; align-items: center; gap: 2px; box-sizing: border-box; height: 30px; padding: 2px; border: 1px solid var(--border-strong); border-radius: var(--radius-md, 8px); background: var(--surface); color: var(--text); box-shadow: var(--shadow-card); opacity: 0; transition: opacity .2s; }
+.pp-slide-show.pp-slide-show-awake .pp-slide-show-bar, .pp-slide-show-bar:focus-within { opacity: 1; }
+.pp-slide-show-step { box-sizing: border-box; min-width: 28px; height: 24px; margin: 0; padding: 0 6px; border: 1px solid transparent; border-radius: var(--radius-xs, 5px); background: transparent; color: inherit; font: inherit; font-size: 16px; line-height: 1; cursor: pointer; }
+.pp-slide-show-step:hover { background: var(--surface-sunken); border-color: var(--border); }
+.pp-slide-show-step:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.pp-slide-show-step[aria-disabled="true"] { opacity: .35; cursor: default; }
+.pp-slide-show-exit { font-size: 13px; }
+.pp-slide-show-counter { min-width: 52px; padding: 0 4px; text-align: center; font-variant-numeric: tabular-nums; font-weight: 600; }
+@media (prefers-reduced-motion: reduce) { .pp-slide-show-bar { transition: none; } }
+
+/* Le rang d'empilement que prend le calque d'arrivée pendant un effet qui le fait passer devant la copie de la page quittée (slide-transitions.js:stack). Les calques sont dans l'arbre ombre du rendu, qui reçoit les feuilles de la page
+   (js/print-export.js:pageStyleSheets) : la règle y est comme ici. Ils sont dans la feuille (`z-index:0`, slide-player.js:surface), si bien que ce rang ne passe jamais devant la barre du bas ni la ligne d'information (`z-index:1` chacune). */
+.pp-slide-show-layer.pp-slide-above { z-index: 1; }
+
+/* L'écran noir et l'écran blanc de la vue intervenant (slide-player.js : touches B et W, ordre `screen` de la console) : un voile qui couvre tout le diaporama, la barre du bas et les messages comprise (ils sont à `z-index:1`). Le noir et le blanc sont
+   ceux d'un écran éteint ou vide, non ceux du thème : ils ne changent ni en mode sombre ni en couleurs forcées (`forced-color-adjust`). Sans pointeur : on ne voit pas où l'on clique. */
+.pp-slide-show-screen { position: absolute; inset: 0; z-index: 2; background: #000; cursor: none; forced-color-adjust: none; }
+.pp-slide-show-screen-white { background: #fff; }
+.pp-slide-show-screen[hidden] { display: none; }

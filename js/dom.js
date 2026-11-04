@@ -2,7 +2,7 @@
 // portée, avant d'écrire la moindre ligne qui crée un élément.
 const Dom = (function () {
   // Un élément `tag` avec sa classe CSS et son texte, quand ils sont donnés (du texte, jamais du HTML).
-  function el(tag, className, text) {
+  function makeElement(tag, className, text) {
     const node = document.createElement(tag);
     if (className) node.className = className;
     if (text != null) node.textContent = text;
@@ -11,14 +11,14 @@ const Dom = (function () {
 
   // Une <option> de liste déroulante, avec sa valeur et son texte.
   function option(value, text) {
-    const node = el('option', null, text);
+    const node = makeElement('option', null, text);
     node.value = value;
     return node;
   }
 
   // Un bouton qui ne valide jamais un formulaire (type="button"), avec sa classe CSS et son texte quand ils sont donnés.
   function button(className, text) {
-    const node = el('button', className, text);
+    const node = makeElement('button', className, text);
     node.type = 'button';
     return node;
   }
@@ -28,11 +28,11 @@ const Dom = (function () {
   // `options` : [{ value, className, fill(bouton) }], `fill` posant le contenu du bouton. Rend le groupe, ses boutons et `check(value)`, qui coche le
   // bouton de cette valeur.
   function radioGroup({ className, labelId, options, onPick, onEnter }) {
-    const group = el('div', className);
+    const group = makeElement('div', className);
     group.setAttribute('role', 'radiogroup');
     group.setAttribute('aria-labelledby', labelId);
     const buttons = options.map(option => {
-      const button = el('button', option.className);
+      const button = makeElement('button', option.className);
       button.type = 'button';
       button.setAttribute('role', 'radio');
       button.dataset.value = option.value;
@@ -62,5 +62,23 @@ const Dom = (function () {
     };
   }
 
-  return { el, option, button, radioGroup };
+  // Le balisage (HTML) lu dans un <template>, inerte : rien ne se charge ni ne s'exécute tant que son contenu n'est pas posé dans la page, et un <script> lu
+  // ainsi ne s'exécute jamais. C'est le seul endroit du widget où une chaîne de balisage calculée devient des nœuds (audit externe du 21/10, point C-XSS-01 :
+  // quarante et une écritures de `innerHTML` éparpillées dans vingt-quatre fichiers, toutes fermées dans le fond, aucune lisible comme telle sans les relire) :
+  // le reste passe par ici (garde : codeHygiene, section 28), donc par un seul endroit à relire. Deux obligations pour qui appelle : le balisage est celui du
+  // widget (une icône de js/icons.js, un libellé de js/i18n.js) ou du HTML déjà nettoyé (HtmlSanitize.clean, ou nettoyé à la source : js/templates.js) ;
+  // jamais le texte d'une cellule ou d'un nom venu de Grist tel quel, qui se pose avec `textContent`. Rend le <template> : son `content` est le fragment,
+  // son `innerHTML` le balisage relu (ce que les aides qui réécrivent du HTML lisent).
+  function inertTemplate(html) {
+    const template = document.createElement('template');
+    template.innerHTML = html;
+    return template;
+  }
+
+  // Remplace le contenu de `target` (un élément, ou la racine d'ombre d'un hôte) par le balisage `html` : ce que faisait `target.innerHTML = html`.
+  function setMarkup(target, html) {
+    target.replaceChildren(inertTemplate(html).content);
+  }
+
+  return { el: makeElement, option, button, radioGroup, inertTemplate, setMarkup };
 })();

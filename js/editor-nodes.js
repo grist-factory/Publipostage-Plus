@@ -1,8 +1,8 @@
 // Fabriques de nœuds et d'extensions TipTap personnalisés. Aucune ne ferme sur une référence d'éditeur partagée : chaque NodeView reçoit la sienne
 // par le paramètre `({ node, editor, getPos })` que TipTap fournit à chaque rendu.
 const EditorNodes = (function () {
-  const { internalAttr, inlineAtom, jsonAttr, setAttrs, languageViews, liveNode } = (function () {
-    // Aides communes : attributs internes, atomes en ligne, lecture JSON, attributs DOM, vues qui suivent la langue, nœud vivant
+  const { internalAttr, inlineAtom, jsonAttr, setAttrs, liveNode } = (function () {
+    // Aides communes : attributs internes, atomes en ligne, lecture JSON, attributs DOM, nœud vivant
 
     // Un attribut gardé dans le JSON du nœud, jamais rendu en attribut HTML : sans `renderHTML` vide, TipTap écrirait aussi chaque attribut par défaut
     // en attribut nu (table="...") en plus des data-* posés à la main, un doublon.
@@ -19,13 +19,6 @@ const EditorNodes = (function () {
     function setAttrs(dom, attrs) {
       Object.keys(attrs).forEach(name => { if (attrs[name] != null) dom.setAttribute(name, attrs[name]); });
     }
-    // Les vues qui réécrivent leurs textes au changement de langue : une seule écoute pour toutes (I18n.onChange ne se désabonne pas), chaque vue
-    // s'inscrit tant qu'elle vit.
-    function languageViews() {
-      const views = new Set();
-      I18n.onChange(() => views.forEach(refresh => refresh()));
-      return views;
-    }
     // Le nœud d'une NodeView tel que le document l'a maintenant, avec sa position ; null s'il n'y est plus. Jamais le `node` reçu au premier rendu :
     // seul `update` le rafraîchit.
     function liveNode(editor, getPos) {
@@ -33,10 +26,10 @@ const EditorNodes = (function () {
       const node = typeof pos === 'number' ? editor.state.doc.nodeAt(pos) : null;
       return node ? { pos, node } : null;
     }
-    return { internalAttr, inlineAtom, jsonAttr, setAttrs, languageViews, liveNode };
+    return { internalAttr, inlineAtom, jsonAttr, setAttrs, liveNode };
   })();
 
-  const { splitBadgeLabel, splitBadgeView } = (function () {
+  const { splitBadgeLabel, splitBadgeView, showTextMarks } = (function () {
     // Le libellé d'une bulle en deux morceaux
 
     // Coupe le libellé d'une bulle en un début et une fin, pour qu'une case de tableau ou une colonne de zone 2 colonnes trop étroite tronque le milieu
@@ -58,19 +51,59 @@ const EditorNodes = (function () {
       return { head: label.slice(0, label.length - tail.length), tail };
     }
 
+    // La couleur de police, le surlignage, le souligné et le barré posés sur une bulle ou une puce (variable, calcul, date, heure, e-mail, nom, numéro de ligne,
+    // fiche « @ », numéro de page, note de bas de page, case conditionnelle) : la marque habille la vue de l'atome d'un <span style>,
+    // d'un <u> ou d'un <s>, mais l'atome a ses propres couleurs et son texte dans une boîte en ligne que ni la couleur, ni le fond, ni un trait du parent
+    // n'atteignent : la Lecture, le PDF et le Word les écrivaient, pas l'éditeur. La vue les relit sur les marques du nœud (ProseMirror la refait dès
+    // qu'elles changent : NodeViewDesc.update compare les marques) et les pose en variables CSS que css/variable-actions.css montre ou non (une bulle
+    // cassée garde ses couleurs d'alerte). Elles ne se montrent que si la personne a choisi « Mise en forme » dans Réglages > Thème (l'attribut
+    // `data-bubble-marks` de <html>, js/settings.js) : « Par défaut », la bulle ou la puce garde son aspect pâle, facile à repérer. Vue seulement :
+    // renderHTML ne les écrit pas, le HTML enregistré, le presse-papiers et les exports restent ceux d'avant. Une valeur que le navigateur ne lit pas
+    // comme une couleur est laissée de côté. La note de bas de page (un <sup> en ligne : seule sa couleur est à montrer, les traits et le surlignage des marques qui
+    // l'entourent s'y dessinent déjà) et la case conditionnelle (sa case est dessinée de sa couleur propre) : la Lecture, le PDF et le Word les écrivent comme la vue
+    // les montre, sans lire ce choix (js/reader-mode.js:carryNoteColors et textMarksOf, js/conditional-checkbox.js:resolve, `checkboxRuns` de js/pdf-export.js et de
+    // js/docx-export.js, `footnoteRuns` de js/docx-export.js).
+    function showTextMarks(dom, marks) {
+      const lines = [];
+      let color = null;
+      let highlight = null;
+      marks.forEach(mark => {
+        const name = mark.type.name;
+        if (name === 'textStyle') { color = mark.attrs.color || null; highlight = mark.attrs.backgroundColor || null; }
+        else if (name === 'underline') lines.push('underline');
+        else if (name === 'strike') lines.push('line-through');
+      });
+      const set = (name, value) => { dom.setAttribute('data-mark-' + name, ''); dom.style.setProperty('--pp-mark-' + name, value); };
+      if (color && CSS.supports('color', color)) set('color', color);
+      if (highlight && CSS.supports('color', highlight)) set('highlight', highlight);
+      if (lines.length) set('lines', lines.join(' '));
+    }
+
     // Vue de l'éditeur d'une bulle (variable ou calcul) : le texte est coupé en deux morceaux (début, fin) pour qu'une case de tableau ou une colonne
     // de zone 2 colonnes trop étroite tronque le milieu du nom avec « … » (css/variable-actions.css, css/variable-calc.css) au lieu de laisser la bulle
     // traverser la case. Mêmes attributs et même texte que renderHTML (badgeSpec) : getHTML(), le presse-papiers et les exports gardent le nom entier,
     // et textContent le rend entier aux lecteurs d'écran. `prefix` : la classe de la bulle ('var-badge' ou 'calc-badge'), qui nomme aussi celles du
-    // début (-head), de la fin (-tail) et l'état cassé (-broken).
-    function splitBadgeView(spec, prefix) {
+    // début (-head), de la fin (-tail) et l'état cassé (-broken). `marks` : les marques du nœud, dont la bulle relève la couleur, le surlignage
+    // et les traits (showTextMarks : la bulle de variable et celle d'un calcul).
+    function splitBadgeView(spec, prefix, marks) {
       const [, attrs, label] = spec;
       const dom = document.createElement('span');
       setAttrs(dom, attrs);
+      if (marks) showTextMarks(dom, marks);
       const parts = splitBadgeLabel(label);
       const head = document.createElement('span');
       head.className = prefix + '-head';
       head.textContent = parts.head;
+      // Le texte « Avant » / « Après » de la bulle (js/variable-condition.js), en petites pastilles de chaque côté du nom : leur texte est dessiné par
+      // le CSS (data-text), donc absent de textContent, qui garde le nom entier pour les lecteurs d'écran, le presse-papiers et les tests.
+      const affixChip = text => {
+        const chip = document.createElement('span');
+        chip.className = 'var-badge-affix';
+        chip.setAttribute('aria-hidden', 'true');
+        chip.setAttribute('data-text', text);
+        return chip;
+      };
+      if (attrs['data-before']) dom.appendChild(affixChip(attrs['data-before']));
       dom.appendChild(head);
       let tail = null;
       let tailText = null;
@@ -84,36 +117,85 @@ const EditorNodes = (function () {
         tail.appendChild(tailText);
         dom.appendChild(tail);
       }
-      // Nom coupé par la case ou la colonne : le nom entier en info-bulle, posé au survol seulement quand il est vraiment coupé (une bulle cassée garde
-      // son message, posé par Editor.refreshVariableBadgeValidity, qui retire aussi ce titre à chaque mise à jour du document). La fin se coupe par la
-      // gauche, ce que scrollWidth ne compte pas : on compare les rectangles.
+      if (attrs['data-after']) dom.appendChild(affixChip(attrs['data-after']));
+      // Le « sinon » de la bulle (js/variable-otherwise.js) : « sinon », son texte « Avant », le nom de sa variable et son « Après » - ou, pour un sinon en texte et
+      // variables, ce texte, coupé à 24 signes (VariableOtherwise.shownText) -, dessinés par le CSS comme ceux de la bulle (data-text) : textContent garde le seul nom
+      // de la bulle. Le mot « sinon » est écrit dans la langue de la page.
+      if (attrs['data-otherwise-key'] || attrs['data-otherwise']) {
+        const otherwise = document.createElement('span');
+        otherwise.className = 'var-badge-otherwise';
+        otherwise.setAttribute('aria-hidden', 'true');
+        const word = document.createElement('span');
+        word.className = 'var-badge-otherwise-word';
+        word.setAttribute('data-text', I18n.t('varBadge.otherwise'));
+        const name = document.createElement('span');
+        name.className = 'var-badge-otherwise-name';
+        name.setAttribute('data-text', attrs['data-otherwise'] ? VariableOtherwise.shownText(attrs['data-otherwise']) : Variables.triggerChar() + attrs['data-otherwise-key']);
+        otherwise.appendChild(word);
+        if (attrs['data-otherwise-before']) otherwise.appendChild(affixChip(attrs['data-otherwise-before']));
+        otherwise.appendChild(name);
+        if (attrs['data-otherwise-after']) otherwise.appendChild(affixChip(attrs['data-otherwise-after']));
+        dom.appendChild(otherwise);
+      }
+      // Nom coupé par la case ou la colonne : le nom entier en info-bulle, posé au survol seulement quand il est vraiment coupé (une bulle cassée ou sans
+      // lien garde son message, posé par Editor.refreshVariableBadgeValidity, qui retire aussi ce titre à chaque mise à jour du document). La fin se
+      // coupe par la gauche, ce que scrollWidth ne compte pas : on compare les rectangles.
       dom.addEventListener('mouseenter', () => {
-        if (dom.classList.contains(prefix + '-broken')) return;
+        if (dom.classList.contains(prefix + '-broken') || dom.classList.contains(prefix + '-unlinked')) return;
         const cut = head.scrollWidth > head.clientWidth || (tail && tailText.getBoundingClientRect().width > tail.getBoundingClientRect().width + 0.5);
         if (cut) dom.title = label;
         else if (dom.title === label) dom.removeAttribute('title');
       });
       return { dom };
     }
-    return { splitBadgeLabel, splitBadgeView };
+    return { splitBadgeLabel, splitBadgeView, showTextMarks };
   })();
 
-  const { createVarBadgeNode } = (function () {
+  const { createVarBadgeNode, varBadgeAttributes, varBadgeAttrsOf, varBadgeHtml } = (function () {
     // La bulle de variable
+
+    // Les attributs DOM d'une bulle (HTML enregistré, presse-papiers, exports) d'après les attributs de son nœud : sans TipTap, pour que les champs
+    // texte (js/field-codec.js) écrivent la même bulle que l'éditeur.
+    function varBadgeAttributes(nodeAttrs) {
+      const attrs = {
+        class: 'var-badge', contenteditable: 'false',
+        'data-table': nodeAttrs.table, 'data-column': nodeAttrs.column, 'data-key': nodeAttrs.key,
+      };
+      if (nodeAttrs.format) attrs['data-format'] = JSON.stringify(nodeAttrs.format);
+      if (nodeAttrs.condition) attrs['data-condition'] = JSON.stringify(nodeAttrs.condition);
+      // Le texte « Avant » / « Après » (js/variable-condition.js) : deux attributs simples, écrits seulement quand ils existent.
+      const around = VariableFormat.affixes(nodeAttrs.before, nodeAttrs.after);
+      if (around && around.before) attrs['data-before'] = around.before;
+      if (around && around.after) attrs['data-after'] = around.after;
+      // Le sinon (js/variable-otherwise.js) : cinq attributs simples, écrits seulement quand il existe - ou, en texte et variables, le seul `data-otherwise`.
+      Object.assign(attrs, VariableOtherwise.toAttributes(nodeAttrs.otherwise), VariableOtherwise.typedToAttributes(nodeAttrs.otherwiseText));
+      // `data-loop-repeat` à part : les repères de la zone répétée (css/variable-actions.css) la trouvent par sélecteur, sans lire le JSON.
+      if (nodeAttrs.loop) { attrs['data-loop'] = JSON.stringify(nodeAttrs.loop); attrs['data-loop-repeat'] = nodeAttrs.loop.repeat || 'inline'; }
+      return attrs;
+    }
+    // Les attributs d'un nœud bulle d'après son <span> : l'inverse de varBadgeAttributes.
+    function varBadgeAttrsOf(el) {
+      return {
+        table: el.getAttribute('data-table'), column: el.getAttribute('data-column'), key: el.getAttribute('data-key'),
+        format: jsonAttr(el, 'data-format'), condition: jsonAttr(el, 'data-condition'), loop: jsonAttr(el, 'data-loop'),
+        before: VariableFormat.affix(el.getAttribute('data-before')), after: VariableFormat.affix(el.getAttribute('data-after')),
+        otherwise: VariableOtherwise.fromElement(el), otherwiseText: VariableOtherwise.typedFromElement(el),
+      };
+    }
+    // Le HTML d'une bulle, comme renderHTML l'écrit (préfixe décoratif compris, cf. ci-dessous).
+    function varBadgeHtml(nodeAttrs) {
+      const span = document.createElement('span');
+      setAttrs(span, varBadgeAttributes(nodeAttrs));
+      span.textContent = Variables.triggerChar() + nodeAttrs.key;
+      return span.outerHTML;
+    }
 
     // Bulle de variable #Variable : nœud atome en ligne, non éditable au caractère près (contenteditable="false") : <span class="var-badge" data-table
     // data-column data-key>, reconnu tel quel par reader-mode.js et pdf-export.js.
     function createVarBadgeNode(Node, mergeAttributes) {
       // Spécification DOM de la bulle, une seule pour renderHTML (HTML enregistré, presse-papiers, exports) et pour la vue de l'éditeur (addNodeView).
       function badgeSpec(HTMLAttributes, node) {
-        const attrs = mergeAttributes(HTMLAttributes, {
-          class: 'var-badge', contenteditable: 'false',
-          'data-table': node.attrs.table, 'data-column': node.attrs.column, 'data-key': node.attrs.key,
-        });
-        if (node.attrs.format) attrs['data-format'] = JSON.stringify(node.attrs.format);
-        if (node.attrs.condition) attrs['data-condition'] = JSON.stringify(node.attrs.condition);
-        // `data-loop-repeat` à part : les repères de la zone répétée (css/variable-actions.css) la trouvent par sélecteur, sans lire le JSON.
-        if (node.attrs.loop) { attrs['data-loop'] = JSON.stringify(node.attrs.loop); attrs['data-loop-repeat'] = node.attrs.loop.repeat || 'inline'; }
+        const attrs = mergeAttributes(HTMLAttributes, varBadgeAttributes(node.attrs));
         // Préfixe décoratif régénéré à chaque rendu (jamais stocké) : suit la touche de déclenchement configurée, rétroactif sans migration.
         return ['span', attrs, Variables.triggerChar() + node.attrs.key];
       }
@@ -127,32 +209,40 @@ const EditorNodes = (function () {
           // `loop` : { table, via, repeat, filter, sort, empty, … } - boucle sur les lignes liées (js/variable-loop.js), déroulée en lecture et à
           // l'export par js/loop-rules.js ; `repeat` dit ce qui se répète autour de la bulle (sa ligne de tableau, son élément de liste, son
           // paragraphe, ou elle seule).
-          return { table: internalAttr(null), column: internalAttr(null), key: internalAttr(null), format: internalAttr(null), condition: internalAttr(null), loop: internalAttr(null) };
+          // `before` et `after` : le texte collé à la valeur, écrit seulement quand la bulle s'affiche avec une valeur (VariableFormat.withAffixes) ;
+          // `null` = rien.
+          // `otherwise` : { table, column, key, before, after } - la variable que la bulle écrit à sa place quand sa condition n'est pas remplie
+          // (js/variable-otherwise.js, ligne « Sinon afficher » de js/variable-condition.js) ; `null` = pas de sinon. `otherwiseText` : le sinon quand il est autre
+          // chose que cette seule variable - du texte et des variables, tel que le champ de la fenêtre l'enregistre (js/field-codec.js) ; jamais avec `otherwise`.
+          return {
+            table: internalAttr(null), column: internalAttr(null), key: internalAttr(null), format: internalAttr(null), condition: internalAttr(null), loop: internalAttr(null),
+            before: internalAttr(null), after: internalAttr(null), otherwise: internalAttr(null), otherwiseText: internalAttr(null),
+          };
         },
         parseHTML() {
-          return [{
-            tag: 'span.var-badge',
-            getAttrs: el => ({
-              table: el.getAttribute('data-table'), column: el.getAttribute('data-column'), key: el.getAttribute('data-key'),
-              format: jsonAttr(el, 'data-format'), condition: jsonAttr(el, 'data-condition'), loop: jsonAttr(el, 'data-loop'),
-            }),
-          }];
+          return [{ tag: 'span.var-badge', getAttrs: varBadgeAttrsOf }];
         },
         renderHTML({ HTMLAttributes, node }) {
           return badgeSpec(HTMLAttributes, node);
         },
-        // Vue de l'éditeur seulement : cf. splitBadgeView. Pas de `update` : ProseMirror garde la vue tant que le nœud est identique et la refait
-        // sinon.
+        // Vue de l'éditeur seulement : cf. splitBadgeView. Pas de `update` : ProseMirror garde la vue tant que le nœud est identique (marques comprises)
+        // et la refait sinon.
         addNodeView() {
-          return ({ node, HTMLAttributes }) => splitBadgeView(badgeSpec(HTMLAttributes, node), 'var-badge');
+          return ({ node, HTMLAttributes }) => splitBadgeView(badgeSpec(HTMLAttributes, node), 'var-badge', node.marks);
         },
       });
     }
-    return { createVarBadgeNode };
+    return { createVarBadgeNode, varBadgeAttributes, varBadgeAttrsOf, varBadgeHtml };
   })();
 
-  const { createCalcBadgeNode, createCalcBadgeKeysExtension } = (function () {
+  const { createCalcBadgeNode, createCalcBadgeKeysExtension, calcBadgeLabel } = (function () {
     // La bulle de calcul et ses touches
+
+    // Le texte de la bulle : « = » puis la formule dans l'écriture saisie, × ÷ − à la place de * / - (régénéré à chaque rendu, jamais stocké). Rechercher /
+    // Remplacer (js/find-replace.js) cherche dans ce texte, celui que l'on lit à l'écran.
+    function calcBadgeLabel(formula) {
+      return '= ' + Formula.toDisplay(formula, { trigger: Variables.triggerChar(), lang: I18n.getLang(), pretty: true });
+    }
 
     // Bulle « Calcul » (js/variable-calc.js) : une formule à la place d'une colonne, posée depuis la ligne « Calcul » du menu des variables (onglet
     // Chips). Atome en ligne comme varBadge ; `formula` est l'écriture enregistrée de js/formula.js (variables {Table.Colonne}, décimales au point,
@@ -160,14 +250,10 @@ const EditorNodes = (function () {
     // moment. `format` : le réglage nombre de la barre flottante, comme une bulle de colonne numérique. Verte comme les chips (« valeur calculée, pas
     // une colonne Grist »). Résolue en lecture et à l'export par js/reader-mode.js, avec la ligne du tour dans une zone répétée.
     function createCalcBadgeNode(Node, mergeAttributes) {
-      // Le texte de la bulle : « = » puis la formule dans l'écriture saisie, × ÷ − à la place de * / - (régénéré à chaque rendu, jamais stocké).
-      function calcLabel(formula) {
-        return '= ' + Formula.toDisplay(formula, { trigger: Variables.triggerChar(), lang: I18n.getLang(), pretty: true });
-      }
       function badgeSpec(HTMLAttributes, node) {
         const attrs = mergeAttributes(HTMLAttributes, { class: 'calc-badge', contenteditable: 'false', 'data-formula': node.attrs.formula || '' });
         if (node.attrs.format) attrs['data-format'] = JSON.stringify(node.attrs.format);
-        return ['span', attrs, calcLabel(node.attrs.formula)];
+        return ['span', attrs, calcBadgeLabel(node.attrs.formula)];
       }
       return inlineAtom(Node, {
         name: 'calcBadge',
@@ -180,11 +266,11 @@ const EditorNodes = (function () {
         renderHTML({ HTMLAttributes, node }) {
           return badgeSpec(HTMLAttributes, node);
         },
-        // Même vue que celle d'une bulle de variable (début / fin, cf. splitBadgeView), et un double-clic ouvre le calcul : la barre flottante a le
-        // même bouton.
+        // Même vue que celle d'une bulle de variable (début / fin et marques, cf. splitBadgeView), et un double-clic ouvre le calcul : la barre
+        // flottante a le même bouton. Pas de `update` : ProseMirror garde la vue tant que le nœud est identique (marques comprises) et la refait sinon.
         addNodeView() {
           return ({ node, editor, getPos, HTMLAttributes }) => {
-            const view = splitBadgeView(badgeSpec(HTMLAttributes, node), 'calc-badge');
+            const view = splitBadgeView(badgeSpec(HTMLAttributes, node), 'calc-badge', node.marks);
             view.dom.addEventListener('dblclick', event => {
               const pos = typeof getPos === 'function' ? getPos() : null;
               if (pos == null || !editor.isEditable) return;
@@ -215,16 +301,17 @@ const EditorNodes = (function () {
         },
       });
     }
-    return { createCalcBadgeNode, createCalcBadgeKeysExtension };
+    return { createCalcBadgeNode, createCalcBadgeKeysExtension, calcBadgeLabel };
   })();
 
-  const { createPageNumberBadgeNode, createSmartChipNode } = (function () {
+  const { createPageNumberBadgeNode, createSmartChipNode, smartChipAttrsOf, smartChipHtml, smartChipLabel } = (function () {
     // La bulle de numéro de page et la puce intelligente
 
     // Bulle de numéro de page, même schéma que varBadge. Le libellé rendu dans l'éditeur n'est qu'un espace réservé (selon le format choisi), résolu en
     // vrai numéro seulement à l'export et dans l'aperçu paginé.
     function createPageNumberBadgeNode(Node, mergeAttributes) {
       const LABELS = { n: '#', 'page-n': 'Page #', 'n-slash-total': '#/#' };
+      const badgeAttributes = node => mergeAttributes({ class: 'page-number-badge', contenteditable: 'false', 'data-format': node.attrs.format });
       return inlineAtom(Node, {
         name: 'pageNumberBadge',
         addAttributes() {
@@ -234,8 +321,19 @@ const EditorNodes = (function () {
           return [{ tag: 'span.page-number-badge', getAttrs: el => ({ format: el.getAttribute('data-format') || 'n' }) }];
         },
         renderHTML({ node }) {
-          const attrs = mergeAttributes({ class: 'page-number-badge', contenteditable: 'false', 'data-format': node.attrs.format });
-          return ['span', attrs, LABELS[node.attrs.format] || LABELS.n];
+          return ['span', badgeAttributes(node), LABELS[node.attrs.format] || LABELS.n];
+        },
+        // Vue de l'éditeur seulement : la même bulle, avec la couleur, le surlignage, le souligné et le barré de ses marques (showTextMarks, que
+        // css/variable-actions.css montre sous « Mise en forme » de Réglages). Pas de `update` : ProseMirror garde la vue tant que le nœud est
+        // identique (marques comprises) et la refait sinon.
+        addNodeView() {
+          return ({ node }) => {
+            const dom = document.createElement('span');
+            setAttrs(dom, badgeAttributes(node));
+            dom.textContent = LABELS[node.attrs.format] || LABELS.n;
+            showTextMarks(dom, node.marks);
+            return { dom };
+          };
         },
         addCommands() {
           return { insertPageNumberBadge: format => ({ chain }) => chain().insertContent({ type: this.name, attrs: { format } }).run() };
@@ -245,27 +343,57 @@ const EditorNodes = (function () {
 
     // Chip intelligent (date, heure, email, nom), même schéma que varBadge. Jamais de vraie valeur dans l'éditeur (résolu en Lecture et à l'export, cf.
     // js/reader-mode.js:resolveSmartChips) ; vert plutôt que bleu pour signaler « valeur calculée, pas une colonne Grist ».
+    const KIND_I18N_KEYS = { date: 'chips.date', time: 'chips.time', email: 'chips.email', name: 'chips.name', rowNumber: 'chips.rowNumber' };
+    // Le libellé d'une puce, dans la langue de l'interface (« Date du jour »).
+    function smartChipLabel(kind) {
+      const key = KIND_I18N_KEYS[kind];
+      return key ? I18n.t(key) : '?';
+    }
+    // Les attributs DOM d'une puce (HTML enregistré, presse-papiers) d'après son genre, et l'inverse : sans TipTap, pour que les champs texte
+    // (js/field-codec.js) écrivent la même puce que l'éditeur.
+    // `time` : l'écriture de l'heure d'une puce « Heure actuelle » (une clé de VariableFormat.TIME_STYLES, `data-chip-time`) ; absente, la puce écrit l'heure sur 24 heures comme avant ce réglage.
+    // Aucune autre puce n'en porte.
+    const smartChipAttributes = (kind, time) => Object.assign({ class: 'smart-chip', contenteditable: 'false', 'data-chip-kind': kind }, kind === 'time' && time ? { 'data-chip-time': time } : {});
+    // Sans réglage, `time` n'est pas dans le résultat : la forme d'une puce d'avant ce réglage ({ kind }) ne change pas.
+    function smartChipAttrsOf(el) {
+      const attrs = { kind: el.getAttribute('data-chip-kind') || 'date' };
+      const time = attrs.kind === 'time' && el.getAttribute('data-chip-time');
+      return time ? Object.assign(attrs, { time }) : attrs;
+    }
+    function smartChipElement(nodeAttrs) {
+      const span = document.createElement('span');
+      setAttrs(span, smartChipAttributes(nodeAttrs.kind, nodeAttrs.time));
+      span.textContent = smartChipLabel(nodeAttrs.kind);
+      return span;
+    }
+    function smartChipHtml(nodeAttrs) {
+      return smartChipElement(nodeAttrs).outerHTML;
+    }
     function createSmartChipNode(Node, mergeAttributes) {
-      const KIND_I18N_KEYS = { date: 'chips.date', time: 'chips.time', email: 'chips.email', name: 'chips.name' };
-      function labelFor(kind) {
-        const key = KIND_I18N_KEYS[kind];
-        return key ? I18n.t(key) : '?';
-      }
       return inlineAtom(Node, {
         name: 'smartChip',
         addAttributes() {
-          return { kind: internalAttr('date') };
+          return { kind: internalAttr('date'), time: internalAttr(null) };
         },
         parseHTML() {
-          return [{ tag: 'span.smart-chip', getAttrs: el => ({ kind: el.getAttribute('data-chip-kind') || 'date' }) }];
+          return [{ tag: 'span.smart-chip', getAttrs: smartChipAttrsOf }];
         },
         renderHTML({ node }) {
-          const attrs = mergeAttributes({ class: 'smart-chip', contenteditable: 'false', 'data-chip-kind': node.attrs.kind });
-          return ['span', attrs, labelFor(node.attrs.kind)];
+          return ['span', mergeAttributes(smartChipAttributes(node.attrs.kind, node.attrs.time)), smartChipLabel(node.attrs.kind)];
+        },
+        // Vue de l'éditeur seulement : la même puce, avec la couleur, le surlignage, le souligné et le barré de ses marques (showTextMarks, que
+        // css/variable-actions.css montre sous « Mise en forme » de Réglages). Pas de `update` : ProseMirror garde la vue tant que le nœud est
+        // identique (marques comprises) et la refait sinon.
+        addNodeView() {
+          return ({ node }) => {
+            const dom = smartChipElement(node.attrs);
+            showTextMarks(dom, node.marks);
+            return { dom };
+          };
         },
       });
     }
-    return { createPageNumberBadgeNode, createSmartChipNode };
+    return { createPageNumberBadgeNode, createSmartChipNode, smartChipAttrsOf, smartChipHtml, smartChipLabel };
   })();
 
   const { createFootnoteRefNode, createCommentMark } = (function () {
@@ -291,9 +419,10 @@ const EditorNodes = (function () {
           return ['sup', attrs];
         },
         addNodeView() {
-          return ({ getPos }) => {
+          return ({ node, getPos }) => {
             const marker = document.createElement('sup');
             marker.className = 'footnote-ref-marker';
+            showTextMarks(marker, node.marks);
             marker.addEventListener('mousedown', event => {
               event.preventDefault();
               // Pas de stopPropagation() : ProseMirror sélectionne ce nœud par un gestionnaire posé sur .tiptap (un ancêtre) ; le bloquer casserait la
@@ -469,8 +598,8 @@ const EditorNodes = (function () {
     // La colonne d'une zone 2 colonnes où se trouve le curseur : { columnDepth, zoneDepth, colIndex }, ou null hors d'une zone.
     function findTwoColumnsContext($from) {
       let columnDepth = -1;
-      for (let d = $from.depth; d > 0; d -= 1) {
-        if ($from.node(d).type.name === 'twoColumnsColumn') { columnDepth = d; break; }
+      for (let depth = $from.depth; depth > 0; depth -= 1) {
+        if ($from.node(depth).type.name === 'twoColumnsColumn') { columnDepth = depth; break; }
       }
       if (columnDepth === -1) return null;
       const zoneDepth = columnDepth - 1;
@@ -532,8 +661,22 @@ const EditorNodes = (function () {
       });
     }
 
+    // Les vues de nœud que portent les plugins (`plugin.props.nodeViews`), avec leur fonction du moment. prosemirror-tables (columnResizing) en refait une pour le tableau à CHAQUE
+    // `init` de son état, donc à chaque EditorState.create : ProseMirror compare ces fonctions par identité et, à la moindre différence, détruit toute la vue du document pour la
+    // reconstruire (updateStateInner, `redraw`) - même quand le document est le même. Chargé, un modèle de 440 cadres se construisait deux fois (0,5 s de plus à chaque ouverture, et
+    // la mise en page de la première construction jetée avec elle).
+    function nodeViewsOf(plugins) {
+      const kept = [];
+      plugins.forEach(plugin => {
+        const views = plugin.props && plugin.props.nodeViews;
+        if (views && typeof views === 'object') Object.keys(views).forEach(name => kept.push({ views, name, make: views[name] }));
+      });
+      return kept;
+    }
+
     // TipTap v3 n'expose plus de commande clearHistory (seulement undo/redo) : reconstruire l'EditorState avec les mêmes plugins réinitialise leur état
-    // (dont l'historique) sans recréer la vue ni perdre le document.
+    // (dont l'historique) sans recréer la vue ni perdre le document. Les vues de nœud reprennent leur fonction d'avant la reconstruction (celle qui vient d'être refaite a les mêmes réglages
+    // et le même schéma) pour que la vue ne se redessine pas ; l'état des plugins, lui, est bien remis à zéro.
     function createClearHistoryExtension(Extension, EditorState) {
       return Extension.create({
         name: 'clearHistory',
@@ -541,7 +684,10 @@ const EditorNodes = (function () {
           return {
             clearHistory: () => ({ editor: ed }) => {
               const { view } = ed;
-              view.updateState(EditorState.create({ schema: view.state.schema, doc: view.state.doc, selection: view.state.selection, plugins: view.state.plugins }));
+              const kept = nodeViewsOf(view.state.plugins);
+              const fresh = EditorState.create({ schema: view.state.schema, doc: view.state.doc, selection: view.state.selection, plugins: view.state.plugins });
+              kept.forEach(({ views, name, make }) => { views[name] = make; });
+              view.updateState(fresh);
               return true;
             },
           };
@@ -635,7 +781,7 @@ const EditorNodes = (function () {
         const newAttrs = Object.assign({}, live.node.attrs, { layoutLeft: Math.round(finalLeftPercent) });
         // Reste en mode mm après un glisser (ne repasse pas silencieusement en mode pourcentage) : reconvertit la position finale en mm.
         if (Number.isFinite(live.node.attrs.layoutLeftMm)) {
-          newAttrs.layoutLeftMm = Math.round(finalLeftPercent / 100 * PageLayout.getContentWidthMm());
+          newAttrs.layoutLeftMm = Math.round(finalLeftPercent / 100 * PageSectionView.contentWidthMmAt(wrap));
         }
         nodeEditor.view.dispatch(nodeEditor.state.tr.setNodeMarkup(live.pos, undefined, newAttrs));
       }
@@ -653,7 +799,7 @@ const EditorNodes = (function () {
       // Écrit la largeur saisie (mm) dans le nœud, bornée entre 10 mm et ce qui laisse 10 mm à la colonne de droite.
       const live = liveNode(nodeEditor, getPos);
       if (!live) return;
-      const contentWidthMm = PageLayout.getContentWidthMm();
+      const contentWidthMm = PageSectionView.contentWidthMmAt(nodeEditor.view.nodeDOM(live.pos));
       // La gouttière (PageLayout.getColumnGapMm()) est prise sur la largeur de contenu comme n'importe quelle colonne : la borne haute doit la
       // retrancher, sinon une saisie « largeur de contenu - 10 » laisse une colonne droite négative.
       const gapMm = PageLayout.getColumnGapMm();
@@ -754,7 +900,7 @@ const EditorNodes = (function () {
         if (popover) { closePopover(); return; }
         const live = liveNode(nodeEditor, getPos);
         const currentAttrs = (live ? live.node : node).attrs;
-        const contentWidthMm = PageLayout.getContentWidthMm();
+        const contentWidthMm = PageSectionView.contentWidthMmAt(wrap);
         const startLeftMm = Number.isFinite(currentAttrs.layoutLeftMm)
           ? currentAttrs.layoutLeftMm
           : Math.round((currentAttrs.layoutLeft || 50) / 100 * contentWidthMm);
@@ -846,7 +992,7 @@ const EditorNodes = (function () {
   const { conditionalTextNodeView } = (function () {
     // Bloc de texte conditionnel : la vue de l'éditeur
 
-    function conditionalTextNodeView(views, { node: initialNode, editor: nodeEditor, getPos }) {
+    function conditionalTextNodeView({ node: initialNode, editor: nodeEditor, getPos }) {
       // Vue de l'éditeur seulement. L'étiquette est hors du contentDOM (jamais lue comme contenu du bloc) ; un clic dessus sélectionne le bloc entier
       // - un conteneur ne se sélectionne pas d'un clic simple - ce qui ouvre sa barre flottante
       // (js/floating-toolbars.js:wireVariableFloatingToolbar).
@@ -866,13 +1012,15 @@ const EditorNodes = (function () {
         dom.classList.toggle('has-condition', !!condition);
         // Le texte entier de la condition va dans l'info-bulle : l'étiquette, elle, se coupe par « … » si elle dépasse la largeur du bloc.
         const summary = condition ? VariableCondition.describe(condition, { full: true }) : '';
-        tag.textContent = condition ? I18n.t('condText.tag.if', { condition: summary }) : I18n.t('condText.tag.none');
-        const title = condition ? I18n.t('condText.tag.titleIf', { condition: summary }) : I18n.t('condText.tag.titleNone');
+        // Un sinon n'a de sens que pour une condition : l'étiquette le dit (« · sinon »), l'info-bulle en cite le texte, ses lignes séparées par « / ».
+        const otherwise = condition ? ConditionalText.otherwiseLines(node.attrs.otherwise).join(' / ') : '';
+        tag.textContent = condition ? I18n.t(otherwise ? 'condText.tag.ifOtherwise' : 'condText.tag.if', { condition: summary }) : I18n.t('condText.tag.none');
+        const title = !condition ? I18n.t('condText.tag.titleNone')
+          : (otherwise ? I18n.t('condText.tag.titleIfOtherwise', { condition: summary, otherwise }) : I18n.t('condText.tag.titleIf', { condition: summary }));
         tag.title = title;
         tag.setAttribute('aria-label', title);
       }
       refresh();
-      views.add(refresh);
       tag.addEventListener('mousedown', event => {
         event.preventDefault(); event.stopPropagation();
         const live = liveNode(nodeEditor, getPos);
@@ -906,7 +1054,6 @@ const EditorNodes = (function () {
         // document.
         ignoreMutation: mutation => mutation.type !== 'selection' && (tag.contains(mutation.target) || mutation.target === dom),
         stopEvent: event => tag.contains(event.target),
-        destroy: () => views.delete(refresh),
       };
     }
     return { conditionalTextNodeView };
@@ -919,10 +1066,11 @@ const EditorNodes = (function () {
     // d'autres blocs conditionnels, à toute profondeur - qui n'apparaît en lecture et à l'export que si sa condition d'affichage est remplie
     // (js/conditional-text.js). Même condition que celle d'une bulle ({ mode, rules }, fenêtre js/variable-condition.js, barre flottante
     // js/floating-toolbars.js) ; sans condition, le bloc est toujours affiché. Le cadre et l'étiquette « Si … » n'existent que dans l'éditeur
-    // (NodeView) : renderHTML, donc l'enregistrement, le presse-papiers et les exports, ne sérialise que <div class="conditional-text" data-condition>,
-    // que le rendu défait (condition remplie) ou retire (sinon).
-    function createConditionalTextNode(Node, mergeAttributes) {
-      const views = languageViews();
+    // (NodeView) : renderHTML, donc l'enregistrement, le presse-papiers et les exports, ne sérialise que <div class="conditional-text" data-condition
+    // data-otherwise>, que le rendu défait (condition remplie) ou remplace par son sinon ou retire (sinon). `otherwise` : le sinon du bloc, un second texte écrit à sa
+    // place quand sa condition n'est pas remplie (js/conditional-text.js:otherwiseText, ligne « Sinon afficher » de js/variable-condition.js) ; `null` = pas de sinon.
+    // L'étiquette le dit (« Si … · sinon ») ; le texte du sinon n'est écrit nulle part dans l'éditeur.
+    function createConditionalTextNode(Node, mergeAttributes, Plugin, PluginKey) {
       return Node.create({
         name: 'conditionalText',
         group: 'block',
@@ -930,17 +1078,31 @@ const EditorNodes = (function () {
         // Le premier paragraphe d'un bloc qu'on vide ou qu'on colle ailleurs garde son bloc autour de lui, comme une citation.
         defining: true,
         addAttributes() {
-          return { condition: internalAttr(null) };
+          return { condition: internalAttr(null), otherwise: internalAttr(null) };
         },
         parseHTML() {
-          return [{ tag: 'div.conditional-text', getAttrs: el => ({ condition: jsonAttr(el, 'data-condition') }) }];
+          return [{ tag: 'div.conditional-text', getAttrs: el => ({ condition: jsonAttr(el, 'data-condition'), otherwise: ConditionalText.otherwiseText(el.getAttribute('data-otherwise')) }) }];
         },
         renderHTML({ HTMLAttributes, node }) {
           const attrs = mergeAttributes(HTMLAttributes, { class: 'conditional-text' });
           if (node.attrs.condition) attrs['data-condition'] = JSON.stringify(node.attrs.condition);
+          const otherwise = ConditionalText.otherwiseText(node.attrs.otherwise);
+          if (otherwise) attrs['data-otherwise'] = otherwise;
           return ['div', attrs, 0];
         },
-        addNodeView() { return props => conditionalTextNodeView(views, props); },
+        addNodeView() { return conditionalTextNodeView; },
+        // Un bloc qui finit sa case (sa colonne, son élément de liste) n'a pas de place derrière lui pour le curseur, un bloc qui l'ouvre n'en a pas devant lui : un clic dans la place libre du
+        // conteneur, sous le cadre ou à sa droite, y pose un paragraphe derrière (ConditionalText.addParagraphAfter) et un clic au-dessus du cadre un paragraphe devant
+        // (ConditionalText.addParagraphBefore). Le greffon garde le nom de son premier geste, derrière le bloc.
+        addProseMirrorPlugins() {
+          return [new Plugin({
+            key: new PluginKey('conditionalTextAfter'),
+            props: {
+              handleClickOn: (view, pos, node, nodePos, event, direct) => direct
+                && (ConditionalText.addParagraphAfter(view, node, nodePos, event) || ConditionalText.addParagraphBefore(view, node, nodePos, event)),
+            },
+          })];
+        },
       });
     }
     return { createConditionalTextNode };
@@ -956,7 +1118,6 @@ const EditorNodes = (function () {
     // et « Si Statut = Urgent » (ou « sans condition ») ; renderHTML, donc l'enregistrement, le presse-papiers et les exports, ne sérialise que <span
     // class="conditional-checkbox" data-condition data-checkbox-style>, que le rendu remplace par la case cochée ou non.
     function createConditionalCheckboxNode(Node, mergeAttributes) {
-      const views = languageViews();
       function attrsOf(HTMLAttributes, node) {
         const attrs = mergeAttributes(HTMLAttributes, { class: 'conditional-checkbox', contenteditable: 'false', 'data-checkbox-style': ConditionalCheckbox.styleOf(node.attrs.style) });
         if (node.attrs.condition) attrs['data-condition'] = JSON.stringify(node.attrs.condition);
@@ -985,6 +1146,9 @@ const EditorNodes = (function () {
             setAttrs(dom, attrsOf(HTMLAttributes, node));
             // Comme l'étiquette d'un bloc de texte conditionnel : sans rôle, l'`aria-label` d'un simple <span> n'est pas lu.
             dom.setAttribute('role', 'button');
+            // La couleur du libellé, le surlignage et les traits de ses marques, sous « Mise en forme » de Réglages (showTextMarks) ; la case dessinée
+            // garde sa couleur, comme à la Lecture et à l'export.
+            showTextMarks(dom, node.marks);
             const style = ConditionalCheckbox.styleOf(node.attrs.style);
             const box = document.createElement('span');
             box.className = 'resolved-checkbox';
@@ -1004,19 +1168,15 @@ const EditorNodes = (function () {
             dom.append(box, head, tail);
             const condition = ConditionRules.normalizeCondition(node.attrs.condition);
             dom.classList.toggle('has-condition', !!condition);
-            function refresh() {
-              const summary = condition ? VariableCondition.describe(condition, { full: true }) : '';
-              const parts = splitBadgeLabel(condition ? I18n.t('condCheckbox.tag.if', { condition: summary }) : I18n.t('condCheckbox.tag.none'));
-              head.textContent = parts.head;
-              tailText.textContent = parts.tail;
-              tail.hidden = !parts.tail;
-              const title = condition ? I18n.t('condCheckbox.tag.titleIf', { condition: summary }) : I18n.t('condCheckbox.tag.titleNone');
-              dom.title = title;
-              dom.setAttribute('aria-label', title);
-            }
-            refresh();
-            views.add(refresh);
-            return { dom, destroy: () => views.delete(refresh) };
+            const summary = condition ? VariableCondition.describe(condition, { full: true }) : '';
+            const parts = splitBadgeLabel(condition ? I18n.t('condCheckbox.tag.if', { condition: summary }) : I18n.t('condCheckbox.tag.none'));
+            head.textContent = parts.head;
+            tailText.textContent = parts.tail;
+            tail.hidden = !parts.tail;
+            const title = condition ? I18n.t('condCheckbox.tag.titleIf', { condition: summary }) : I18n.t('condCheckbox.tag.titleNone');
+            dom.title = title;
+            dom.setAttribute('aria-label', title);
+            return { dom };
           };
         },
       });
@@ -1034,16 +1194,17 @@ const EditorNodes = (function () {
     // js/variable-condition.js, barre flottante js/floating-toolbars.js) ; sans condition, la valeur est toujours affichée. Dans l'éditeur le texte est
     // celui de la phrase, simplement entouré d'un cadre (css/conditional-value.css) : aucune étiquette ne prend de place dans la ligne, le texte passe
     // donc à la ligne exactement où il le fera à l'export. renderHTML, donc l'enregistrement, le presse-papiers et les exports, ne sérialise que <span
-    // class="conditional-value" data-condition>.
+    // class="conditional-value" data-condition data-otherwise>. `otherwise` : le sinon de la valeur, un texte libre écrit à sa place quand sa condition n'est
+    // pas remplie (js/conditional-text.js:otherwiseText, ligne « Sinon afficher » de js/variable-condition.js) ; `null` = pas de sinon. Un trait sous le cadre le
+    // signale dans l'éditeur (css/conditional-value.css), sans largeur : le texte du sinon n'est écrit nulle part dans la phrase.
     function createConditionalValueNode(Node, mergeAttributes) {
-      const views = languageViews();
       return Node.create({
         name: 'conditionalValue',
         group: 'inline',
         inline: true,
         content: 'inline*',
         addAttributes() {
-          return { condition: internalAttr(null) };
+          return { condition: internalAttr(null), otherwise: internalAttr(null) };
         },
         parseHTML() {
           return [{
@@ -1052,16 +1213,18 @@ const EditorNodes = (function () {
             // urgent</valeur> » relu, « urgent » collait au mot d'avant). Une valeur garde les siennes - c'est ce qui permet de masquer l'espace avec
             // le mot -, les retours à la ligne du source HTML devenant des espaces.
             preserveWhitespace: true,
-            getAttrs: el => ({ condition: jsonAttr(el, 'data-condition') }),
+            getAttrs: el => ({ condition: jsonAttr(el, 'data-condition'), otherwise: ConditionalText.otherwiseText(el.getAttribute('data-otherwise')) }),
           }];
         },
         renderHTML({ HTMLAttributes, node }) {
           const attrs = mergeAttributes(HTMLAttributes, { class: 'conditional-value' });
           if (node.attrs.condition) attrs['data-condition'] = JSON.stringify(node.attrs.condition);
+          const otherwise = ConditionalText.otherwiseText(node.attrs.otherwise);
+          if (otherwise) attrs['data-otherwise'] = otherwise;
           return ['span', attrs, 0];
         },
-        // Vue de l'éditeur seulement : la même balise, son texte d'attente quand elle est vide, son info-bulle (la condition en toutes lettres) et sa
-        // classe `has-condition`.
+        // Vue de l'éditeur seulement : la même balise, son texte d'attente quand elle est vide, son info-bulle (la condition en toutes lettres, puis le sinon)
+        // et ses classes `has-condition` et `has-otherwise`.
         addNodeView() {
           return ({ node: initialNode }) => {
             let node = initialNode;
@@ -1072,13 +1235,19 @@ const EditorNodes = (function () {
               const condition = ConditionRules.normalizeCondition(node.attrs.condition);
               if (node.attrs.condition) dom.setAttribute('data-condition', JSON.stringify(node.attrs.condition)); else dom.removeAttribute('data-condition');
               dom.classList.toggle('has-condition', !!condition);
+              // Un sinon n'a de sens que pour une condition : sans elle, la valeur est toujours écrite et rien ne le signale.
+              const otherwise = condition ? ConditionalText.otherwiseText(node.attrs.otherwise) : null;
+              dom.classList.toggle('has-otherwise', !!otherwise);
+              // L'info-bulle cite le sinon en texte, une variable s'y écrit « #Clé ».
+              const otherwiseShown = otherwise ? ConditionalText.otherwiseLine(otherwise) : '';
               dom.setAttribute('data-placeholder', I18n.t('condValue.placeholder'));
-              const title = condition ? I18n.t('condValue.titleIf', { condition: VariableCondition.describe(condition, { full: true }) }) : I18n.t('condValue.titleNone');
+              const described = condition ? VariableCondition.describe(condition, { full: true }) : '';
+              const title = !condition ? I18n.t('condValue.titleNone')
+                : (otherwise ? I18n.t('condValue.titleIfOtherwise', { condition: described, otherwise: otherwiseShown }) : I18n.t('condValue.titleIf', { condition: described }));
               dom.title = title;
               dom.setAttribute('aria-label', title);
             }
             refresh();
-            views.add(refresh);
             return {
               dom,
               contentDOM: dom,
@@ -1090,7 +1259,6 @@ const EditorNodes = (function () {
               },
               // Les attributs de la balise sont posés hors transaction : ProseMirror ne doit pas les lire comme une modification du document.
               ignoreMutation: mutation => mutation.type === 'attributes' && mutation.target === dom,
-              destroy: () => views.delete(refresh),
             };
           };
         },
@@ -1315,7 +1483,7 @@ const EditorNodes = (function () {
   const { keepImagesOfReplacedText } = (function () {
     // Images en calque : du texte remplacé
 
-    const sameImage = (a, b) => ['src', 'varTable', 'varColumn', 'varKey', 'qrText'].every(name => a.attrs[name] === b.attrs[name]);
+    const sameImage = (a, b) => ['src', 'varTable', 'varColumn', 'varKey', 'qrText', 'chartSection', 'chartSpec'].every(name => a.attrs[name] === b.attrs[name]);
     const imagesOf = doc => { const found = []; doc.descendants((node, pos) => { if (node.type.name === 'editorImage') found.push({ node, pos }); }); return found; };
     const wholeDocReplaced = trs => trs.some(tr => tr.steps.some((step, i) => typeof step.from === 'number' && typeof step.to === 'number' && step.from <= 0 && step.to >= tr.docs[i].content.size));
     function replacedTextRange(root, selection, doc) {
@@ -1334,7 +1502,7 @@ const EditorNodes = (function () {
       // un mot effacé en entier (Ctrl + Suppr). ProseMirror ou le navigateur le fait lui-même, aucune touche d'ici n'est jouée : les images en calque
       // du texte remplacé que la transaction a emportées sont reposées là où le remplacement se referme, dans la même étape d'annulation. Le texte
       // remplacé est la sélection, ou, curseur seul, la plage d'une seule étape de texte pur (sans image dans ce qu'elle pose) dans un seul bloc.
-      // Sont rendues les images dont la sorte (source, colonne PJ, QR code) compte moins d'exemplaires après qu'avant : une image déplacée,
+      // Sont rendues les images dont la sorte (source, colonne PJ, QR code, graphique) compte moins d'exemplaires après qu'avant : une image déplacée,
       // redimensionnée ou remplacée par un collage identique ne manque pas.
       // Suivent leur cours : Couper (l'image part avec le texte dans le presse-papiers), Annuler et Rétablir, une transaction hors historique ou que le
       // suivi laisse passer (une correction du widget, « Tout accepter » et « Tout refuser »), le suivi des modifications actif, une image sélectionnée
@@ -1559,6 +1727,15 @@ const EditorNodes = (function () {
         // `src`, le texte contient une colonne et le QR code n'est dessiné qu'à la Lecture et à l'export, pour la ligne affichée
         // (reader-mode.js:resolveQrCodes).
         qrText: { default: null, parseHTML: el => el.getAttribute('data-qr-text') || null, renderHTML: noBareRender },
+        // Graphique de la page (js/chart-entry.js, extensions/graphique/chart-block.js) : le numéro de la section de graphique de Grist, les lignes tracées (« linked » : celles que trouve la règle
+        // de liaison pour la ligne affichée ; « all » : toute la table) et le nom montré dans le cadre. Jamais de `src` : l'image est dessinée à la Lecture et
+        // à l'export (reader-mode.js:resolveCharts), pas enregistrée dans le modèle.
+        chartSection: { default: null, parseHTML: el => el.getAttribute('data-chart-section') || null, renderHTML: noBareRender },
+        // Un graphique CRÉÉ dans le modèle (extensions/graphique/chart-make.js) : sa définition, un petit texte JSON (la forme, la table, la colonne des étiquettes, les colonnes à tracer), à la place du numéro
+        // de section ; les lignes tracées et le nom du cadre sont les mêmes. Jamais de `src` non plus.
+        chartSpec: { default: null, parseHTML: el => el.getAttribute('data-chart-spec') || null, renderHTML: noBareRender },
+        chartScope: { default: null, parseHTML: el => el.getAttribute('data-chart-scope') || null, renderHTML: noBareRender },
+        chartName: { default: null, parseHTML: el => el.getAttribute('data-chart-name') || null, renderHTML: noBareRender },
       };
     }
     return { moveImageNode, imageAttributes };
@@ -1610,11 +1787,14 @@ const EditorNodes = (function () {
       return { wrap, img, varLabel, blockedSiteLabel, revealButton, moveHandle, corners };
     }
 
-    function imageInnerStyle(attrs, isVarBox, isQrBox) {
+    function imageInnerStyle(attrs, isVarBox, isQrBox, isChartBox) {
       const imgStyle = [];
       if (attrs.width) imgStyle.push(`width: ${attrs.width}`);
       if (isVarBox && attrs.height) imgStyle.push(`height: ${attrs.height}`);
       if (isQrBox) imgStyle.push('aspect-ratio: 1 / 1');
+      // Un graphique : la largeur réglée et les proportions réglées (la hauteur sur la largeur), comme la Lecture et les exports (js/chart-entry.js, extensions/graphique/chart-block.js,
+      // resolveImage) : dans une case plus étroite que lui, le cadre rétrécit sans se déformer.
+      if (isChartBox) { const size = ChartEntry.sizeOfAttrs(attrs); imgStyle.push(`aspect-ratio: ${size.width} / ${size.height}`); }
       if (attrs.opacity !== 1 && attrs.opacity != null) imgStyle.push(`opacity: ${attrs.opacity}`);
       if (attrs.layer !== 'normal') imgStyle.push('position: relative', `z-index: ${attrs.layer === 'front' ? 5 : -1}`);
       return imgStyle.join('; ');
@@ -1644,9 +1824,18 @@ const EditorNodes = (function () {
       const isVarBox = !!attrs.varTable;
       // Un QR code dont le texte contient une colonne : le même cadre qu'une image de variable, carré, avec son texte pour libellé.
       const isQrBox = !!attrs.qrText && !attrs.src && !isVarBox;
+      // Un graphique de la page (js/chart-entry.js) : le même cadre, de la largeur et de la hauteur réglées, avec son nom pour libellé.
+      const isChartBox = ChartEntry.isChartAttrs(attrs) && !attrs.src && !isVarBox && !isQrBox;
+      // Le dessin du graphique, quand il est prêt (extensions/graphique/chart-block.js, paintFrame, par js/chart-entry.js) : l'adresse de l'image du cadre à l'écran, jamais un attribut du
+      // nœud. Sans l'extension qui le dessine, le cadre reste, grisé, avec son nom.
+      const drawn = isChartBox ? ChartEntry.paintFrame(view, attrs, () => applyImageAttrs(view, attrs)) : '';
+      if (!isChartBox) ChartEntry.releaseFrame(view);
       // Une image d'un autre site que la personne n'a pas affiché : pas d'adresse donnée au navigateur (le modèle, lui, la garde), un cadre à la place.
       const blockedSite = isVarBox ? '' : ExternalImages.blockedSiteOf(attrs.src);
-      img.src = (isVarBox || blockedSite) ? '' : (attrs.src || '');
+      const shownSrc = (isVarBox || blockedSite) ? '' : (attrs.src || drawn);
+      // Le dessin d'un graphique change (il arrive après coup, une autre ligne le change, l'extension part) : à la fin, l'éditeur le dit (ChartEntry.PAINTED_EVENT), pour que la bande des diapositives recopie sa miniature.
+      const repainted = isChartBox && (img.getAttribute('src') || '') !== shownSrc;
+      if (img.getAttribute('src') !== shownSrc) img.src = shownSrc;
       wrap.classList.toggle('editor-image-blocked', !!blockedSite);
       if (blockedSite) {
         wrap.dataset.blockedSite = blockedSite;
@@ -1656,15 +1845,19 @@ const EditorNodes = (function () {
         view.revealButton.setAttribute('aria-label', I18n.t('image.blocked.alt', { site: blockedSite }));
       } else delete wrap.dataset.blockedSite;
       img.alt = attrs.alt || '';
-      img.setAttribute('style', imageInnerStyle(attrs, isVarBox, isQrBox));
-      wrap.classList.toggle('editor-image-var-placeholder', isVarBox || isQrBox);
+      img.setAttribute('style', imageInnerStyle(attrs, isVarBox, isQrBox, isChartBox));
+      wrap.classList.toggle('editor-image-var-placeholder', isVarBox || isQrBox || isChartBox);
       wrap.classList.toggle('editor-image-qr-placeholder', isQrBox);
-      varLabel.textContent = isVarBox ? ('#' + (attrs.varKey || '')) : (isQrBox ? attrs.qrText : '');
+      wrap.classList.toggle('editor-image-chart-placeholder', isChartBox);
+      // Le dessin est prêt : il prend la place du cadre pointillé et de son libellé (css/chart-frame.css).
+      wrap.classList.toggle('editor-image-chart-drawn', !!drawn);
+      varLabel.textContent = isVarBox ? ('#' + (attrs.varKey || '')) : (isQrBox ? attrs.qrText : (isChartBox ? (attrs.chartName || I18n.t('chart.frame')) : ''));
       const layered = attrs.layer !== 'normal';
       wrap.classList.toggle('editor-image-layered', layered);
       wrap.classList.toggle('editor-image-repeated', PageLayer.isRepeatedAttrs(attrs));
       if (attrs.layer === 'behind') behindImageViews.add(wrap); else { behindImageViews.delete(wrap); wrap.classList.remove('editor-image-click-through'); }
       applyImageFrame(view, attrs, layered);
+      if (repainted) wrap.dispatchEvent(new CustomEvent(ChartEntry.PAINTED_EVENT, { bubbles: true }));
     }
     return { imageViewDom, applyImageAttrs };
   })();
@@ -1699,7 +1892,8 @@ const EditorNodes = (function () {
           startX: event.clientX, startY: event.clientY, zoom,
           startWidth: rect.width / zoom, startHeight: rect.height / zoom,
           signX: corner.includes('w') ? -1 : 1, signY: corner.includes('n') ? -1 : 1,
-          isVarBox: !!attrsNow.varTable,
+          // Un cadre sans image du modèle (colonne PJ, graphique) a une largeur ET une hauteur à lui ; les autres images gardent leurs proportions.
+          isVarBox: !!attrsNow.varTable || (ChartEntry.isChartAttrs(attrsNow) && !attrsNow.src),
           // En calque, `wrap` a une largeur explicite (cf. applyImageAttrs) ; sans la faire grandir aussi pendant le glisser (pas seulement à la fin),
           // `.editor-image { max-width:100% }` plafonnerait l'<img> à l'ancienne largeur du wrap.
           isLayered: attrsNow.layer !== 'normal',
@@ -1709,9 +1903,7 @@ const EditorNodes = (function () {
       }
       function onResizeMove(event) {
         if (!resizeState) return;
-        let width = Math.max(30, resizeState.startWidth + ((event.clientX - resizeState.startX) / resizeState.zoom) * resizeState.signX);
-        // En en-tête/pied, la poignée bute sur le plafond mais reste utilisable (rétrécir reste toujours libre).
-        width = HeaderFooterPreview.clampWidthForHfMaxSize(width, img.naturalWidth, img.naturalHeight);
+        const width = Math.max(30, resizeState.startWidth + ((event.clientX - resizeState.startX) / resizeState.zoom) * resizeState.signX);
         img.style.width = Math.round(width) + 'px';
         if (resizeState.isLayered) wrap.style.width = Math.round(width) + 'px';
         if (resizeState.isVarBox) {
@@ -1765,7 +1957,7 @@ const EditorNodes = (function () {
           const grid = HeaderFooterPreview.computePageGridPosition(wrap);
           // Lu après computePageGridPosition (et non recalculé depuis event.clientX/Y) : cette fonction repositionne `wrap` si le glisser sort de
           // la page physique, offsetLeft/offsetTop reflètent alors la position corrigée, jamais désynchronisée de la grille.
-          const patch = { left: Math.round(wrap.offsetLeft), top: Math.round(wrap.offsetTop) };
+          const patch = { left: Math.round(wrap.offsetLeft - PageSectionView.layerGapAt(wrap)), top: Math.round(wrap.offsetTop) };
           if (grid) Object.assign(patch, grid);
           // Même voie que les flèches du clavier : en suivi, le déplacement laisse sa trace (l'original barré, la copie à la nouvelle place).
           // Rien ne s'écrit sans changement (un simple clic sur l'image déjà sélectionnée) ni sur une image en suppression suggérée : le DOM, que
@@ -1787,7 +1979,6 @@ const EditorNodes = (function () {
       revealHooked = true;
       const redrawAll = () => revealHooks.forEach(hook => hook());
       ExternalImages.onReveal(redrawAll);
-      I18n.onChange(redrawAll); // le bouton « Afficher » et son nom accessible suivent la langue
     }
 
     function imageNodeView({ node, editor: nodeEditor, getPos }) {
@@ -1817,13 +2008,15 @@ const EditorNodes = (function () {
           applyAttrs(updatedNode.attrs);
           return true;
         },
-        selectNode: () => wrap.classList.add('editor-image-selected'),
+        // Le clic sur un graphique refait son dessin d'après les données d'aujourd'hui (js/chart-entry.js).
+        selectNode: () => { wrap.classList.add('editor-image-selected'); ChartEntry.refreshFrame(view); },
         deselectNode: () => wrap.classList.remove('editor-image-selected'),
         // Le bouton « Afficher » d'une image bloquée est à lui : ni sélection de l'image, ni glissé, ni autre geste de l'éditeur sur son clic.
         stopEvent: event => !!event.target.closest && !!event.target.closest('.editor-image-blocked-box'),
         destroy: () => {
           revealHooks.delete(redraw);
           behindImageViews.delete(wrap);
+          ChartEntry.releaseFrame(view);
           resize.release();
           move.release();
         },
@@ -1838,11 +2031,11 @@ const EditorNodes = (function () {
     // Image : nœud atome en ligne (`layer` normal/devant/derrière, `opacity`, `align`, `wrap`). Chaque attribut garde un renderHTML vide : le nœud
     // construit lui-même la chaîne `style` complète ci-dessous.
     function createEditorImageNode(Node) {
-      // `height` n'est posé que pour une image liée à une variable (placeholder de taille fixe, mode "contain" côté rendu).
+      // `height` n'est posé que pour une image liée à une variable ou un graphique (placeholder de taille fixe, mode "contain" côté rendu).
       function styleFor(a) {
         const parts = [];
         if (a.width) parts.push(`width: ${a.width}`);
-        if (a.varTable && a.height) parts.push(`height: ${a.height}`);
+        if ((a.varTable || (ChartEntry.isChartAttrs(a) && !a.src)) && a.height) parts.push(`height: ${a.height}`);
         // QR code sans image (une colonne dans son texte, js/qr-code.js) : un cadre carré, quelle que soit la largeur.
         if (a.qrText && !a.src) parts.push('aspect-ratio: 1 / 1');
         if (a.layer !== 'normal') {
@@ -1856,20 +2049,26 @@ const EditorNodes = (function () {
         addAttributes() { return imageAttributes(); },
         parseHTML() { return [{ tag: 'img.editor-image' }]; },
         renderHTML({ node }) {
-          const a = node.attrs;
+          const nodeAttrs = node.attrs;
           // Placeholder lié à une variable : `src` reste vide (résolu au rendu/export par js/reader-mode.js:resolveVariableImages).
-          const attrs = { class: 'editor-image', draggable: 'false', src: a.varTable ? '' : a.src, alt: a.alt, style: styleFor(a), 'data-layer': a.layer, 'data-wrap': a.wrap };
-          if (a.align) attrs['data-align'] = a.align;
-          if (a.pageIndex != null) attrs['data-page-index'] = String(a.pageIndex);
-          if (a.pageLeftPt != null) attrs['data-page-left-pt'] = String(a.pageLeftPt);
-          if (a.pageTopPt != null) attrs['data-page-top-pt'] = String(a.pageTopPt);
-          if (a.repeat) attrs['data-repeat'] = 'true';
-          if (a.varTable) {
-            attrs['data-var-table'] = a.varTable;
-            attrs['data-var-column'] = a.varColumn;
-            attrs['data-var-key'] = a.varKey;
+          const attrs = { class: 'editor-image', draggable: 'false', src: nodeAttrs.varTable ? '' : nodeAttrs.src, alt: nodeAttrs.alt, style: styleFor(nodeAttrs), 'data-layer': nodeAttrs.layer, 'data-wrap': nodeAttrs.wrap };
+          if (nodeAttrs.align) attrs['data-align'] = nodeAttrs.align;
+          if (nodeAttrs.pageIndex != null) attrs['data-page-index'] = String(nodeAttrs.pageIndex);
+          if (nodeAttrs.pageLeftPt != null) attrs['data-page-left-pt'] = String(nodeAttrs.pageLeftPt);
+          if (nodeAttrs.pageTopPt != null) attrs['data-page-top-pt'] = String(nodeAttrs.pageTopPt);
+          if (nodeAttrs.repeat) attrs['data-repeat'] = 'true';
+          if (nodeAttrs.varTable) {
+            attrs['data-var-table'] = nodeAttrs.varTable;
+            attrs['data-var-column'] = nodeAttrs.varColumn;
+            attrs['data-var-key'] = nodeAttrs.varKey;
           }
-          if (a.qrText) attrs['data-qr-text'] = a.qrText;
+          if (nodeAttrs.qrText) attrs['data-qr-text'] = nodeAttrs.qrText;
+          if (ChartEntry.isChartAttrs(nodeAttrs)) {
+            if (nodeAttrs.chartSection) attrs['data-chart-section'] = String(nodeAttrs.chartSection);
+            if (nodeAttrs.chartSpec) attrs['data-chart-spec'] = nodeAttrs.chartSpec;
+            if (nodeAttrs.chartScope) attrs['data-chart-scope'] = nodeAttrs.chartScope;
+            if (nodeAttrs.chartName) attrs['data-chart-name'] = nodeAttrs.chartName;
+          }
           return ['img', attrs];
         },
         addCommands() {
@@ -1879,17 +2078,65 @@ const EditorNodes = (function () {
       });
     }
 
-    // Saut de page forcé - nœud atome de bloc.
+    // Saut de page forcé - nœud atome de bloc. `orientation` : le sens des pages qui suivent ce saut (« portrait » ou « landscape », js/page-sections.js), nul quand le saut ne dit rien et
+    // laisse aux pages le sens de celle où il tombe, comme avant : un document sans saut tourné est exactement celui d'avant (même HTML, aucune clé de plus). C'est ce repère que la Lecture, le
+    // PDF, le Word et l'impression lisent déjà dans un macro-modèle aux sens mêlés : une page paysage au milieu de pages portrait n'est qu'un saut qui tourne, puis un saut qui ramène.
+    // `added` : le saut est celui que le menu du bouton Page a posé à une coupure automatique (js/page-sense-edit.js) pour tourner une seule page, pas un saut de la personne : le menu le retire
+    // dès qu'il ne tourne plus rien, là où un saut posé à la main reste. Faux par défaut, et sans clé dans le HTML : un saut ordinaire est octet pour octet celui d'avant.
     function createPageBreakNode(Node) {
       return Node.create({
         name: 'pageBreak',
         group: 'block',
         atom: true,
         selectable: true,
+        addAttributes() {
+          return {
+            orientation: { default: null, parseHTML: el => PageSections.senseOf(el), renderHTML: () => ({}) },
+            added: { default: false, parseHTML: el => el.getAttribute(PageSections.ADDED_ATTR) === 'true', renderHTML: () => ({}) },
+          };
+        },
         parseHTML() { return [{ tag: 'div.page-break-marker' }]; },
-        renderHTML() { return ['div', { class: 'page-break-marker', contenteditable: 'false' }, 'Saut de page']; },
+        renderHTML({ node }) {
+          const attrs = { class: 'page-break-marker', contenteditable: 'false' };
+          if (node.attrs.orientation) attrs[PageSections.ATTR] = node.attrs.orientation;
+          if (node.attrs.added) attrs[PageSections.ADDED_ATTR] = 'true';
+          return ['div', attrs, 'Saut de page'];
+        },
+        // Vue de l'éditeur seulement : le repère dit « Saut de page » ou « Page break » selon la langue de l'interface. renderHTML garde le texte français, celui du HTML enregistré, du
+        // presse-papiers et des exports : un document écrit en anglais ne diffère en rien d'un document écrit en français. Même balise, même classe, même `contenteditable` et même sens que
+        // renderHTML : la pagination, la Lecture et la bande des diapositives le trouvent comme avant. Changer de langue recharge la page, le texte n'a donc pas à se refaire en route.
+        addNodeView() {
+          return ({ node }) => {
+            const dom = document.createElement('div');
+            dom.className = 'page-break-marker';
+            dom.contentEditable = 'false';
+            // Un saut qui tourne les pages dit aussi le sens de la suite (js/page-sections.js).
+            const sense = node.attrs.orientation;
+            dom.textContent = I18n.t(sense ? (sense === PageSections.LANDSCAPE ? 'pageBreak.markerLandscape' : 'pageBreak.markerPortrait') : 'pageBreak.marker');
+            if (sense) dom.setAttribute(PageSections.ATTR, sense);
+            if (node.attrs.added) dom.setAttribute(PageSections.ADDED_ATTR, 'true');
+            return { dom };
+          };
+        },
+        // Le saut, puis le curseur SOUS lui (carte du 14/10, « Curseur dessous ») : un atome posé reste sélectionné, et la frappe qui suit le REMPLACERAIT. Un texte coupé en deux par
+        // le saut a déjà son curseur dessous. Rien sous le saut (fin du document, un tableau, une liste, un autre saut) : une ligne vide y est ajoutée, dans le même pas d'annulation.
         addCommands() {
-          return { insertPageBreak: () => ({ chain }) => chain().insertContent({ type: this.name }).run() };
+          return {
+            insertPageBreak: () => ({ chain }) => chain()
+              .insertContent({ type: this.name })
+              .command(({ tr, state, dispatch }) => {
+                const { selection } = tr;
+                if (!selection.node || selection.node.type.name !== this.name) return true;
+                if (dispatch) {
+                  const below = selection.to;
+                  const next = tr.doc.nodeAt(below);
+                  if (!next || !next.isTextblock) tr.insert(below, state.schema.nodes.paragraph.create());
+                  tr.setSelection(EditorCore.getTextSelectionClass().create(tr.doc, below + 1)).scrollIntoView();
+                }
+                return true;
+              })
+              .run(),
+          };
         },
       });
     }
@@ -1900,7 +2147,8 @@ const EditorNodes = (function () {
     // La numérotation des titres et le sommaire
 
     // Numérotation des titres : configuration persistée comme un nœud du contenu plutôt que dans une colonne Grist séparée (pas de migration de
-    // schéma). L'attribut s'appelle `numberingStyle` et non `style` (collision HTML).
+    // schéma). L'attribut s'appelle `numberingStyle` et non `style` (collision HTML). Le nœud porte aussi le style de chaque niveau de titre
+    // (`levelStyles`, `data-level-styles` en JSON : js/heading-styles.js), absent tant que la personne n'en a pas défini.
     function createHeadingNumberingConfigNode(Node) {
       return Node.create({
         name: 'headingNumberingConfig',
@@ -1908,23 +2156,27 @@ const EditorNodes = (function () {
         atom: true,
         selectable: false,
         addAttributes() {
-          return { numberingStyle: internalAttr('none') };
+          return { numberingStyle: internalAttr('none'), levelStyles: internalAttr(null) };
         },
         parseHTML() {
-          return [{ tag: 'div.heading-numbering-config', getAttrs: el => ({ numberingStyle: el.dataset.style || 'none' }) }];
+          return [{
+            tag: 'div.heading-numbering-config',
+            getAttrs: el => ({ numberingStyle: el.dataset.style || 'none', levelStyles: HeadingStyles.normalize(el.getAttribute(HeadingStyles.ATTR)) }),
+          }];
         },
         renderHTML({ node }) {
-          return ['div', { class: 'heading-numbering-config', contenteditable: 'false', 'data-style': node.attrs.numberingStyle }];
+          const styles = HeadingStyles.serialize(node.attrs.levelStyles);
+          return ['div', Object.assign({ class: 'heading-numbering-config', contenteditable: 'false', 'data-style': node.attrs.numberingStyle }, styles ? { [HeadingStyles.ATTR]: styles } : {})];
         },
         addCommands() {
           return {
             // Un seul nœud de config par document : cherche parmi les enfants directs (doc.forEach), sinon l'insère en tête. `dispatch` peut être
-            // absent (mode "can-run") - ne muter `tr` que s'il est présent.
+            // absent (mode "can-run") - ne muter `tr` que s'il est présent. Le style des niveaux de titre (`levelStyles`) reste tel quel.
             setHeadingNumberingStyle: numberingStyle => ({ tr, state, dispatch }) => {
-              let foundPos = null;
-              state.doc.forEach((node, pos) => { if (node.type.name === 'headingNumberingConfig') foundPos = pos; });
+              let found = null;
+              state.doc.forEach((node, pos) => { if (node.type.name === 'headingNumberingConfig') found = { node, pos }; });
               if (dispatch) {
-                if (foundPos !== null) tr.setNodeMarkup(foundPos, undefined, { numberingStyle });
+                if (found) tr.setNodeMarkup(found.pos, undefined, Object.assign({}, found.node.attrs, { numberingStyle }));
                 else tr.insert(0, state.schema.nodes.headingNumberingConfig.create({ numberingStyle }));
               }
               return true;
@@ -1937,7 +2189,8 @@ const EditorNodes = (function () {
     // Sommaire - nœud atome de bloc. Le HTML sérialisé reste un placeholder (résolu par reader-mode.js/pdf-export.js) ; l'éditeur affiche un aperçu
     // vivant via un NodeView, isolé du modèle par `ignoreMutation`. Le texte du placeholder suit la langue de l'interface (même clé que le NodeView) :
     // il n'est lu par personne au rechargement (`parseHTML` ne regarde que la classe), mais Ctrl+C le colle tel quel dans un autre document ou une
-    // autre application.
+    // autre application. Chaque ligne de l'aperçu est un lien (js/toc-links.js) : un clic amène le titre en haut de l'écran et y pose le curseur ; ailleurs sur
+    // le sommaire (le vide à droite d'une ligne, le cadre), un clic sélectionne le bloc comme avant, pour le supprimer ou le copier.
     function createTocNode(Node) {
       return Node.create({
         name: 'toc',
@@ -1953,22 +2206,49 @@ const EditorNodes = (function () {
           return ({ editor: nodeViewEditor }) => {
             const dom = document.createElement('div');
             dom.className = 'toc-marker';
+            const styleOnRoot = () => nodeViewEditor.view.dom.dataset.headingStyle || 'none';
+            const headingElements = () => Array.from(nodeViewEditor.view.dom.querySelectorAll(':scope > h1, :scope > h2, :scope > h3, :scope > h4, :scope > h5, :scope > h6'));
+            // Le curseur au début du titre atteint. Sans lui, la personne verrait le titre mais taperait encore là où elle était ; un document en lecture seule garde son curseur.
+            const placeCaretIn = heading => {
+              if (!nodeViewEditor.isEditable) return;
+              nodeViewEditor.chain().focus(null, { scrollIntoView: false }).setTextSelection(nodeViewEditor.view.posAtDOM(heading, 0)).run();
+            };
+            let renderedStyle = null;
+            // Vrai dès que l'aperçu a été dessiné sur une page À JOUR. Le NodeView naît PENDANT la mise à jour de la vue : ProseMirror n'attache les nœuds du nouveau contenu à la page qu'à la fin,
+            // et l'aperçu y lit ses titres - ceux d'avant (la zone qu'on vient de quitter) ou aucun. Un chargement qui n'émet pas 'update' (Editor.loadTrackedDocument : « Terminer » d'un en-tête ou
+            // d'un pied, qui remet le corps) laissait ainsi l'aperçu sur son texte d'attente, ou sur un seul titre, jusqu'à la première frappe dans un titre.
+            let drawnOnUpdatedPage = false;
             const refresh = () => {
-              const headingEls = Array.from(nodeViewEditor.view.dom.querySelectorAll(':scope > h1, :scope > h2, :scope > h3, :scope > h4, :scope > h5, :scope > h6'));
+              const headingEls = headingElements();
               dom.innerHTML = '';
+              renderedStyle = styleOnRoot();
               if (!headingEls.length) { dom.textContent = I18n.t('toc.placeholder'); return; }
-              const style = nodeViewEditor.view.dom.dataset.headingStyle || 'none';
-              HeadingNumbering.entriesFor(headingEls, style).forEach(entry => {
+              HeadingNumbering.entriesFor(headingEls, renderedStyle).forEach((entry, index) => {
                 const line = document.createElement('div');
                 line.className = 'toc-entry-preview';
                 line.style.paddingLeft = ((entry.level - 1) * 14) + 'px';
-                line.textContent = entry.text;
+                // Le titre se cherche à chaque clic (le même rang parmi les titres de premier niveau d'alors) : l'aperçu ne garde aucun élément du document.
+                line.appendChild(TocLinks.link(entry.text, () => headingElements()[index], { onGo: placeCaretIn }));
                 dom.appendChild(line);
               });
             };
+            // Un appui sur un lien ne sélectionne pas le bloc et ne retire pas le focus de l'éditeur.
+            dom.addEventListener('mousedown', event => { if (event.target.closest && event.target.closest('.toc-link')) event.preventDefault(); });
+            // Le style de numérotation se pose sur la racine (data-heading-style) APRÈS le chargement d'un modèle (Editor.setHTML), puis une transaction vide passe : 'update' n'est émis que
+            // pour un changement du document, jamais pour elle, et l'aperçu gardait le style du modèle précédent jusqu'à la première frappe. 'transaction' est émis aussi pour elle ; la
+            // comparaison ne coûte qu'une chaîne par transaction, et l'aperçu ne se redessine que si le style a changé. 'transaction' vient aussi juste après la mise à jour de la vue qui a créé le
+            // NodeView, la page y est à jour : le premier passage redessine l'aperçu (drawnOnUpdatedPage), avant tout ce qui mesure la page ensuite (la pagination).
+            const redraw = () => { drawnOnUpdatedPage = true; refresh(); };
+            const redrawIfStale = () => { if (!drawnOnUpdatedPage || styleOnRoot() !== renderedStyle) redraw(); };
             refresh();
-            nodeViewEditor.on('update', refresh);
-            return { dom, ignoreMutation: () => true, destroy: () => nodeViewEditor.off('update', refresh) };
+            nodeViewEditor.on('update', redraw);
+            nodeViewEditor.on('transaction', redrawIfStale);
+            return {
+              dom, ignoreMutation: () => true,
+              // Ce qui se passe sur un lien du sommaire n'est pas l'affaire de l'éditeur (il y sélectionnerait le bloc) ; le reste du sommaire garde son geste.
+              stopEvent: event => !!(event.target && event.target.closest && event.target.closest('.toc-link')),
+              destroy: () => { nodeViewEditor.off('update', redraw); nodeViewEditor.off('transaction', redrawIfStale); },
+            };
           };
         },
       });
@@ -1976,13 +2256,66 @@ const EditorNodes = (function () {
     return { createHeadingNumberingConfigNode, createTocNode };
   })();
 
+  // Le repère d'une diapositive liée (présentations, js/slide-links.js) : un bloc vide de hauteur nulle à la fin de la diapositive, que le curseur ne prend pas ; ses attributs (le
+  // numéro de la diapositive, son lien, sa base, son sens, son verrou) sont lus et écrits par SlideLinks, ses garde-fous aussi (SlideLinks.createExtension).
+  function createSlideLinkNode(Node) {
+    return Node.create({
+      name: SlideLinks.NODE,
+      group: 'block',
+      atom: true,
+      selectable: false,
+      draggable: false,
+      addAttributes() {
+        const attrs = {};
+        SlideLinks.ATTRS.forEach((name) => { attrs[name] = internalAttr(null); });
+        return attrs;
+      },
+      parseHTML() {
+        return [{ tag: 'div.' + SlideLinks.CLASS, priority: 1000, getAttrs: el => SlideLinks.attrsOfEl(el) }];
+      },
+      renderHTML({ node }) {
+        return ['div', SlideLinks.domAttrs(node.attrs)];
+      },
+    });
+  }
+
+  const { createInlineMarksCarrier, INLINE_MARKS_ATTR, INLINE_LEAF_NODES } = (function () {
+    // Les marques d'un nœud en ligne qui n'est pas du texte (une bulle de variable en gras, une image dans un lien...), pour l'écriture en direct
+
+    // Yjs (y-prosemirror) ne garde les marques que sur les passages de TEXTE (un format sur une suite de caractères) : celles d'un nœud en ligne qui n'en est pas - la bulle d'une variable
+    // en gras ou à 21 pt, l'image d'un lien - n'ont nulle part où aller et disparaissent dès que le texte passe par le document partagé (extensions/edition/live-editor.js). Ces nœuds portent donc
+    // un attribut de plus, `ppMarks`, qui garde leurs marques en JSON : jamais écrit dans le HTML (`rendered: false`), nul tant que l'écriture en direct n'a pas servi, tenu à jour par elle
+    // seule (live-editor.js : de la marque vers l'attribut pour ce qui se tape ici, de l'attribut vers la marque pour ce qui arrive d'une autre personne). Sans elle, il ne change rien à
+    // l'éditeur ni aux exports.
+    // Tous les nœuds en ligne du schéma qui ne sont pas du texte, rangés ici à la main (un nom que cet éditeur n'a pas est ignoré par TipTap) : un nœud en ligne de plus s'ajoute à cette liste,
+    // et dev-tests/verify-live-editor.mjs échoue tant qu'il manque.
+    const INLINE_MARKS_ATTR = 'ppMarks';
+    const INLINE_LEAF_NODES = [
+      'varBadge', 'calcBadge', 'pageNumberBadge', 'smartChip', 'footnoteRef', 'conditionalCheckbox', 'conditionalValue', 'editorImage', 'mention', 'tabStop', 'hardBreak',
+    ];
+    function createInlineMarksCarrier(Extension) {
+      return Extension.create({
+        name: 'inlineMarksCarrier',
+        addGlobalAttributes() {
+          return [{
+            types: INLINE_LEAF_NODES,
+            attributes: { [INLINE_MARKS_ATTR]: { default: null, rendered: false, keepOnSplit: false, parseHTML: () => null } },
+          }];
+        },
+      });
+    }
+    return { createInlineMarksCarrier, INLINE_MARKS_ATTR, INLINE_LEAF_NODES };
+  })();
+
 
   return {
-    createVarBadgeNode, createCalcBadgeNode, createCalcBadgeKeysExtension, createPageNumberBadgeNode, createSmartChipNode, createFootnoteRefNode, createCommentMark,
+    createVarBadgeNode, varBadgeAttributes, varBadgeAttrsOf, varBadgeHtml, createCalcBadgeNode, createCalcBadgeKeysExtension, calcBadgeLabel, showTextMarks, createPageNumberBadgeNode, createSmartChipNode, smartChipAttrsOf, smartChipHtml, smartChipLabel, createFootnoteRefNode, createCommentMark,
     createFontSizeExtension, createTextColorExtension, createHighlightExtension,
     createBulletStyleExtension, createOrderedListStyleExtension, createTaskListStyleExtension,
     withCellBackground, withFastColwidth, parseColwidthOnce, createTableView, createTabNavigationExtension, createClearHistoryExtension,
     createTwoColumnsNodes, createConditionalTextNode, createConditionalCheckboxNode, createConditionalValueNode, createConditionalValueKeysExtension, createFloatingImageKeysExtension, createBehindImageClickThroughExtension, createEditorImageNode, moveImageNode, createPageBreakNode,
-    createHeadingNumberingConfigNode, createTocNode,
+    createHeadingNumberingConfigNode, createTocNode, createSlideLinkNode, splitBadgeLabel,
+    createInlineMarksCarrier, INLINE_MARKS_ATTR, INLINE_LEAF_NODES,
+    inlineAtom, internalAttr,
   };
 })();

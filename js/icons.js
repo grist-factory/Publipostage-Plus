@@ -66,6 +66,9 @@ const Icons = (function () {
       colBefore: '<path d="M9 4v16M15 4v16M4 12h4"/>',
       colAfter: '<path d="M9 4v16M15 4v16M16 12h4"/>',
       colDel: '<path d="M9 4v16M15 4v16"/>',
+      // Égaliser les lignes (deux traits et, entre eux, une flèche à deux pointes : la même hauteur) et les colonnes (la même figure couchée).
+      rowsEqualize: '<path d="M4 6h16M4 18h16"/><path d="M12 9.5v5"/><polyline points="10 11.5 12 9.5 14 11.5"/><polyline points="10 12.5 12 14.5 14 12.5"/>',
+      colsEqualize: '<path d="M6 4v16M18 4v16"/><path d="M9.5 12h5"/><polyline points="11.5 10 9.5 12 11.5 14"/><polyline points="12.5 10 14.5 12 12.5 14"/>',
       // Barre de la case d'une grille : fusionner (deux flèches vers le centre) et scinder (deux flèches vers les bords), puis l'alignement vertical
       // (un trait de référence, haut, milieu ou bas, et la case posée contre lui).
       cellMerge: '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 12h5"/><path d="M16 12h5"/><polyline points="9 9 12 12 9 15"/><polyline points="15 9 12 12 15 15"/>',
@@ -83,6 +86,9 @@ const Icons = (function () {
       bordersLeft: bordersIcon(['left']),
       bordersRight: bordersIcon(['right']),
       bordersNone: bordersIcon([]),
+      // « Transparent » de la couleur du trait du menu Bordures (js/floating-toolbars.js) : le damier qu'on met sous une image transparente - un carré et deux de ses quatre
+      // quarts pleins, en diagonale. Distinct de noColor (« Par défaut », un rond barré) : une icône ne porte qu'une fonction.
+      transparent: '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M12 3h7a2 2 0 0 1 2 2v7h-9z" fill="currentColor" stroke="none"/><path d="M3 12h9v9H5a2 2 0 0 1-2-2z" fill="currentColor" stroke="none"/>',
       trash: '<path d="M4 7h16M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2M6 7l1 13a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1l1-13"/>',
       // Crayon « Modifier ce modèle » des lignes du résumé d'un macro-modèle (js/macro-editor.js) : le tracé du crayon « Renommer » du titre
       // (css/toolbar-v2.css), sa ligne de base comprise.
@@ -100,6 +106,18 @@ const Icons = (function () {
       layerNormal: '<path d="M4 6h6M4 18h16M4 12h6"/><rect x="12" y="9" width="8" height="6" rx="1"/>',
       layerFront: '<rect x="3" y="3" width="12" height="12" rx="1.5" stroke-dasharray="2.5 2.5"/><rect x="9" y="9" width="12" height="12" rx="1.5"/>',
       layerBehind: '<rect x="9" y="9" width="12" height="12" rx="1.5" stroke-dasharray="2.5 2.5"/><rect x="3" y="3" width="12" height="12" rx="1.5"/>',
+      // « Derrière le texte » d'un cadre libre (js/free-frame.js) : une zone en pointillés sous des lignes de texte qui la traversent. Distinct de layerBehind, qui est l'ordre entre les objets (arrière-plan).
+      frameBehindText: '<rect x="3" y="4" width="13" height="13" rx="1.5" stroke-dasharray="2.5 2.5"/><path d="M8 8h13M8 12h13M8 16h13M3 20h18"/>',
+      // « Animation… » d'un objet (js/frame-anim.js) : un objet qui avance, trois traits de vitesse derrière lui.
+      frameColumns: '<rect x="3" y="4" width="18" height="16" rx="1.5"/><path d="M12 7v10M6 9h3M6 12h3M15 9h3M15 12h3"/>',
+      frameOrientHorz: '<rect x="3" y="4" width="18" height="16" rx="1.5"/><path d="M6 9h12M6 12h12M6 15h7"/>',
+      frameOrientDown: '<rect x="3" y="4" width="18" height="16" rx="1.5"/><path d="M15 7v10M12 7v10M9 7v6M12 18l-2-2m2 2l2-2"/>',
+      frameOrientUp: '<rect x="3" y="4" width="18" height="16" rx="1.5"/><path d="M9 7v10M12 7v10M15 11v6M12 6l-2 2m2-2l2 2"/>',
+      frameColumnsOne: '<rect x="3" y="4" width="18" height="16" rx="1.5"/><path d="M7 9h10M7 12h10M7 15h10"/>',
+      frameColumnsTwo: '<rect x="3" y="4" width="18" height="16" rx="1.5"/><path d="M12 7v10M6 9h3M6 12h3M15 9h3M15 12h3"/>',
+      frameColumnsThree: '<rect x="3" y="4" width="18" height="16" rx="1.5"/><path d="M9.5 7v10M14.5 7v10M5.5 10h2M5.5 14h2M11 10h2M11 14h2M16.5 10h2M16.5 14h2"/>',
+      frameColumnsFour: '<rect x="3" y="4" width="18" height="16" rx="1.5"/><path d="M8.2 7v10M12 7v10M15.8 7v10M5 10h1.5M5 14h1.5M9 10h2M9 14h2M13 10h2M13 14h2M17 10h1.5M17 14h1.5"/>',
+      frameAnimation: '<rect x="10" y="7" width="11" height="10" rx="1.5"/><path d="M3 9h4M2 12h5M3 15h4"/>',
       // Deux feuilles l'une derrière l'autre, un triangle dans le coin de celle de devant : la même image dans le coin de chaque page.
       layerRepeat: '<rect x="8" y="2.5" width="12" height="15" rx="1.5"/><path d="M5 7.5v11a2.5 2.5 0 0 0 2.5 2.5H16"/><path d="M8 2.5h6L8 8.5z" fill="currentColor" stroke="none"/>',
     };
@@ -121,6 +139,10 @@ const Icons = (function () {
       trackChanges: '<path d="M4 20l1-4L15.5 5.5a2 2 0 0 1 3 0l0 0a2 2 0 0 1 0 3L8 19l-4 1z"/><path d="M13.5 7.5l3 3"/>',
       acceptAll: '<path d="M5 13l4 4L19 7"/>',
       rejectAll: '<path d="M6 6l12 12M18 6L6 18"/>',
+      // Édition collaborative (js/main-toolbar.js, le bouton qui range le suivi, « Tout accepter » et « Tout refuser ») : deux personnes, de profil.
+      collab: '<circle cx="9" cy="8" r="3.2"/><path d="M3 19.5a6 6 0 0 1 12 0"/><circle cx="17" cy="9" r="2.5"/><path d="M16.5 14.2A5 5 0 0 1 21 19.5"/>',
+      // Écriture en direct (extension « édition », js/live-entry.js) : des lignes de texte et le curseur d'écriture, un trait vertical bordé de deux barres.
+      liveWrite: '<path d="M4 7h9M4 12h6M4 17h9"/><path d="M17.5 5v14M15 5h5M15 19h5"/>',
       // Barre flottante d'une bulle #Variable (js/floating-toolbars.js) : condition d'affichage (embranchement) et autres attributs de la même ligne
       // (maillons de chaîne).
       varCondition: '<path d="M16 3h5v5"/><path d="M8 3H3v5"/><path d="M12 22v-8.3a4 4 0 0 0-1.172-2.872L3 3"/><path d="m15 9 6-6"/>',
@@ -129,6 +151,14 @@ const Icons = (function () {
       // Bouton « Colonne… » de la même barre (js/variable-column.js : changer ou réparer la colonne d'une bulle) : une colonne de tableau avec sa case
       // d'en-tête et les deux chevrons, haut et bas, d'un choix dans une liste.
       varColumn: '<rect x="3" y="3" width="9" height="18" rx="1.5"/><path d="M3 8h9"/><path d="m16 9 2.5-2.5L21 9"/><path d="m16 15 2.5 2.5L21 15"/>',
+      // Bouton « autre colonne » d'une règle de la fenêtre de condition (js/condition-fields.js:buildCompareButton) : deux colonnes face à face et le
+      // signe « = » entre elles - on compare la colonne de la règle à une autre colonne, pas à une valeur. Plus étroites que celles de « Deux
+      // colonnes » (twoColumns) et séparées par le signe, qui se lit à 15 px : une icône ne porte qu'une fonction.
+      compareColumns: '<rect x="2" y="4" width="5" height="16" rx="1.5"/><rect x="17" y="4" width="5" height="16" rx="1.5"/><path d="M9.5 9.5h5M9.5 14.5h5"/>',
+      // Bouton « Lier les quatre marges » de Réglages > Marges (js/settings.js:syncMarginLink) : une chaîne DEBOUT, ses deux maillons accrochés quand les marges sont liées, écartés quand elles ne le
+      // sont pas - l'icône dit l'état. Debout, elle ne se confond pas avec le maillon couché de « Lien… » (link) ni avec la chaîne penchée des autres attributs d'une bulle (varLinked).
+      marginsLinked: '<g transform="rotate(90 12 12)"><path d="M9 17H7A5 5 0 0 1 7 7h2"/><path d="M15 7h2a5 5 0 1 1 0 10h-2"/><line x1="8" y1="12" x2="16" y2="12"/></g>',
+      marginsUnlinked: '<g transform="rotate(90 12 12)"><path d="M9 17H7A5 5 0 0 1 7 7h2" transform="translate(-1 0)"/><path d="M15 7h2a5 5 0 1 1 0 10h-2" transform="translate(1 0)"/></g>',
       // Bouton « Liste… » de la même barre (js/variable-list.js : quelles valeurs d'une liste le document écrit) : des crochets qui enferment trois
       // valeurs - une liste au sens de la donnée, qui ne se confond ni avec les puces ni avec les numéros de la barre (une icône ne porte qu'une
       // fonction). Les trois points sont espacés de 3,5 : à 15 px, plus près, ils se fondent en un tiret.
@@ -137,36 +167,143 @@ const Icons = (function () {
       // caché par l'attribut `display` quand la bulle affiche le zéro : on ne remplace pas le SVG, la cible d'un clic en train de se produire doit
       // rester dans la barre (cf. wireVariableFloatingToolbar).
       zeroToggle: '<ellipse cx="12" cy="12" rx="5.5" ry="8"/><path d="M5 21 19 3"/>',
+      // Une pipette : bouton « Comme dans Grist » de la même barre (js/floating-toolbars.js), qui prélève le format d'affichage de la colonne Grist
+      // (devise, décimales, pourcentage, date) pour le poser sur la variable.
+      gristFormat: '<path d="m2 22 1-1h3l9-9"/><path d="M3 21v-3l9-9"/><path d="m15 6 3.4-3.4a2.1 2.1 0 1 1 3 3L18 9l.4.4a2.1 2.1 0 1 1-3 3l-3.8-3.8a2.1 2.1 0 1 1 3-3l.4.4Z"/>',
       // Bouton « Modifier le calcul » de la barre flottante d'une bulle « Calcul » (js/floating-toolbars.js) : une calculatrice (corps, écran,
       // touches).
       calc: '<rect x="4" y="2" width="16" height="20" rx="2"/><line x1="8" y1="6" x2="16" y2="6"/><path d="M8 10h.01M12 10h.01M16 10h.01M8 14h.01M12 14h.01M16 14h.01M8 18h.01M12 18h.01M16 18h.01"/>',
-      // Menu « Lien et blocs de contenu » de la barre (une seule icône, js/link-dialog.js) : maillon horizontal pour le lien (le maillon en diagonale,
-      // varLinked, est déjà pris par « autres attributs » de la barre d'une bulle : une icône ne porte qu'une fonction) et chevrons pour le bloc de
-      // code.
+      // Bouton du menu « Lien et blocs de contenu » de la barre (js/link-dialog.js) : des blocs - trois côte à côte et un quatrième détaché en haut à
+      // droite. Le maillon seul (link, ci-dessous) ne disait que « lien », alors que le menu porte aussi le signet, la citation, le bloc de code, l'encadré,
+      // la signature, le QR code, le graphique et la diapositive (demande du 04/11, carte « Quelle icône pour le menu Lien et blocs de contenu ? » : A).
+      blocks: '<path d="M10 22V7a1 1 0 0 0-1-1H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-5a1 1 0 0 0-1-1H2"/><rect x="14" y="2" width="8" height="8" rx="1"/>',
+      // Le lien : la ligne « Lien… » de ce menu, la marque d'un objet à lien (js/frame-link.js) et celle d'une diapositive liée dans la bande. Un maillon
+      // horizontal (le maillon en diagonale, varLinked, est déjà pris par « autres attributs » de la barre d'une bulle : une icône ne porte qu'une fonction).
       link: '<path d="M9 17H7A5 5 0 0 1 7 7h2"/><path d="M15 7h2a5 5 0 1 1 0 10h-2"/><line x1="8" y1="12" x2="16" y2="12"/>',
+      // Signet (js/anchors.js) : ligne « Signet… » du menu du lien, un ruban de marque-page.
+      bookmark: '<path d="m19 21-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v16z"/>',
       codeBlock: '<path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/>',
       // Encadré (une boîte avec sa barre de couleur à gauche et deux lignes de texte) et bloc de signature (un paraphe au-dessus de sa ligne), lignes
       // du même menu.
       callout: '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M7.5 5v14"/><path d="M11.5 10h5M11.5 14h3"/>',
       signature: '<path d="M3 20h18"/><path d="M5 15.5c1.5-3.8 2.8-8 4-8 1.3 0-.5 6.4.9 6.4 1.4 0 2.2-3.8 3.4-3.8 1 0 .9 2.4 2 2.4.6 0 1.2-.7 1.7-1.5"/>',
+      // Exposant et indice (js/script-marks.js), les deux icônes en tête du menu « Aa » (le menu « Caractère ») : un « x » et le petit « 2 » levé à sa droite (exposant) ou baissé
+      // (indice).
+      superscript: '<path d="m4 19 8-8"/><path d="m12 19-8-8"/><path d="M20 11h-4c0-1.5.44-2 1.5-2.5S20 7.3 20 6c0-1.2-.9-2-2-2-.8 0-1.5.5-1.5 1.5"/>',
+      subscript: '<path d="m4 5 8 8"/><path d="m12 5-8 8"/><path d="M20 20h-4c0-1.5.44-2 1.5-2.5S20 16.3 20 15c0-1.2-.9-2-2-2-.8 0-1.5.5-1.5 1.5"/>',
+      // « Aa » : le grand A et le petit a du menu des réglages de caractère (#v2-btn-char-main, js/character-format.js).
+      character: '<path d="m2 20 6-15 6 15"/><path d="M4.2 15h7.6"/><circle cx="18" cy="16" r="3.2"/><path d="M21.2 12.8V20"/>',
     };
   }
   function findAndQrPaths() {
-    // Rechercher / Remplacer et le QR code.
+    // Rechercher / Remplacer, le QR code et le graphique de la page.
     return {
       // Rechercher / Remplacer (js/find-replace.js) : la loupe de la barre, puis les contrôles du panneau - chevrons précédent / suivant / afficher le
-      // remplacement, « Aa » (respecter la casse), « ab » souligné d'un crochet (mot entier) et la croix de fermeture (distincte de rejectAll, qui est
-      // « tout refuser »).
+      // remplacement, « Aa » (respecter la casse), « ab » souligné d'un crochet (mot entier), « .* » (expression régulière) et la croix de fermeture
+      // (distincte de rejectAll, qui est « tout refuser »).
       search: '<circle cx="10.5" cy="10.5" r="6"/><path d="m20 20-5.2-5.2"/>',
       chevronUp: '<path d="m6 15 6-6 6 6"/>',
       chevronDown: '<path d="m6 9 6 6 6-6"/>',
       chevronRight: '<path d="m9 6 6 6-6 6"/>',
       matchCase: '<path d="M2.5 18 7 6l4.5 12M4.2 14h5.6"/><circle cx="17" cy="15" r="3"/><path d="M20 12v6"/>',
       wholeWord: '<circle cx="7.5" cy="10" r="2.8"/><path d="M10.3 7.2V13"/><path d="M13.7 4v9"/><circle cx="16.7" cy="10" r="2.8"/><path d="M3.5 17v3.5h17V17"/>',
+      regex: '<circle cx="6" cy="17.5" r=".6"/><path d="M15 5v10M10.7 7.5l8.6 5M19.3 7.5l-8.6 5"/>',
       closeFind: '<path d="M7 7l10 10M17 7 7 17"/>',
       // QR code (js/qr-code.js) : ligne du même menu - trois repères d'angle et quelques modules, la même figure que le cadre d'un QR code dont le
       // texte contient une colonne (css/qr-code.css).
       qr: '<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><path d="M14 14h3v3h-3zM20 14v.01M14 20v.01M17 20h4v-3"/>',
+      // Graphique de la page (js/chart-entry.js, extensions/graphique/chart-block.js) : deux axes et trois barres, la même figure que le cadre d'un graphique dans l'éditeur (css/chart-frame.css).
+      chart: '<path d="M3 3v18h18"/><path d="M8 17v-5M13 17V8M18 17v-3"/>',
+      // Créer un graphique (js/chart-entry.js, extensions/graphique/chart-make-ui.js) : deux axes et une courbe, pour ne pas confondre cette ligne avec celle du graphique de la page (les barres).
+      chartMake: '<path d="M3 3v18h18"/><path d="M7 15l4-4 3 3 5-6"/>',
+      // Tableau lié à un modèle Grille (js/linked-table.js) : la ligne du volet du bouton Tableau, le bouton du lien dans la barre du tableau et l'en-tête de son menu -
+      // un tableau et, à son coin bas droit, un maillon de chaîne. « Détacher » en est le défaire : une chaîne dont les deux maillons s'écartent.
+      linkedTable: '<rect x="2.5" y="3.5" width="13" height="11" rx="1.5"/><path d="M2.5 8h13M8.5 8v6.5"/>'
+        + '<g transform="translate(11.2 11.2) scale(.5)" stroke-width="3.4"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></g>',
+      // La vue d'une diapositive (js/slide-view.js, menu « Objets ») : une diapositive qui en porte une plus petite, avec ses lignes de texte.
+      slideView: '<rect x="2.5" y="4.5" width="19" height="15" rx="1.5"/><rect x="7" y="8.5" width="10" height="7" rx="1"/><path d="M9.5 11h5M9.5 13.2h3"/>',
+      unlink: '<path d="m18.84 12.25 1.72-1.71a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="m5.17 11.75-1.71 1.71a5 5 0 0 0 7.07 7.07l1.71-1.71"/><path d="M8 2v3M2 8h3M16 19v3M19 16h3"/>',
+      // Les deux sens d'un tableau lié (menu du lien) : une flèche qui descend dans un bac (« Mettre à jour depuis le modèle » : les cases du modèle arrivent) et la même qui
+      // en sort (« Envoyer au modèle »).
+      linkedPull: '<path d="M12 3v11"/><path d="m8 10 4 4 4-4"/><path d="M4 18v2a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-2"/>',
+      linkedPush: '<path d="M12 14V3"/><path d="m8 7 4-4 4 4"/><path d="M4 18v2a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-2"/>',
+      // « Ouvrir le modèle » (menu du lien) : une fenêtre dont une flèche sort vers le coin haut droit, le geste d'aller voir ailleurs.
+      linkedOpen: '<path d="M14 4h6v6"/><path d="M20 4 11 13"/><path d="M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/>',
+      // La bande des diapositives (extensions/diapositives/slide-strip.js) : « Nouvelle diapositive », un écran 16:9 marqué d'un plus (pas le « + » seul, celui du nouveau modèle) ;
+      // « Importer », le même écran où descend une flèche (une diapositive qui arrive d'ailleurs) ; les actions d'une diapositive, trois points.
+      slideAdd: '<rect x="2.5" y="5" width="19" height="13" rx="1.5"/><path d="M12 8.5v6M9 11.5h6"/>',
+      slideImport: '<rect x="2.5" y="5" width="19" height="13" rx="1.5"/><path d="M12 8v6.5"/><path d="m9.2 11.8 2.8 2.8 2.8-2.8"/>',
+      // Les mises en page de « Ajouter » (extensions/diapositives/slide-strip.js) : la page, puis ses titres et ses lignes de texte.
+      slideLayoutBlank: '<rect x="2.5" y="5" width="19" height="13" rx="1.5"/>',
+      slideLayoutTitle: '<rect x="2.5" y="5" width="19" height="13" rx="1.5"/><path d="M7 10h10M9.5 13h5"/>',
+      slideLayoutTitleContent: '<rect x="2.5" y="5" width="19" height="13" rx="1.5"/><path d="M5.5 8.5h8M5.5 11.5h13M5.5 14.5h9"/>',
+      slideLayoutTwoColumns: '<rect x="2.5" y="5" width="19" height="13" rx="1.5"/><path d="M5.5 8.5h8M5.5 11.5h5M5.5 14.5h5M13.5 11.5h5M13.5 14.5h5"/>',
+      slideLayoutSection: '<rect x="2.5" y="5" width="19" height="13" rx="1.5"/><path d="M5.5 11h11M5.5 14h6"/>',
+      slideShow: '<rect x="2.5" y="4" width="19" height="13" rx="1.5"/><path d="m10 7.8 4.6 2.7-4.6 2.7z"/><path d="M8.5 21h7M12 17v4"/>',
+      // Une diapositive liée qu'une autre présentation envoie ici (extensions/diapositives/slide-strip.js : sa pastille) : un cadenas fermé, elle ne s'écrit pas ici.
+      slideLocked: '<rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/>',
+      // « Transition… » (menu d'une diapositive et pastille de sa miniature, extensions/diapositives/slide-transitions-ui.js) : deux écrans qui se recouvrent, celui qui arrive devant l'autre.
+      slideTransition: '<rect x="2.5" y="4.5" width="13" height="9.5" rx="1.4"/><rect x="8.5" y="9.5" width="13" height="9.5" rx="1.4"/>',
+      // « Notes… » (pastille de la miniature d'une diapositive qui en a, extensions/diapositives/slide-strip.js) : une feuille au coin plié et trois lignes de texte.
+      slideNotes: '<path d="M6 3.5h8.5L19 8v12.5H6z"/><path d="M14.5 3.5V8H19"/><path d="M9 12.5h7M9 15.5h7M9 18.5h4.5"/>',
+      // La vue intervenant (extensions/diapositives/slide-speaker.js) : « diapositive précédente » (le chevron qui regarde à gauche, comme chevronRight regarde à droite) et le chrono - pause, reprise, remise à zéro
+      // (une flèche qui revient en arrière : l'image dans le miroir de la poignée de rotation d'un cadre, qui tourne dans l'autre sens).
+      chevronLeft: '<path d="m15 6-6 6 6 6"/>',
+      chronoPause: '<path d="M9 5.5v13M15 5.5v13"/>',
+      chronoPlay: '<path d="m8 5.5 10.5 6.5L8 18.5z"/>',
+      chronoRestart: '<path d="M1 4v6h6"/><path d="M3.5 15a9 9 0 1 0 2.1-9.4L1 10"/>',
+      // Les outils du public de la vue intervenant (extensions/diapositives/slide-speaker.js) : l'écran noir (un écran plein), l'écran blanc (un écran vide), le stylo (un crayon qui trace) et l'effacement (une gomme sur sa ligne).
+      speakerBlack: '<rect x="2.5" y="4.5" width="19" height="13" rx="1.6" fill="currentColor"/><path d="M8.5 21h7"/>',
+      speakerWhite: '<rect x="2.5" y="4.5" width="19" height="13" rx="1.6"/><path d="M8.5 21h7"/>',
+      speakerPen: '<path d="M15.5 4.5a2.1 2.1 0 0 1 3 0l1 1a2.1 2.1 0 0 1 0 3L9 19l-5 1.5L5.5 15.5z"/><path d="m13 7 4 4"/>',
+      speakerErase: '<g transform="rotate(-45 12 11)"><rect x="3.5" y="6.5" width="17" height="9" rx="1.8"/><path d="M10.5 6.5v9"/></g><path d="M5 21h14"/>',
+      // La poignée de rotation d'un cadre ou d'une forme (js/free-frame.js) : une flèche circulaire dans le sens des aiguilles d'une montre.
+      rotate: '<path d="M23 4v6h-6"/><path d="M20.5 15a9 9 0 1 1-2.1-9.4L23 10"/>',
+      // « Objets » de la barre d'outils (js/objects-menu.js) : l'écran 16:9, un cadre en tirets et un rond posés dessus ; « Cadre de texte » (sa ligne, js/free-frame.js) : le cadre en
+      // tirets et deux lignes de texte ; « Dupliquer » (la barre du cadre) : deux feuilles décalées.
+      slideObjects: '<rect x="2.5" y="5" width="19" height="13" rx="1.5"/><rect x="5.5" y="8" width="8" height="4.5" rx="0.8" stroke-dasharray="2 1.6"/><circle cx="16.5" cy="13.5" r="2"/>',
+      textFrame: '<rect x="3" y="5" width="18" height="14" rx="1.5" stroke-dasharray="3 2.4"/><path d="M7 10h10M7 14h6"/>',
+      alignObjLeft: '<path d="M4 3v18"/><rect x="7" y="6" width="12" height="4" rx="1"/><rect x="7" y="14" width="7" height="4" rx="1"/>',
+      alignObjCenter: '<path d="M12 3v18"/><rect x="5" y="6" width="14" height="4" rx="1"/><rect x="8" y="14" width="8" height="4" rx="1"/>',
+      alignObjRight: '<path d="M20 3v18"/><rect x="5" y="6" width="12" height="4" rx="1"/><rect x="10" y="14" width="7" height="4" rx="1"/>',
+      alignObjTop: '<path d="M3 4h18"/><rect x="6" y="7" width="4" height="12" rx="1"/><rect x="14" y="7" width="4" height="7" rx="1"/>',
+      alignObjMiddle: '<path d="M3 12h18"/><rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="8" width="4" height="8" rx="1"/>',
+      alignObjBottom: '<path d="M3 20h18"/><rect x="6" y="5" width="4" height="12" rx="1"/><rect x="14" y="10" width="4" height="7" rx="1"/>',
+      distributeH: '<path d="M4 3v18M20 3v18"/><rect x="9.5" y="7" width="5" height="10" rx="1"/>',
+      distributeV: '<path d="M3 4h18M3 20h18"/><rect x="7" y="9.5" width="10" height="5" rx="1"/>',
+      groupObjects: '<rect x="3" y="3" width="18" height="18" rx="2" stroke-dasharray="3 2"/><rect x="6.5" y="6.5" width="5" height="5" rx="1"/><rect x="12.5" y="12.5" width="5" height="5" rx="1"/>',
+      ungroupObjects: '<rect x="3" y="3" width="8" height="8" rx="1.5"/><rect x="13" y="13" width="8" height="8" rx="1.5"/><path d="M14 5h5v5M10 19H5v-5" stroke-dasharray="2 2"/>',
+      duplicate: '<rect x="8.5" y="8.5" width="12" height="12" rx="1.8"/><path d="M15.5 8.5V5.8A1.8 1.8 0 0 0 13.7 4H5.8A1.8 1.8 0 0 0 4 5.8v7.9a1.8 1.8 0 0 0 1.8 1.8h2.7"/>',
+      // Les formes de « Objets » (js/objects-menu.js, js/shape-geometry.js) : le contour de chacune, au trait comme les autres icônes. Dans la barre d'un cadre
+      // (js/free-frame.js) : « Couleur du trait » (un cadre et son fond en retrait) et « Épaisseur du trait » (trois traits de plus en plus gras).
+      shapeRect: '<rect x="3" y="6" width="18" height="12" rx="1"/>',
+      shapeRoundRect: '<rect x="3" y="6" width="18" height="12" rx="4"/>',
+      shapeEllipse: '<ellipse cx="12" cy="12" rx="9" ry="6.5"/>',
+      shapeTriangle: '<path d="M12 4.5 21 19.5H3z"/>',
+      shapeDiamond: '<path d="M12 3.5 21 12l-9 8.5L3 12z"/>',
+      shapeRightArrow: '<path d="M3 9.5h10V5l8 7-8 7v-4.5H3z"/>',
+      shapeLeftArrow: '<path d="M21 9.5H11V5l-8 7 8 7v-4.5h10z"/>',
+      shapeStar5: '<path d="m12 3 2.13 6.56h6.91l-5.59 4.06 2.13 6.57L12 16.13l-5.58 4.06 2.13-6.57L2.96 9.56h6.91z"/>',
+      shapeUpArrow: '<path d="M9.5 21V11H5l7-8 7 8h-4.5v10z"/>',
+      shapeDownArrow: '<path d="M9.5 3v10H5l7 8 7-8h-4.5V3z"/>',
+      shapeChevron: '<path d="M3 6h12l6 6-6 6H3l6-6z"/>',
+      shapePentagon: '<path d="M12 3l8.75 6.36-3.34 10.28H6.59L3.25 9.36z"/>',
+      shapeHexagon: '<path d="M2.5 12 7 4.5h10l4.5 7.5-4.5 7.5H7z"/>',
+      shapeParallelogram: '<path d="M2.5 18 7.5 6h14l-5 12z"/>',
+      shapePlus: '<path d="M8.5 3h7v5.5H21v7h-5.5V21h-7v-5.5H3v-7h5.5z"/>',
+      shapeWedgeRoundRectCallout: '<path d="M7 4.5h10a3 3 0 0 1 3 3v6a3 3 0 0 1-3 3h-6l-3.5 3.5v-3.5H7a3 3 0 0 1-3-3v-6a3 3 0 0 1 3-3z"/>',
+      shapeLine: '<rect x="3.5" y="3.5" width="17" height="17" rx="2.5"/><rect x="8" y="8" width="8" height="8" rx="1" stroke-opacity=".35"/>',
+      lineWidth: '<path d="M4 6h16" stroke-width="1"/><path d="M4 12h16" stroke-width="2.4"/><path d="M5 19h14" stroke-width="4"/>',
+      lineDash: '<path d="M3.5 12h3.5M10.25 12h3.5M17 12h3.5" stroke-width="2.2"/>',
+      lineStraight: '<path d="M4.5 19.5 19.5 4.5"/>',
+      lineArrow: '<path d="M4.5 19.5 14 10"/><path d="M19.5 4.5 17 11.9 12.1 7z" fill="currentColor"/>',
+      lineArrowDouble: '<path d="M10 14 14 10"/><path d="M19.5 4.5 17 11.9 12.1 7z" fill="currentColor"/><path d="M4.5 19.5 7 12.1 11.9 17z" fill="currentColor"/>',
+      lineEnds: '<path d="M3.5 12h11"/><path d="M14 7.5 20.5 12 14 16.5z" fill="currentColor"/>',
+      lineEndsNone: '<path d="M3.5 12h17"/>',
+      lineEndsEnd: '<path d="M3.5 12h11"/><path d="M14 7.5 20.5 12 14 16.5z" fill="currentColor"/>',
+      lineEndsStart: '<path d="M20.5 12h-11"/><path d="M10 7.5 3.5 12 10 16.5z" fill="currentColor"/>',
+      lineEndsBoth: '<path d="M9 12h6"/><path d="M10 7.5 3.5 12 10 16.5z" fill="currentColor"/><path d="M14 7.5 20.5 12 14 16.5z" fill="currentColor"/>',
+      more: '<circle cx="5.5" cy="12" r="1.4" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.4" fill="currentColor" stroke="none"/><circle cx="18.5" cy="12" r="1.4" fill="currentColor" stroke="none"/>',
     };
   }
   const PATHS = Object.assign({}, textAndBlockPaths(), tableAndImagePaths(), toolbarPaths(), findAndQrPaths());

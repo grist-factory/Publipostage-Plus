@@ -15,6 +15,11 @@ Publipostage+ is distributed under the GNU General Public License v3.0 (LICENSE 
 Grist Labs.
 "Grist" is a product of Grist Labs. Publipostage+ is a third-party widget, not published by Grist Labs.
 
+Le dossier kit/ reprend, tel quel, le kit commun des applications Grist Factory (jetons de la charte, lien avec
+Grist Factory Suite, ambiance) : il a son propre fichier de licence (kit/LICENSE), la même, GNU General Public License v3.0.
+The kit/ folder carries, as is, the common kit of the Grist Factory apps (charter tokens, link with Grist Factory
+Suite, ambiance): it has its own license file (kit/LICENSE), the same one, GNU General Public License v3.0.
+
 ============================================================
 2. Bibliothèques chargées à l'exécution / Libraries loaded at runtime
 ============================================================
@@ -78,13 +83,45 @@ qrcode-generator 1.4.4
   Le mot « QR Code » est une marque déposée de DENSO WAVE INCORPORATED.
   The word "QR Code" is a registered trademark of DENSO WAVE INCORPORATED.
 
+marked 15.0.12
+  Licence / License : MIT
+  Droits / Copyright : Copyright (c) 2018+, MarkedJS (https://github.com/markedjs/) ; Copyright (c) 2011-2018, Christopher Jeffrey (https://github.com/chjj/)
+  Origine / Source : cdnjs.cloudflare.com
+  Le widget la charge à la première lecture d'un fichier Markdown seulement / The widget loads it on the first Markdown file read only.
+
 docx 9.7.1
   Licence / License : MIT
   Droits / Copyright : Copyright (c) 2016 Dolan
   Origine / Source : cdn.jsdelivr.net
 
+Plotly.js (paquet / package plotly.js-basic-dist-min) 2.13.2
+  Licence / License : MIT
+  Droits / Copyright : Copyright 2012-2022, Plotly, Inc.
+  Origine / Source : cdn.jsdelivr.net
+  C'est la version que Grist 1.7.20 utilise pour ses graphiques ; l'extension « graphique » de Grist Factory Suite la charge, à l'adresse que Grist Factory Suite lui donne, au premier graphique de la page seulement ; le widget seul ne la charge jamais.
+  This is the version Grist 1.7.20 uses for its charts; the "chart" extension of Grist Factory Suite loads it, from the address Grist Factory Suite gives it, for the first chart from the page only; the widget alone never loads it.
+
 Texte de la licence MIT / MIT license text :
   https://opensource.org/license/mit
+
+Code adapté de Grist / Code adapted from Grist
+  extensions/graphique/chart-plot.js, extensions/graphique/chart-source.js et js/view-source.js reprennent, en les
+  adaptant (JavaScript sans types, sans les modèles de l'application), des règles de grist-core 1.7.20 :
+  app/client/components/ChartView.ts et app/client/lib/chartUtil.ts (séries, traces, thème clair),
+  app/client/models/SectionFilter.ts, app/common/ColumnFilterFunc.ts et FilterState.ts (filtres), SortFunc.ts et
+  SortSpec.ts (tri), app/client/models/entities/ViewSectionRec.ts et ViewFieldRec.ts (la colonne qui sert au tri),
+  app/client/components/LinkingState.ts (les liens qui filtrent les lignes d'un widget). Ils servent à dessiner dans
+  le document le même graphique que Grist (les deux fichiers du graphique) et à exporter les lignes que montre le
+  tableau relié par « Sélectionner par » (js/view-source.js).
+  extensions/graphique/chart-plot.js, extensions/graphique/chart-source.js and js/view-source.js reuse, adapted (plain
+  JavaScript, without the application's models), rules from grist-core 1.7.20: app/client/components/ChartView.ts and
+  app/client/lib/chartUtil.ts (series, traces, light theme), app/client/models/SectionFilter.ts,
+  app/common/ColumnFilterFunc.ts and FilterState.ts (filters), SortFunc.ts and SortSpec.ts (sort),
+  app/client/models/entities/ViewSectionRec.ts and ViewFieldRec.ts (the column the sort uses),
+  app/client/components/LinkingState.ts (the links that filter a widget's rows). They draw in the document the same
+  chart as Grist (the two chart files) and export the rows the table linked by "Select by" shows (js/view-source.js).
+  Licence / License : Apache License 2.0 (https://github.com/gristlabs/grist-core)
+  Droits / Copyright : Grist Labs et contributeurs / Grist Labs and contributors
 
 ============================================================
 3. Polices incluses dans ce dépôt / Fonts included in this repository
@@ -224,7 +261,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
 5. Apache License 2.0
 ============================================================
 
-(Roboto Regular et Italic, et l'API de Grist / Roboto Regular and Italic, and the Grist API)
+(Roboto Regular et Italic, l'API de Grist et le code adapté de grist-core / Roboto Regular and Italic, the Grist API and the code adapted from grist-core)
 
 Apache License
 Version 2.0, January 2004

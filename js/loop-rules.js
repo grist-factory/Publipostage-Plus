@@ -3,11 +3,20 @@
 // en lot). Aucune dépendance à l'éditeur.
 //
 // La boucle vit dans l'attribut `loop` du nœud varBadge (js/editor-nodes.js, sérialisé en data-loop), comme la condition d'affichage :
-//   { repeat: 'inline'|'row'|'item'|'paragraph', table, via: null|{ table, column }, filter: null|{ mode, rules }, sort: { column, direction },
-//     empty, emptyText, separator, lastSeparator }
+//   { repeat: 'inline'|'row'|'item'|'paragraph', table, via: null|{ table, column }, within: null|'Table', by: null|'Colonne', all: null|'view'|'table'|'linked',
+//     filter: null|{ mode, rules }, sort: { column, direction }, empty, emptyText, separator, lastSeparator }
 // - `table` : la table dont les lignes sont parcourues. `via` : une colonne Liste de références de la table de la page (les fiches qu'elle référence,
 //   dans l'ordre de la cellule) ; sans `via`, les lignes de `table` trouvées par la règle de liaison du document (Variables.resolveLinkedRows, la
 //   même que celle qui affiche aujourd'hui toutes les valeurs jointes par des virgules).
+// - `all` : toutes les lignes de `table`, sans règle de liaison ni lien avec la ligne de la page (allSourceFor). 'view' : celles que la vue Grist du
+//   widget montre, dans son ordre - son filtre et son tri, comme l'export en lot (js/batch-scope.js) - pour la table de la page ; 'linked' : celles
+//   de la vue d'à côté à laquelle le widget est relié par « Sélectionner par », dans son ordre - ses filtres et son tri ENREGISTRÉS, lus dans le
+//   document par js/view-source.js comme le fait l'export en lot, moins les lignes que le widget lui-même ne montre pas ; 'table' : toute la table,
+//   dans l'ordre de ses lignes. Une autre table que celle de la page n'a pas de vue : 'view' y vaut 'table'. Sans `via` ni `within`.
+// - Une boucle dans une zone répétée par une autre boucle (les lignes de chaque facture dans les factures d'un client) lit ses lignes dans la ligne du
+//   tour de la zone qui l'entoure, pas dans celle de la page (scopeFor) : `via.table` est alors la table de la zone englobante (sa colonne Liste de
+//   références), ou `within` est cette table et `by` la colonne Référence de `table` qui désigne sa ligne (Lignes.Facture). Aucun lien de plus que pour
+//   une boucle de la page : la colonne Référence suffit, sans règle de liaison pour `table`.
 // - `repeat` : ce qui se répète autour de la bulle - la ligne du tableau (<tr>), l'élément de liste (<li>), le paragraphe ou le titre qui la
 //   contient, ou la bulle seule, dans la phrase ('inline' : ses valeurs jointes par `separator`, et `lastSeparator` avant la dernière). Une zone n'a
 //   qu'une boucle, celle de sa première bulle qui en porte une ; les autres bulles de `table` placées dans la zone suivent la même ligne à chaque
@@ -15,11 +24,16 @@
 // - Portée sur la bulle plutôt que sur la zone : supprimer ou déplacer la bulle emporte sa boucle, jamais une zone répétée qu'aucune bulle ne
 //   permettrait plus d'ouvrir. Une bulle déplacée hors de sa zone (hors du tableau, de la liste) redevient une bulle ordinaire, en édition comme en
 //   lecture.
+// - `emptyText` : le texte écrit à la place de la zone quand aucune ligne n'est retenue (« Si aucune ligne → Afficher un texte »). C'est un champ à variables, comme le
+//   « Sinon afficher » d'une valeur (js/field-codec.js : texte brut tant qu'aucune variable n'a de réglage, HTML sinon) ; ses variables lisent la ligne de la page - ou celle
+//   du tour de la zone qui entoure la boucle -, pas une ligne de la boucle (emptyNodes).
 // Dans chaque copie de la zone, chaque bulle (et chaque image liée à une variable) est associée à la ligne du tour (bindingOf) :
 // js/variables.js:resolveRawValue lit alors la valeur dans cette ligne (opts.loop) au lieu de chercher les lignes liées - valeur, format, condition
-// et images compris.
+// et images compris. Elle porte aussi le rang du tour (`turn`, 1 pour la première ligne retenue : après le filtre et le tri) que la puce « N° de
+// ligne » écrit (js/reader-mode.js:resolveSmartChips) ; dans une zone répétée dans une autre, celui de la zone la plus proche.
 const LoopRules = (function () {
   const REPEATS = ['inline', 'row', 'item', 'paragraph'];
+  const ALL_SCOPES = ['view', 'table', 'linked'];
   // Choix « Si aucune ligne » proposés pour chaque zone, le premier étant celui par défaut (sauf 'inline' dans une cellule de tableau, cf.
   // defaultEmpty).
   const EMPTY_MODES = { row: ['header', 'text'], item: ['none', 'text'], paragraph: ['hide', 'text', 'blank'], inline: ['hide', 'text', 'blank'] };
@@ -35,13 +49,17 @@ const LoopRules = (function () {
     if (!raw || typeof raw !== 'object' || !raw.table) return null;
     const repeat = REPEATS.indexOf(raw.repeat) !== -1 ? raw.repeat : 'inline';
     const via = raw.via && raw.via.table && raw.via.column ? { table: String(raw.via.table), column: String(raw.via.column) } : null;
+    // `within` ne vaut que sans `via`, qui nomme déjà la table englobante ; `by` ne vaut qu'avec `within`.
+    const within = !via && raw.within ? String(raw.within) : null;
+    // `all` ne vaut que sans `via` ni `within`, plus anciens : un document modifié à la main garde la source qu'il nomme.
+    const all = !via && !within && ALL_SCOPES.indexOf(raw.all) !== -1 ? raw.all : null;
     const sortRaw = raw.sort || {};
     const sort = { column: sortRaw.column ? String(sortRaw.column) : '', direction: sortRaw.direction === 'desc' ? 'desc' : 'asc' };
     // Choix absent ou inconnu (document modifié à la main) : 'blank' pour une bulle seule, le choix par défaut de la zone sinon - jamais un
     // paragraphe masqué que personne n'a demandé.
     const empty = EMPTY_MODES[repeat].indexOf(raw.empty) !== -1 ? raw.empty : defaultEmpty(repeat, repeat === 'inline');
     return {
-      repeat, table: String(raw.table), via, filter: ConditionRules.normalizeCondition(raw.filter), sort, empty,
+      repeat, table: String(raw.table), via, within, by: within && raw.by ? String(raw.by) : null, all, filter: ConditionRules.normalizeCondition(raw.filter), sort, empty,
       emptyText: raw.emptyText == null ? '' : String(raw.emptyText),
       separator: typeof raw.separator === 'string' ? raw.separator : ', ',
       lastSeparator: typeof raw.lastSeparator === 'string' ? raw.lastSeparator : null,
@@ -52,11 +70,35 @@ const LoopRules = (function () {
     try { return normalizeLoop(JSON.parse(json)); } catch (e) { return null; }
   }
 
+  // Les colonnes Référence (une seule fiche par ligne) de `table` qui désignent une ligne de `target` : ce par quoi ses lignes se rattachent à celles de
+  // `target` (Lignes.Facture pour la table Factures). Une liste de références ne compte pas : elle désigne plusieurs fiches, c'est l'inverse d'un
+  // rattachement.
+  function referenceColumnsTo(table, target) {
+    return GristAPI.getVisibleColumns(table).filter(column => {
+      const ref = GristAPI.referenceOf(GristAPI.getColumnType(table, column));
+      return !!ref && !ref.list && ref.table === target;
+    });
+  }
+  // Ce que parcourt une bulle placée dans une zone répétée pour la table `enclosing` : les fiches de sa colonne Liste de références (si elle est de
+  // `enclosing`), ou les lignes de sa table qui se rattachent à la ligne de `enclosing` par une colonne Référence. { table, via, within, by, columns }
+  // - `columns` : toutes les colonnes qui rattachent, `by` la première. Null sinon.
+  function nestedSourceFor(attrs, enclosing) {
+    if (attrs.table === enclosing) {
+      if (String(attrs.column).indexOf('.') !== -1) return null;
+      const ref = GristAPI.referenceOf(GristAPI.getColumnType(attrs.table, attrs.column));
+      return ref && ref.list && ref.table !== enclosing ? { table: ref.table, via: { table: enclosing, column: attrs.column } } : null;
+    }
+    const columns = referenceColumnsTo(attrs.table, enclosing);
+    return columns.length ? { table: attrs.table, via: null, within: enclosing, by: columns[0], columns } : null;
+  }
+
   // Ce qu'une bulle peut parcourir : une variable d'une autre table liée par une règle « match » qui peut trouver plusieurs lignes (la colonne
   // comparée côté table liée n'est pas son identifiant de ligne, ex. Lignes.Facture = identifiant de la facture), ou une colonne Liste de références
   // de la table de la page (ex. Factures.Formateurs). Null sinon - colonne ordinaire de la page, ligne unique, table pas liée : la Boucle est grisée.
-  function sourceFor(attrs, currentTableId) {
+  // `enclosingTableId` : la table que parcourt la zone répétée qui entoure la bulle ; elle remplace alors la page (nestedSourceFor).
+  function sourceFor(attrs, currentTableId, enclosingTableId) {
     if (!attrs || !attrs.table || !currentTableId) return null;
+    if (enclosingTableId) return nestedSourceFor(attrs, enclosingTableId);
     if (attrs.table === currentTableId) {
       // Colonne en chemin (#Projet.Accompagnateur.Membres, GristAPI.resolveColumnPath) : la boucle lit sa liste dans la ligne courante sous le nom
       // d'une seule colonne, pas d'un chemin - grisée.
@@ -66,9 +108,17 @@ const LoopRules = (function () {
       // Une liste de références vers la table de la page elle-même lierait aussi toutes les autres variables de la page à la fiche du tour : écartée.
       return ref.table !== currentTableId ? { table: ref.table, via: { table: currentTableId, column: attrs.column } } : null;
     }
-    const rule = GristAPI.getLinkRule(attrs.table);
+    const rule = GristAPI.getLinkRule(attrs.table, currentTableId);
     if (!rule || rule.mode !== 'match' || rule.colonneCible === 'id') return null;
     return { table: attrs.table, via: null };
+  }
+  // Toutes les lignes de la table de la bulle, quelle que soit la colonne et sans lien avec la ligne de la page : celles de la vue Grist du widget pour la
+  // table de la page (`all: 'view'`), toute la table pour une autre (`all: 'table'`, Grist ne dit rien du filtre d'un autre bloc). Jamais dans une zone
+  // répétée par une autre bulle (`enclosingTableId`) : une zone dans une zone suit la ligne de celle qui l'entoure (sourceFor). La même variable peut aussi
+  // avoir une source liée (sourceFor) : la fenêtre propose alors les deux.
+  function allSourceFor(attrs, currentTableId, enclosingTableId) {
+    if (!attrs || !attrs.table || !attrs.column || !currentTableId || enclosingTableId) return null;
+    return { table: attrs.table, via: null, all: attrs.table === currentTableId ? 'view' : 'table' };
   }
   // Lecture mémorisée des tables, pour un rendu (plusieurs boucles sur la même table) ou un aperçu sur toutes les lignes de la page.
   function memoFetchRows() {
@@ -78,33 +128,90 @@ const LoopRules = (function () {
       return cache.get(tableId);
     };
   }
-  function createContext() { return { fetchRows: memoFetchRows() }; }
-
-  function listValues(value) {
-    if (value === null || value === undefined || value === '') return [];
-    if (Array.isArray(value)) return value[0] === 'L' ? value.slice(1) : value.slice();
-    return [value];
+  // Les identifiants des lignes de la vue Grist (BatchScope.viewRowIds), lus une fois par rendu : plusieurs boucles sur toutes les lignes ne la redemandent pas.
+  function memoViewRowIds() {
+    const cache = new Map();
+    return tableId => {
+      if (!cache.has(tableId)) cache.set(tableId, BatchScope.viewRowIds(tableId));
+      return cache.get(tableId);
+    };
   }
+  // Les lignes de la vue d'à côté (ViewSource.linkedRows : les réglages enregistrés du tableau auquel le widget est relié), lues une fois par rendu et par table.
+  function memoLinkedRows() {
+    const cache = new Map();
+    return (tableId, rows) => {
+      if (!cache.has(tableId)) cache.set(tableId, ViewSource.linkedRows(tableId, rows));
+      return cache.get(tableId);
+    };
+  }
+  // `readsAll` : une boucle sur toutes les lignes a lu ce rendu (iterate). Ce que la ligne choisie ne change pas : js/main.js redessine alors la Lecture quand
+  // Grist dit que les lignes de la vue ont changé (BatchScope.onViewChange).
+  function createContext() { return { fetchRows: memoFetchRows(), viewRowIds: memoViewRowIds(), linkedRows: memoLinkedRows(), readsAll: false }; }
+
   // Ordre des lignes de la table dans Grist (manualSort, celui de la vue des données brutes), à défaut l'identifiant de ligne.
   function tableOrder(rows) {
     const rank = r => (typeof r.manualSort === 'number' ? r.manualSort : r.id);
     return rows.slice().sort((a, b) => (rank(a) - rank(b)) || (a.id - b.id));
   }
 
+  // La table dont une ligne porte les lignes de cette boucle : celle de la zone englobante pour une boucle imbriquée (`within`, ou la table de la colonne
+  // Liste de références `via`), la table de la page pour une boucle ordinaire (qui peut avoir un `via`, de la page) ; null pour une boucle sans `via`.
+  function parentTable(loop) { return loop.within || (loop.via ? loop.via.table : null); }
+  // La table de la zone englobante d'une boucle imbriquée, null pour une boucle de la page (`currentTableId`) : une `via` de la page n'est pas imbriquée.
+  function enclosingOf(loop, currentTableId) {
+    return loop.within || (loop.via && loop.via.table !== currentTableId ? loop.via.table : null);
+  }
+  // Où une boucle lit ses lignes liées : la ligne de la page, ou - pour une boucle imbriquée dans une zone répétée - la ligne que cette zone porte à ce
+  // tour. `rows` : la ligne de chaque zone englobante par table (celles d'une liaison, bindingOf). Sans la ligne de sa table englobante (zone qui ne se
+  // déroule pas : source perdue), la boucle retombe sur la page, où elle ne trouve rien : sa zone reste telle quelle.
+  function scopeFor(loop, rows, tableId, record) {
+    const parent = parentTable(loop);
+    const row = parent && rows ? rows[parent] : null;
+    return row ? { tableId: parent, record: row } : { tableId, record };
+  }
+  function scopeOf(loop, badge, tableId, record) {
+    const binding = bindingOf(badge);
+    return scopeFor(loop, binding && binding.rows, tableId, record);
+  }
+  // Colonne par laquelle les lignes de `loop.table` se rattachent à la ligne de `loop.within` : celle que la boucle a enregistrée (`by`) tant qu'elle
+  // désigne encore cette table, à défaut la seule colonne Référence qui y mène. Null s'il n'y en a aucune, ou plusieurs sans choix enregistré.
+  function nestedColumn(loop) {
+    const columns = referenceColumnsTo(loop.table, loop.within);
+    if (loop.by) return columns.indexOf(loop.by) !== -1 ? loop.by : null;
+    return columns.length === 1 ? columns[0] : null;
+  }
+
+  // Pourquoi une boucle ne trouve aucune ligne à parcourir, sans lire aucune table : 'within' (boucle imbriquée sans ligne englobante, ou dont la colonne de
+  // rattachement a disparu), 'via' (modèle utilisé sur une autre table que celle de sa colonne Liste de références) ou 'noLink' (table plus liée) ; null
+  // quand sa source est là. `tableId` : la table de sa portée (scopeFor). Une boucle sur toutes les lignes n'en manque jamais. C'est le diagnostic de
+  // linkedItems, que l'éditeur lit aussi (VariableLoop.feedsAt) : dans une zone qui ne se déroule pas, la Lecture écrit l'erreur de chaque variable.
+  function sourceError(loop, tableId) {
+    if (loop.all) return null;
+    if (loop.within) return loop.within !== tableId || !nestedColumn(loop) ? 'within' : null;
+    if (loop.via) return loop.via.table !== tableId ? 'via' : null;
+    return GristAPI.getLinkRule(loop.table, tableId) ? null : 'noLink';
+  }
+
   // Lignes parcourues pour la ligne courante, avant filtre et tri : [{ row, anchor }] - `anchor` est la valeur affichée de la fiche dans la colonne
-  // Liste de références (`via`), celle que la bulle de cette colonne montre à chaque tour.
+  // Liste de références (`via`), celle que la bulle de cette colonne montre à chaque tour. `tableId` et `record` : la portée de la boucle (scopeFor).
   async function linkedItems(loop, tableId, record, fetchRows) {
+    const failure = sourceError(loop, tableId);
+    if (failure) return { error: failure };
+    if (loop.within) {
+      // Boucle imbriquée : les lignes dont la colonne Référence désigne la ligne de la zone englobante (`record`, de la table `within`).
+      const rows = await Variables.resolveLinkedRows(loop.table, { mode: 'match', colonneSource: 'id', colonneCible: nestedColumn(loop) }, record, tableId, { fetchRows });
+      return { items: tableOrder(rows).map(row => ({ row, anchor: undefined })) };
+    }
     if (loop.via) {
-      if (loop.via.table !== tableId) return { error: 'via' };
       // La ligne de grist.onRecord livre les valeurs affichées de la liste, pas les identifiants : relue sous sa forme brute, comme l'export en lot
       // la reçoit.
       let pageRow = GristAPI.isRawRow(record) ? record : null;
       if (!pageRow && record.id != null) pageRow = (await fetchRows(tableId)).find(r => r.id === record.id) || null;
       if (!pageRow) return { items: [] };
-      const ids = listValues(pageRow[loop.via.column]);
+      const ids = Variables.listItems(pageRow[loop.via.column]);
       if (!ids.length) return { items: [] };
       const displayCol = GristAPI.getDisplayColumn(tableId, loop.via.column);
-      const displays = displayCol ? listValues(pageRow[displayCol]) : null;
+      const displays = displayCol ? Variables.listItems(pageRow[displayCol]).map(Variables.decodeShown) : null;
       const byId = new Map((await fetchRows(loop.table)).map(r => [r.id, r]));
       const items = [];
       ids.forEach((id, i) => {
@@ -113,10 +220,28 @@ const LoopRules = (function () {
       });
       return { items };
     }
-    const rule = GristAPI.getLinkRule(loop.table);
-    if (!rule) return { error: 'noLink' };
-    const rows = await Variables.resolveLinkedRows(loop.table, rule, record, tableId, { fetchRows });
+    const rows = await Variables.resolveLinkedRows(loop.table, GristAPI.getLinkRule(loop.table, tableId), record, tableId, { fetchRows });
     return { items: tableOrder(rows).map(row => ({ row, anchor: undefined })) };
+  }
+
+  // Lignes parcourues par une boucle sur toutes les lignes, avant filtre et tri : celles de la vue Grist du widget, dans l'ordre de la vue (`all: 'view'`), celles
+  // de la vue d'à côté à laquelle il est relié par « Sélectionner par », dans son ordre (`all: 'linked'`), ou toute la table, dans l'ordre de ses lignes (tableOrder).
+  // Grist qui ne rend pas la vue du widget (une autre table que celle de la page, appel refusé) : toute la table, comme l'export en lot (BatchScope.pick). Une vue
+  // d'à côté absente (plus de lien) ou illisible (dates relatives, tableau filtré par un autre widget : ViewSource.linkedRows) laisse les lignes du widget, comme
+  // l'export en lot quand la personne les choisit : `linked` le dit à la fenêtre ({ name } si la vue est lue, { name, unreadable } si elle ne se lit pas, { absent }
+  // sans lien). `tableTotal` : les lignes de la table, que la vue peut en cacher - l'aperçu de la fenêtre le dit.
+  async function allItems(loop, fetchRows, viewRowIds, linkedRows) {
+    const rows = await fetchRows(loop.table);
+    const viewIds = loop.all === 'table' ? null : await viewRowIds(loop.table);
+    const own = viewIds ? BatchScope.viewRowsOf(rows, viewIds) : null;
+    let shown = own || tableOrder(rows);
+    let linked = null;
+    if (loop.all === 'linked') {
+      const found = await linkedRows(loop.table, rows);
+      if (found && found.ids) { shown = BatchScope.linkedViewRows(rows, found.ids, own); linked = { name: found.name }; }
+      else linked = found ? { name: found.name, unreadable: found.unreadable } : { absent: true };
+    }
+    return { items: shown.map(row => ({ row, anchor: undefined })), tableTotal: rows.length, linked };
   }
 
   // Une règle du filtre porte sur une colonne de la table parcourue (nom nu), comparée à la valeur telle que Grist l'affiche (Variables.cellValue :
@@ -135,16 +260,24 @@ const LoopRules = (function () {
     }
     return ConditionRules.compareValues(actual, rule.operator, rule.value, type);
   }
+  // Une règle ou un groupe du filtre : un groupe (ConditionRules.isGroup) se lit comme le filtre entier, avec sa propre combinaison sur ses propres règles.
+  function itemHolds(item, loop, row) {
+    if (!ConditionRules.isGroup(item)) return ruleHolds(item, loop, row);
+    const holds = inner => itemHolds(inner, loop, row);
+    return item.mode === 'any' ? item.rules.some(holds) : item.rules.every(holds);
+  }
   function filterHolds(loop, row) {
     const filter = loop.filter;
     if (!filter) return true;
-    const holds = rule => ruleHolds(rule, loop, row);
-    return filter.mode === 'any' ? filter.rules.some(holds) : filter.rules.every(holds);
+    return itemHolds(filter, loop, row);
   }
 
+  // Une date (la colonne Référence qui montre une date, Variables.decodeShown) se trie dans l'ordre du calendrier : son instant, ou son écriture ISO dans une liste.
+  const validDate = v => v instanceof Date && !isNaN(v.getTime());
   function sortKey(value) {
     if (value === null || value === undefined || value === '') return null;
-    if (Array.isArray(value)) return value.length ? value.join(', ') : null;
+    if (value instanceof Date) return validDate(value) ? value.getTime() : null;
+    if (Array.isArray(value)) return value.length ? value.map(v => (validDate(v) ? v.toISOString() : v)).join(', ') : null;
     return value;
   }
   function compareKeys(a, b) {
@@ -160,41 +293,59 @@ const LoopRules = (function () {
     const keyed = items.map((item, index) => ({ item, index, key: sortKey(Variables.cellValue(loop.table, column, item.row)) }));
     keyed.sort((x, y) => {
       if (x.key === null || y.key === null) return (x.key === null) - (y.key === null) || x.index - y.index;
-      const c = compareKeys(x.key, y.key);
-      return (desc ? -c : c) || x.index - y.index;
+      const order = compareKeys(x.key, y.key);
+      return (desc ? -order : order) || x.index - y.index;
     });
     return keyed.map(k => k.item);
   }
 
-  // Lignes retenues pour une ligne de la table de la page : { items, total } (total = lignes liées avant le filtre), ou { error } - 'noLink' (table
-  // plus liée) ou 'via' (modèle utilisé sur une autre table que celle de sa colonne Liste de références). `record` : ligne de grist.onRecord ou de
-  // fetchTable.
+  // Lignes retenues pour une ligne de la table de la page (ou, pour une boucle imbriquée, de la table englobante : scopeFor) : { items, total } (total =
+  // lignes liées avant le filtre ; `tableTotal` en plus pour une boucle sur toutes les lignes : celles de la table, vue Grist comprise), ou { error } -
+  // 'noLink' (table plus liée), 'via' (modèle utilisé sur une autre table que celle de sa colonne Liste de références) ou 'within' (boucle imbriquée
+  // sans ligne englobante, ou dont la colonne de rattachement a disparu). `record` : ligne de grist.onRecord ou de fetchTable ; une boucle sur toutes
+  // les lignes ne la lit pas, mais il en faut une : sans ligne affichée, il n'y a pas de document à écrire.
   async function iterate(loop, tableId, record, ctx) {
     if (!loop || !record || !tableId) return { items: [], total: 0 };
     const fetchRows = (ctx && ctx.fetchRows) || memoFetchRows();
-    const found = await linkedItems(loop, tableId, record, fetchRows);
+    if (loop.all && ctx) ctx.readsAll = true;
+    const found = loop.all ? await allItems(loop, fetchRows, (ctx && ctx.viewRowIds) || BatchScope.viewRowIds, (ctx && ctx.linkedRows) || ViewSource.linkedRows)
+      : await linkedItems(loop, tableId, record, fetchRows);
     if (found.error) return { error: found.error, items: [], total: 0 };
     const kept = loop.filter ? found.items.filter(item => filterHolds(loop, item.row)) : found.items;
-    return { items: sortItems(loop, kept), total: found.items.length };
+    const result = { items: sortItems(loop, kept), total: found.items.length };
+    if (loop.all) { result.tableTotal = found.tableTotal; if (found.linked) result.linked = found.linked; }
+    return result;
   }
 
   const bindings = new WeakMap();
   // Tout ce qui lit la ligne du tour dans une zone copiée : les bulles #Variable, les images liées à une variable, les bulles « Calcul » (« Prix ×
   // Quantité » dans une ligne répétée donne le total de cette ligne), les QR codes (le texte de leurs colonnes) et les blocs, valeurs et cases
-  // conditionnels (leur condition).
-  const BOUND_SELECTOR = '.var-badge, .calc-badge, img.editor-image[data-var-table], img.editor-image[data-qr-text], .conditional-text, .conditional-value, .conditional-checkbox';
+  // conditionnels (leur condition), et la puce « N° de ligne » (le rang du tour).
+  const BOUND_SELECTOR = '.var-badge, .calc-badge, img.editor-image[data-var-table], img.editor-image[data-qr-text], .conditional-text, .conditional-value, .conditional-checkbox, .smart-chip[data-chip-kind="rowNumber"]';
   function bindingOf(el) { return (el && bindings.get(el)) || null; }
+  // Les éléments qui prennent la place d'un autre APRÈS le déroulé des zones (le sinon d'un bloc ou d'une valeur conditionnels, qui porte des variables) lisent la
+  // même ligne du tour que lui : ils reprennent sa liaison. Rien à faire hors d'une zone répétée.
+  function inheritBinding(source, nodes) {
+    const binding = bindingOf(source);
+    if (!binding) return;
+    nodes.forEach(node => {
+      if (node.nodeType !== Node.ELEMENT_NODE) return;
+      if (node.matches(BOUND_SELECTOR)) bindings.set(node, binding);
+      node.querySelectorAll(BOUND_SELECTOR).forEach(el => bindings.set(el, binding));
+    });
+  }
   // Ligne du tour ajoutée à ce qu'un élément tient déjà d'une zone englobante (une zone répétée dans une autre, copiée-collée : chacune garde sa
-  // table).
-  function itemBinding(loop, item, inherited) {
+  // table). `turn` : le rang du tour dans sa zone (1, 2, 3...) ; sans lui (bulle en boucle dans la phrase, aperçu), la liaison n'en porte pas.
+  function itemBinding(loop, item, inherited, turn) {
     const next = { rows: Object.assign({}, inherited && inherited.rows), anchors: Object.assign({}, inherited && inherited.anchors) };
     next.rows[loop.table] = item.row;
     if (loop.via) next.anchors[loop.via.table + '.' + loop.via.column] = item.anchor;
+    if (turn) next.turn = turn;
     return next;
   }
-  function bindClone(source, clone, loop, item) {
+  function bindClone(source, clone, loop, item, turn) {
     const src = source.querySelectorAll(BOUND_SELECTOR);
-    clone.querySelectorAll(BOUND_SELECTOR).forEach((el, i) => bindings.set(el, itemBinding(loop, item, src[i] ? bindings.get(src[i]) : null)));
+    clone.querySelectorAll(BOUND_SELECTOR).forEach((el, i) => bindings.set(el, itemBinding(loop, item, src[i] ? bindings.get(src[i]) : null, turn)));
   }
 
   function zoneOf(badge, repeat, root) {
@@ -204,14 +355,28 @@ const LoopRules = (function () {
     else if (repeat === 'paragraph') zone = badge.closest(TEXT_BLOCK_SELECTOR);
     return zone && zone !== root && root.contains(zone) ? zone : null;
   }
-  // Première bulle (ordre du document) qui porte encore une boucle de zone ; une boucle illisible est retirée (la bulle redevient ordinaire).
-  function nextZoneOwner(root) {
+  // Les bulles qui portent encore la boucle d'une zone, avec leur zone, dans l'ordre du document ; une boucle illisible ou sans zone est retirée (la
+  // bulle redevient ordinaire).
+  function zoneOwners(root) {
+    const owners = [];
     for (const badge of root.querySelectorAll('.var-badge[data-loop]')) {
       const loop = parseLoop(badge.getAttribute('data-loop'));
       if (!loop) { badge.removeAttribute('data-loop'); continue; }
-      if (loop.repeat !== 'inline') return { badge, loop };
+      if (loop.repeat === 'inline') continue;
+      const zone = zoneOf(badge, loop.repeat, root);
+      if (!zone) { badge.removeAttribute('data-loop'); continue; }
+      owners.push({ badge, loop, zone });
     }
-    return null;
+    return owners;
+  }
+  // Celles dont la zone n'est dans la zone d'aucune autre : la boucle d'une zone répétée dans une autre attend les copies de la zone qui l'entoure, qui lui
+  // donnent sa ligne (scopeFor).
+  function outermost(owners) {
+    const zones = new Set(owners.map(o => o.zone));
+    return owners.filter(o => {
+      for (let el = o.zone.parentElement; el; el = el.parentElement) if (zones.has(el)) return false;
+      return true;
+    });
   }
   // Ce que chaque conteneur doit encore avoir pour rester : un <ul> ou un <table> sans ligne ne s'affiche pas et n'a rien à exporter ; un encadré
   // (js/callout.js) sans contenu se verrait encore : sa barre et son fond.
@@ -231,12 +396,23 @@ const LoopRules = (function () {
       parent = next;
     }
   }
-  function textParagraph(text) {
+  // Le texte « Si aucune ligne » (`emptyText`) est un champ à variables, le même que le « Sinon afficher » d'une valeur (js/field-codec.js : du texte brut tant qu'aucune
+  // variable n'a de réglage, du HTML sinon) : du texte et des bulles #Variable, que la Lecture lit ensuite avec le reste du document. Elles lisent la ligne du tour qui entoure la
+  // bulle de la boucle (`source`, inheritBinding : une boucle dans une zone répétée par une autre), jamais celle d'une boucle qui n'a aucune ligne.
+  function emptyNodes(loop, source) {
+    if (!loop.emptyText) return [];
+    const holder = document.createElement('span');
+    Dom.setMarkup(holder, FieldCodec.itemsHtml(FieldCodec.itemsOf(loop.emptyText)));
+    const nodes = Array.from(holder.childNodes);
+    inheritBinding(source, nodes);
+    return nodes;
+  }
+  function textParagraph(loop, source) {
     const p = document.createElement('p');
-    p.textContent = text;
+    p.append(...emptyNodes(loop, source));
     return p;
   }
-  function applyEmptyZone(zone, loop) {
+  function applyEmptyZone(zone, loop, badge) {
     if (loop.repeat === 'row') {
       if (loop.empty !== 'text') { removeAndPrune(zone); return; }
       // « Une ligne de texte » : une seule cellule sur toute la largeur de la ligne (colspan lu par les exports PDF et DOCX).
@@ -244,50 +420,57 @@ const LoopRules = (function () {
       const span = cells.reduce((n, c) => n + (parseInt(c.getAttribute('colspan'), 10) || 1), 0) || 1;
       const td = document.createElement('td');
       td.setAttribute('colspan', String(span));
-      td.appendChild(textParagraph(loop.emptyText));
+      td.appendChild(textParagraph(loop, badge));
       zone.replaceChildren(td);
       return;
     }
     if (loop.repeat === 'item') {
       if (loop.empty !== 'text') { removeAndPrune(zone); return; }
-      zone.replaceChildren(textParagraph(loop.emptyText));
+      zone.replaceChildren(textParagraph(loop, badge));
       return;
     }
     if (loop.empty === 'hide') { removeAndPrune(zone); return; }
-    zone.textContent = loop.empty === 'text' ? loop.emptyText : '';
+    zone.replaceChildren(...(loop.empty === 'text' ? emptyNodes(loop, badge) : []));
   }
 
-  // Déroule chaque zone répétée de `root` (HTML déjà assaini, pas encore résolu) : une copie par ligne retenue, associée à cette ligne ; « si aucune
-  // ligne » sinon. Une boucle qui ne trouve plus sa source (table plus liée) laisse la zone telle quelle : ses bulles affichent alors toutes les
-  // valeurs, jointes par des virgules, comme avant la boucle. Les boucles « dans la phrase » restent sur leur bulle (resolveInline, appelée par
-  // js/reader-mode.js).
+  // Une zone : sa copie pour chaque ligne retenue, associée à cette ligne ; « si aucune ligne » sinon. Une boucle qui ne trouve plus sa source laisse la
+  // zone telle quelle.
+  async function expandZone({ badge, loop, zone }, tableId, record, root, context) {
+    // Une seule boucle par zone : celle-ci. Une autre bulle de la même zone qui en porte une (copiée-collée) redevient une bulle ordinaire.
+    zone.querySelectorAll('.var-badge[data-loop]').forEach(b => {
+      const other = parseLoop(b.getAttribute('data-loop'));
+      if (other && other.repeat === loop.repeat && zoneOf(b, other.repeat, root) === zone) b.removeAttribute('data-loop');
+    });
+    const scope = scopeOf(loop, badge, tableId, record);
+    let result;
+    try { result = await iterate(loop, scope.tableId, scope.record, context); }
+    catch (e) { console.error('[LoopRules] échec du calcul des lignes de la boucle', loop, e); return; }
+    if (result.error) { console.warn('[LoopRules] boucle sur « ' + loop.table + ' » sans source (' + result.error + ') : zone affichée une fois.'); return; }
+    if (!result.items.length) { applyEmptyZone(zone, loop, badge); return; }
+    const copies = document.createDocumentFragment();
+    result.items.forEach((item, index) => {
+      const clone = zone.cloneNode(true);
+      bindClone(zone, clone, loop, item, index + 1);
+      copies.appendChild(clone);
+    });
+    zone.replaceWith(copies);
+  }
+  // Niveaux de zones dans des zones que l'on déroule au plus (le HTML d'un modèle peut venir de n'importe où : la boucle doit finir).
+  const MAX_NESTING = 12;
+  // Déroule chaque zone répétée de `root` (HTML déjà assaini, pas encore résolu), du dehors vers le dedans : les zones qui n'en entourent aucune autre,
+  // puis - dans leurs copies, qui leur ont donné leur ligne - celles qu'elles contenaient. Une boucle qui ne trouve plus sa source (table plus liée)
+  // laisse la zone telle quelle : ses bulles affichent alors toutes les valeurs, jointes par des virgules, comme avant la boucle. Les boucles « dans la
+  // phrase » restent sur leur bulle (resolveInline, appelée par js/reader-mode.js).
   async function expandZones(root, tableId, record, ctx) {
     if (!root || !record || !tableId) return;
     const context = ctx || createContext();
-    let owner;
-    let guard = 0;
-    while ((owner = nextZoneOwner(root)) && guard < 1000) {
-      guard += 1;
-      const { badge, loop } = owner;
-      const zone = zoneOf(badge, loop.repeat, root);
-      if (!zone) { badge.removeAttribute('data-loop'); continue; }
-      // Une seule boucle par zone : celle-ci. Une autre bulle de la même zone qui en porte une (copiée-collée) redevient une bulle ordinaire.
-      zone.querySelectorAll('.var-badge[data-loop]').forEach(b => {
-        const other = parseLoop(b.getAttribute('data-loop'));
-        if (other && other.repeat === loop.repeat && zoneOf(b, other.repeat, root) === zone) b.removeAttribute('data-loop');
-      });
-      let result;
-      try { result = await iterate(loop, tableId, record, context); }
-      catch (e) { console.error('[LoopRules] échec du calcul des lignes de la boucle', loop, e); continue; }
-      if (result.error) { console.warn('[LoopRules] boucle sur « ' + loop.table + ' » sans source (' + result.error + ') : zone affichée une fois.'); continue; }
-      if (!result.items.length) { applyEmptyZone(zone, loop); continue; }
-      const copies = document.createDocumentFragment();
-      result.items.forEach(item => {
-        const clone = zone.cloneNode(true);
-        bindClone(zone, clone, loop, item);
-        copies.appendChild(clone);
-      });
-      zone.replaceWith(copies);
+    for (let level = 0; level < MAX_NESTING; level++) {
+      const owners = outermost(zoneOwners(root));
+      if (!owners.length) return;
+      for (const owner of owners) {
+        // Une bulle de la même zone a pu déjà la dérouler (une seule boucle par zone) : sa boucle n'est plus là.
+        if (owner.badge.hasAttribute('data-loop') && root.contains(owner.zone)) await expandZone(owner, tableId, record, root, context);
+      }
     }
   }
 
@@ -302,12 +485,13 @@ const LoopRules = (function () {
   }
   const HIDE_MARKER_CLASS = 'pp-loop-hide-block';
   // Nœud qui remplace une bulle en boucle sans aucune ligne retenue ; « Masquer le paragraphe » pose un repère que removeHiddenBlocks traite une fois
-  // toutes les bulles remplacées (le paragraphe ne doit pas disparaître pendant que les autres bulles se résolvent encore).
-  function emptyInlineNode(loop) {
+  // toutes les bulles remplacées (le paragraphe ne doit pas disparaître pendant que les autres bulles se résolvent encore). Le texte « Si aucune ligne » peut porter
+  // des variables (emptyNodes) : le nœud les porte encore, js/reader-mode.js:resolveInlineLoop les lit pour la ligne de `badge`.
+  function emptyInlineNode(loop, badge) {
     if (loop.empty === 'text' && loop.emptyText) {
       const span = document.createElement('span');
       span.className = 'resolved-var';
-      span.textContent = loop.emptyText;
+      span.append(...emptyNodes(loop, badge));
       return span;
     }
     if (loop.empty === 'hide') {
@@ -329,7 +513,8 @@ const LoopRules = (function () {
   // vides sont sautées. Renvoie { text } ou { node } (aucune ligne retenue), ou null si la boucle ne trouve plus sa source - la bulle se résout alors
   // comme avant la boucle.
   async function resolveInline(badge, loop, tableId, record, ctx, valueFor) {
-    const result = await iterate(loop, tableId, record, ctx);
+    const scope = scopeOf(loop, badge, tableId, record);
+    const result = await iterate(loop, scope.tableId, scope.record, ctx);
     if (result.error) return null;
     const inherited = bindingOf(badge);
     const values = [];
@@ -337,12 +522,12 @@ const LoopRules = (function () {
       const value = await valueFor(itemBinding(loop, item, inherited));
       if (value !== '' && value != null) values.push(String(value));
     }
-    if (!values.length) return { node: emptyInlineNode(loop) };
+    if (!values.length) return { node: emptyInlineNode(loop, badge) };
     return { text: joinValues(values, loop.separator, loop.lastSeparator) };
   }
 
   return {
-    EMPTY_MODES, defaultEmpty, normalizeLoop, sourceFor, createContext, iterate, itemBinding, bindingOf,
-    expandZones, inlineLoopOf, resolveInline, removeHiddenBlocks, removeAndPrune, joinValues,
+    EMPTY_MODES, defaultEmpty, normalizeLoop, sourceFor, allSourceFor, referenceColumnsTo, nestedColumn, parentTable, enclosingOf, sourceError, scopeFor, createContext, iterate, itemBinding,
+    bindingOf, inheritBinding, expandZones, inlineLoopOf, resolveInline, removeHiddenBlocks, removeAndPrune, joinValues,
   };
 })();

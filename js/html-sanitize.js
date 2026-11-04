@@ -23,10 +23,30 @@ const HtmlSanitize = (function () {
   // pose son url(data:...) dans une feuille de style de la page). Une propriété personnalisée garde son texte tel quel : un échappement (u\72l) y est
   // refusé, alors que le navigateur le lirait comme url().
   const CSS_LOADS = /url\s*\(|image-set\s*\(|image\s*\(|src\s*\(|cross-fade\s*\(/i;
+
+  // La seule image qu'un style garde : le TRAIT D'ART d'un cadre libre (js/shape-geometry.js : `strokeArt`, `lineArt`, `presetArt`), le dessin de son trait en tirets ou d'une forme de la norme, que
+  // css/free-frame.css peint. Il est dans `--ff-art`, `--ff-art-nine` ou `--ff-fill-art` (le fond d'une forme de la norme), en `url("data:image/svg+xml,...")` : une image qui ne charge rien (un SVG
+  // employé comme image n'ouvre aucune adresse et n'exécute rien). La valeur n'est gardée que si elle est EXACTEMENT ce que l'éditeur écrit : l'URL ne porte que des caractères d'un texte en
+  // pourcentages, et le SVG décodé n'est qu'un `svg` de quatre mesures qui contient des `path` aux attributs de dessin (chemin de droites et de courbes, remplissage, trait, tirets) ; le moindre autre
+  // élément, attribut ou caractère la fait retirer comme toute valeur à `url(`.
+  const ART_PROPS = new Set(['--ff-art', '--ff-art-nine', '--ff-fill-art']);
+  const ART_URL = /^url\("data:image\/svg\+xml,([A-Za-z0-9%_.~-]{1,30000})"\)$/;
+  const ART_NUM = /\d+(?:[.]\d+)?/.source;
+  const ART_PATH = "<path d='[MLHVACZ0-9. -]*' fill='(?:none|#[0-9a-f]{6})'"
+    + "(?: stroke='#[0-9a-f]{6}' stroke-width='" + ART_NUM + "')?(?: stroke-linecap='(?:round|square)')?"
+    + "(?: stroke-linejoin='miter' stroke-miterlimit='" + ART_NUM + "')?(?: stroke-dasharray='" + ART_NUM + '(?: ' + ART_NUM + ")*')?(?: stroke-dashoffset='-?" + ART_NUM + "')?/>";
+  const ART_SVG = new RegExp("^<svg xmlns='http://www[.]w3[.]org/2000/svg' width='" + ART_NUM + "' height='" + ART_NUM + "' viewBox='0 0 " + ART_NUM + ' ' + ART_NUM
+    + "' preserveAspectRatio='none'>(?:" + ART_PATH + ')*</svg>$');
+  function isSafeArt(value) {
+    const found = ART_URL.exec(String(value || '').trim());
+    if (!found) return false;
+    try { return ART_SVG.test(decodeURIComponent(found[1])); } catch (e) { return false; }
+  }
   function cleanStyle(el) {
     const style = el.style;
     Array.from(style).forEach(prop => {
       const value = style.getPropertyValue(prop);
+      if (ART_PROPS.has(prop) && isSafeArt(value)) return;
       if (CSS_LOADS.test(value) || (prop.indexOf('--') === 0 && value.indexOf('\\') !== -1)) style.removeProperty(prop);
     });
     if (!el.getAttribute('style')) el.removeAttribute('style');
@@ -37,6 +57,13 @@ const HtmlSanitize = (function () {
   function safeLinkHref(href) {
     const value = String(href || '').trim();
     return /^(?:https?:|mailto:|tel:)/i.test(value) ? value : null;
+  }
+
+  // Un lien vers un signet du document (js/anchors.js) : `#adresse`, rien d'autre. L'adresse (sans le dièse) ou null. Ce n'est pas une adresse qui sort du document :
+  // `safeLinkHref` ne la reconnaît pas, et les exports qui ne savent pas viser un signet (e-mail, Excel) n'écrivent que son texte.
+  function internalAnchorId(href) {
+    const match = /^#([A-Za-z0-9][A-Za-z0-9_-]{0,63})$/.exec(String(href || '').trim());
+    return match ? match[1] : null;
   }
 
   // Le navigateur ignore espaces et caractères de contrôle dans un schéma (« java\tscript: ») : seul le début de l'adresse compte, une image peut
@@ -53,10 +80,12 @@ const HtmlSanitize = (function () {
         || (name === 'href' && tag !== 'a')
         || (name === 'src' && (tag !== 'img' || isActiveSource(attr.value)))) el.removeAttribute(attr.name);
     });
-    // Tout autre href d'un <a> (data:, vbscript:, adresse relative...) est retiré : le texte du lien reste, sans cible.
+    // Tout autre href d'un <a> (data:, vbscript:, adresse relative...) est retiré : le texte du lien reste, sans cible. Seul un lien vers un signet du document
+    // (`#adresse`) reste tel quel.
     if (tag === 'a' && el.hasAttribute('href')) {
       const safe = safeLinkHref(el.getAttribute('href'));
-      if (safe) el.setAttribute('href', safe); else el.removeAttribute('href');
+      const anchor = internalAnchorId(el.getAttribute('href'));
+      if (safe) el.setAttribute('href', safe); else if (anchor) el.setAttribute('href', '#' + anchor); else el.removeAttribute('href');
     }
     if (el.hasAttribute('style')) cleanStyle(el);
   }
@@ -102,5 +131,5 @@ const HtmlSanitize = (function () {
     return result;
   }
 
-  return { clean, parseInert, safeLinkHref };
+  return { clean, parseInert, safeLinkHref, internalAnchorId, isSafeArt };
 })();

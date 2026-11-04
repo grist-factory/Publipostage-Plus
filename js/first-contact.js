@@ -60,15 +60,14 @@ const FirstContact = (function () {
     win.body.classList.add('pp-first-contact-body');
     refs = win.addButtons();
     refs.cancel.addEventListener('click', keepWaiting);
-    I18n.onChange(() => { if (kind) render(); });
   }
 
   function link(href, text) {
-    const a = el('a', null, text);
-    a.href = href;
-    a.target = '_blank';
-    a.rel = 'noopener noreferrer';
-    return a;
+    const link = el('a', null, text);
+    link.href = href;
+    link.target = '_blank';
+    link.rel = 'noopener noreferrer';
+    return link;
   }
 
   function addressRow() {

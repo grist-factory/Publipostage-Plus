@@ -7,7 +7,9 @@
 //    enregistré dans le modèle. Une ligne dont toutes les colonnes sont vides n'a pas de QR code, comme une image sans pièce jointe.
 // La bibliothèque (qrcode-generator 1.4.4, MIT) se charge à la première utilisation, depuis cdnjs avec un hash SRI, comme JSZip (js/export-common.js)
 // ; le dessin (PNG, modules de pixels entiers, marge de 4 modules) se fait ici. La fenêtre « QR code… » s'ouvre depuis le menu « Lien et blocs de
-// contenu » (index.html, js/main-toolbar.js) ; styles dans css/qr-code.css.
+// contenu » (index.html, js/main-toolbar.js) ; styles dans css/qr-code.css. Elle s'ouvre aussi dans un en-tête ou un pied de page (relance du 14/10) :
+// le QR code y est une image comme une autre (36 px à l'insertion, 60 au plus : la bande de la page), et la Lecture comme les exports en dessinent les
+// colonnes (ReaderMode.resolveHeaderFooterZone, ReaderMode.preview).
 const QrCode = (function () {
   const el = Dom.el;
 
@@ -17,6 +19,7 @@ const QrCode = (function () {
   const QUIET_MODULES = 4;      // la marge blanche exigée par la norme, comptée en modules
   const TARGET_PX = 640;        // côté visé de l'image : de quoi imprimer net à 3 cm, avec des modules de pixels entiers
   const DEFAULT_WIDTH_PX = 120; // ~3,2 cm à l'écran comme à l'impression : lisible sans prendre la page
+  const ZONE_WIDTH_PX = 36;     // dans un en-tête ou un pied de page : tient dans la zone à côté d'une ligne de texte (voir apply)
   const ALT = 'QR code';
 
   // La bibliothèque
@@ -230,9 +233,17 @@ const QrCode = (function () {
     try { search.destroy(); } catch (e) { /* déjà défait */ }
     host.remove();
   }
+  // Les colonnes où mène la flèche d'une colonne Référence de la liste, sans les pièces jointes (comme la liste elle-même : un QR code est du texte).
+  function columnsBelow(key) {
+    const entries = Variables.columnsBelow(key);
+    return entries && entries.filter(entry => {
+      const cut = entry.value.indexOf('.');
+      return GristAPI.getColumnType(entry.value.slice(0, cut), entry.value.slice(cut + 1)) !== 'Attachments';
+    });
+  }
   // « Insérer une colonne… » : la liste avec recherche de toutes les colonnes (js/search-select.js), le même choix que partout ; la colonne choisie
-  // s'écrit « #Table.Colonne » à la place de la sélection du champ. Le <select> caché qui la porte vit dans la fenêtre, pour que son panneau soit
-  // au-dessus d'elle.
+  // s'écrit « #Table.Colonne » à la place de la sélection du champ, ou « #Table.Référence.Colonne » quand on est descendu dans une Référence. Le
+  // <select> caché qui la porte vit dans la fenêtre, pour que son panneau soit au-dessus d'elle.
   function openColumnList() {
     closeColumnList();
     const candidates = GristAPI.getAllVariables().filter(v => v.column.indexOf('gristHelper_') !== 0 && GristAPI.getColumnType(v.table, v.column) !== 'Attachments');
@@ -244,6 +255,10 @@ const QrCode = (function () {
       const option = document.createElement('option');
       option.value = v.key;
       option.textContent = v.key;
+      option.dataset.search = Variables.columnSearchText(v.table, v.column);
+      // Une colonne Référence ouvre les colonnes de sa table (flèche de la liste) : « #Projet.Accompagnateur.Email » est une variable comme une autre.
+      const target = Variables.referencedTable(v.table, v.column);
+      if (target) option.dataset.expand = target;
       select.appendChild(option);
     });
     host.appendChild(select);
@@ -254,6 +269,7 @@ const QrCode = (function () {
       const search = SearchSelect.attachColumns(select, {
         popup: true,
         anchor: () => column.getBoundingClientRect(),
+        expand: item => columnsBelow(item.value),
         // Défait après la fin de l'évènement en cours (un blur ou un clic qui ferme le panneau ne doit pas retirer l'élément qui le porte).
         onClose: refocus => { if (refocus) input.focus(); setTimeout(() => closeColumnList(instance), 0); },
       });
@@ -370,9 +386,12 @@ const QrCode = (function () {
     } else {
       // Jamais à la place de ce qui est sélectionné (une image, du texte) : le QR code s'ajoute derrière.
       const selection = ed.state.selection;
+      // Dans un en-tête ou un pied de page, la zone ne fait que 60 px de haut, et la ligne qui porte une image en prend sa hauteur + 6 : le QR code s'y pose à 36 px
+      // (120 ailleurs), de quoi en mettre deux côte à côte ou de le mettre à côté d'une ligne de texte. La poignée l'agrandit sans limite : ce qui dépasse la zone est
+      // coupé, et la note de la zone le dit (HeaderFooterPreview.refreshZoneOverflow). Rien n'est refusé : la fenêtre se ferme.
       const chain = ed.chain().focus();
       if (!selection.empty) chain.setTextSelection(selection.to);
-      chain.insertImage(Object.assign({ width: DEFAULT_WIDTH_PX + 'px' }, attrs)).run();
+      chain.insertImage(Object.assign({ width: (HeaderFooterPreview.getHfMode() ? ZONE_WIDTH_PX : DEFAULT_WIDTH_PX) + 'px' }, attrs)).run();
     }
     closeWindow();
   }

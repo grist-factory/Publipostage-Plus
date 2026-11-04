@@ -3,13 +3,13 @@
 
 const GristAPI = (function () {
   // Tables internes du widget (modèles, règles de liaison, sonde de l'utilisateur, préférences de l'arbre de modèles, fils de commentaires,
-  // abréviations, formats de page) : jamais des tables « métier » de la personne, donc exclues de _tables, de getAllVariables et de tout sélecteur de
-  // table, sinon elles s'afficheraient dans l'autocomplétion # et les sélecteurs de liaison. Le vrai listTables() les rend avec les autres
-  // (grist-core, WidgetFrame.ts : _grist_Tables sans filtre) ; une nouvelle table interne s'ajoute donc ici, car dev-tests/grist-stub.js ne liste
-  // jamais ses tables internes et ne révélerait pas l'oubli.
+  // abréviations, formats de page, versions des modèles, salon de l'écriture en direct) : jamais des tables « métier » de la personne, donc exclues de _tables, de getAllVariables et
+  // de tout sélecteur de table, sinon elles s'afficheraient dans l'autocomplétion # et les sélecteurs de liaison. Le vrai listTables() les rend avec
+  // les autres (grist-core, WidgetFrame.ts : _grist_Tables sans filtre) ; une nouvelle table interne s'ajoute donc ici, car dev-tests/grist-stub.js ne
+  // liste jamais ses tables internes et ne révélerait pas l'oubli.
   const INTERNAL_TABLES = [
     'Publipostage_Modeles', 'Publipostage_LiensTables', 'Publipostage_UserProbe', 'Publipostage_PreferencesModeles', 'Publipostage_Commentaires',
-    'Publipostage_Abreviations', 'Publipostage_FormatsPage',
+    'Publipostage_Abreviations', 'Publipostage_FormatsPage', 'Publipostage_Versions', 'Publipostage_Direct',
   ];
   const LINKS_TABLE_NAME = 'Publipostage_LiensTables';
   // Table interne de getCurrentUserEmail() et getCurrentUserName() (chips « Email de l'utilisateur » et « Nom de l'utilisateur ») : des colonnes à
@@ -22,6 +22,16 @@ const GristAPI = (function () {
   // { tableId: { colId: colonne d'affichage } } - pour une Référence, la colonne d'aide (« gristHelper_Display… ») que Grist calcule dans la même
   // table avec la valeur affichée, cf. getDisplayColumn.
   let _displayColByTable = {};
+  // { tableId: { colId: libellé } } - le nom que Grist montre dans l'en-tête de la colonne, seulement quand il diffère de l'identifiant, cf. getColumnLabel.
+  let _columnLabelsByTable = {};
+  // { tableId: { colId: true } } - les colonnes à formule (isFormula vrai et formule non vide), que Grist refuse d'écrire, cf. isFormulaColumn. Une colonne « vide »
+  // (isFormula vrai, formule vide : celle que l'on vient d'ajouter dans Grist) n'en est pas une : la première écriture en fait une colonne de données.
+  let _formulaColumnsByTable = {};
+  // { tableId: { colId: réglages d'affichage } } - pour une colonne Numérique, Entier, Date ou Date et heure, ce que son widgetOptions dit de l'écriture de ses valeurs
+  // (formatOptionsOf) : {} quand elle n'a rien de réglé, absente quand ses réglages sont illisibles. Cf. getColumnFormatOptions.
+  let _columnFormatsByTable = {};
+  // Les réglages du document (langue, devise : _grist_DocInfo.documentSettings), null tant qu'ils ne sont pas lus ou quand ils sont illisibles, cf. getDocumentSettings.
+  let _documentSettings = null;
   // { tableId: { colId: { table, column } } } - pour une colonne Référence / liste de références, la colonne de la table liée que Grist affiche à la
   // place de l'id (visibleCol, « Colonne à afficher » du panneau de droite), cf. getReferenceColumn. Seules celles dont le type se lit comme du texte
   // ou un nombre.
@@ -67,6 +77,18 @@ const GristAPI = (function () {
     return error;
   }
   function isTablesDeclined(error) { return !!error && error.tablesDeclined === true; }
+  // Un document que Grist ouvre en lecture seule pour cette personne (compte Lecteur du document, ou instantané de son historique) : Grist ajoute
+  // `readonly=true` à l'adresse du cadre du widget (WidgetFrame.ts, `gristDoc.isReadonly`, faux pour qui peut modifier le document). Il l'ajoute après les
+  // paramètres de l'adresse du widget : la dernière valeur est la sienne. Absent (Grist plus ancien) ou autre que `true` : personne n'est tenu pour
+  // lecteur, comme avant. `search` : la partie de l'adresse après le « ? » (`location.search`).
+  function isReadOnlyAddress(search) {
+    let values = [];
+    try { values = new URLSearchParams(search || '').getAll('readonly'); } catch (e) { return false; }
+    return values.length > 0 && values[values.length - 1] === 'true';
+  }
+  function isDocumentReadOnly() {
+    return isReadOnlyAddress(typeof location === 'undefined' ? '' : location.search);
+  }
   async function askToCreateTables(hooks) {
     let granted = false;
     try { granted = (await hooks.ask()) === true; }
@@ -77,6 +99,8 @@ const GristAPI = (function () {
   }
   // { granted, asked } : `asked` quand la création a attendu la réponse de la personne (le document a pu changer pendant ce temps).
   async function tableCreationConsent(tables) {
+    // Un compte Lecteur ne crée rien : la question serait posée pour rien, et Grist refuserait la création.
+    if (isDocumentReadOnly()) return { granted: false, asked: false };
     if (_consentGranted) return { granted: true, asked: false };
     if (tables.some(name => INTERNAL_TABLES.includes(name))) { _consentGranted = true; return { granted: true, asked: false }; }
     const hooks = _consentHooks;
@@ -186,7 +210,8 @@ const GristAPI = (function () {
     }
     return pass.tables.get(tableId);
   }
-  let _linkRulesByTable = {};
+  // Les liens entre tables, un par couple « table de la page, table liée » (linkPairKey) ; `tableSource` vide : le lien commun à toutes les tables.
+  let _linkRulesByPair = {};
   let _currentRecord = null;
   let _currentMappings = null;
   let _currentOptions = null;
@@ -201,6 +226,8 @@ const GristAPI = (function () {
   let _tokenCache = null;
   // Abonnés aux options JSON du widget (js/access-rights.js) : grist.onOptions n'est enregistré qu'une fois, ici, et redistribué.
   let _optionsCallbacks = [];
+  // Abonnés aux écritures d'options faites par le widget (js/save-reminder.js) : ils reçoivent { before, after }.
+  let _optionWriteCallbacks = [];
   // Le lien « Sélectionner par » de ce widget, d'après settings.linking de grist.onOptions (js/reader-guide.js). 'unknown' tant que Grist ne le dit
   // pas.
   let _linkState = 'unknown';
@@ -265,9 +292,9 @@ const GristAPI = (function () {
   }
 
   // Prévient les abonnés d'un état : la panne de l'un n'empêche pas les suivants.
-  function notifyAll(callbacks, label, value) {
+  function notifyAll(callbacks, label, value, extra) {
     for (const cb of callbacks) {
-      try { cb(value); } catch (e) { console.error('[GristAPI] erreur callback ' + label + ':', e); }
+      try { cb(value, extra); } catch (e) { console.error('[GristAPI] erreur callback ' + label + ':', e); }
     }
   }
 
@@ -286,7 +313,9 @@ const GristAPI = (function () {
     _accessLevel = accessLevel;
     if (linkChanged) notifyAll(_linkStateCallbacks, 'onLinkStateChange', linkState);
     if (accessChanged) notifyAll(_accessLevelCallbacks, 'onAccessLevelChange', accessLevel);
-    notifyAll(_optionsCallbacks, 'onOptions', _currentOptions);
+    // Second argument : un message qui apporte aussi un changement du lien ou de l'accès n'est pas un « Retour » de Grist, qui rend les options
+    // enregistrées (js/save-reminder.js). Grist n'envoie rien du tout au clic sur « Enregistrer ».
+    notifyAll(_optionsCallbacks, 'onOptions', _currentOptions, { settingsChanged: linkChanged || accessChanged });
   }
 
   function subscribeToRecords() {
@@ -481,8 +510,8 @@ const GristAPI = (function () {
     const nextColumnsByTable = {};
     await Promise.all(_tables.map(async t => {
       try {
-        const data = await readTable(t);
-        const cols = Object.keys(data || {}).filter(k => k !== 'id' && k !== 'manualSort');
+        const tableData = await readTable(t);
+        const cols = Object.keys(tableData || {}).filter(k => k !== 'id' && k !== 'manualSort');
         nextColumnsByTable[t] = cols;
       } catch (e) {
         // Une table qu'on ne parvient pas à lire garde les colonnes déjà connues (celles des métadonnées, ou d'une passe réussie) : sans elles,
@@ -532,7 +561,9 @@ const GristAPI = (function () {
   // l'utilisateur la compare à l'Identifiant de ligne, pas à une colonne texte. Les deux tables de métadonnées sont demandées ensemble (un
   // aller-retour au lieu de deux) ; refreshSchema les lance en même temps que listTables et les passe à refreshColumnTypes.
   function readColumnMeta() {
-    return Promise.all([readTable('_grist_Tables'), readTable('_grist_Tables_column')]);
+    // La troisième lecture, _grist_DocInfo (une seule ligne : les réglages du document, dont la devise par défaut), part avec les deux autres sans les retarder ;
+    // sa lecture refusée (règle d'accès) se lit « réglages inconnus » (null) sans faire échouer les types des colonnes.
+    return Promise.all([readTable('_grist_Tables'), readTable('_grist_Tables_column'), Promise.resolve(readTable('_grist_DocInfo')).catch(() => null)]);
   }
   // Choix d'une colonne Choice/ChoiceList : widgetOptions est un JSON stocké en Text (schema.ts), clé « choices » (ChoiceTextBox.ts de grist-core),
   // un tableau de chaînes. Un widgetOptions absent ou mal formé ne doit pas faire échouer tout refreshSchema : la colonne reste sans choix connus, et
@@ -542,6 +573,52 @@ const GristAPI = (function () {
       const raw = colsMeta.widgetOptions && colsMeta.widgetOptions[i];
       const options = raw ? JSON.parse(raw) : null;
       return options && Array.isArray(options.choices) ? options.choices : null;
+    } catch (e) {
+      return null;
+    }
+  }
+  // Le libellé de la colonne `i` (label, schema.ts : le nom de son en-tête dans Grist), '' quand il manque ou qu'il redit l'identifiant.
+  function labelOf(colsMeta, i) {
+    const label = colsMeta.label && colsMeta.label[i];
+    return typeof label === 'string' && label !== colsMeta.colId[i] ? label : '';
+  }
+  // La colonne `i` est-elle une colonne à formule (isFormula vrai, formule non vide) ? Les métadonnées qui ne portent pas ces deux champs (accès restreint) la disent
+  // de données : une écriture que Grist refuserait échoue alors à l'écriture, pas avant.
+  function hasFormulaOf(colsMeta, i) {
+    return !!(colsMeta.isFormula && colsMeta.isFormula[i] && String((colsMeta.formula && colsMeta.formula[i]) || '').trim());
+  }
+  // Les réglages d'affichage d'une colonne Numérique, Entier, Date ou Date et heure, tirés de son widgetOptions (JSON stocké en Text, comme les choix) : numMode
+  // (« currency », « decimal », « percent », « scientific » ; absent : nombre brut), numSign (« parens »), decimals (au moins) et maxDecimals (au plus) des chiffres
+  // après la virgule, currency (le code ISO d'une devise propre à la colonne), dateFormat et timeFormat (écrits comme moment.js ; timeFormat vide : pas d'heure).
+  // {} quand la colonne n'a rien de réglé ; null pour une autre colonne, pour des réglages mal formés et quand les métadonnées ne portent pas widgetOptions (accès
+  // restreint) - on ne sait pas alors comment Grist écrit la colonne.
+  const FORMAT_TYPE = /^(Numeric|Int|Date|DateTime)(:|$)/;
+  const FORMAT_TEXT_KEYS = ['numMode', 'numSign', 'currency', 'dateFormat', 'timeFormat'];
+  const FORMAT_NUMBER_KEYS = ['decimals', 'maxDecimals'];
+  function formatOptionsOf(colsMeta, i) {
+    if (!FORMAT_TYPE.test(String(colsMeta.type[i] || '')) || !Array.isArray(colsMeta.widgetOptions)) return null;
+    const raw = colsMeta.widgetOptions[i];
+    if (!raw) return {};
+    let options;
+    try { options = JSON.parse(raw); } catch (e) { return null; }
+    if (!options || typeof options !== 'object' || Array.isArray(options)) return null;
+    const found = {};
+    FORMAT_TEXT_KEYS.forEach(key => { if (typeof options[key] === 'string') found[key] = options[key]; });
+    FORMAT_NUMBER_KEYS.forEach(key => { if (typeof options[key] === 'number' && Number.isFinite(options[key])) found[key] = options[key]; });
+    return found;
+  }
+  // Les réglages du document (_grist_DocInfo, une ligne : documentSettings est un JSON { locale, currency?, … }) : { locale, currency } (les deux facultatifs, du
+  // texte), null quand la table, la colonne ou le JSON manquent.
+  function documentSettingsOf(docInfo) {
+    const raw = docInfo && Array.isArray(docInfo.documentSettings) ? docInfo.documentSettings[0] : undefined;
+    if (raw === undefined) return null;
+    if (!raw) return {};
+    try {
+      const settings = JSON.parse(raw);
+      if (!settings || typeof settings !== 'object' || Array.isArray(settings)) return null;
+      const found = {};
+      ['locale', 'currency'].forEach(key => { if (typeof settings[key] === 'string' && settings[key]) found[key] = settings[key]; });
+      return found;
     } catch (e) {
       return null;
     }
@@ -572,8 +649,11 @@ const GristAPI = (function () {
     const choices = {};
     const displayCols = {};
     const referenceCols = {};
+    const labels = {};
+    const formulaColumns = {};
+    const formats = {};
     try {
-      const [tablesMeta, colsMeta] = await (metaRead || readColumnMeta());
+      const [tablesMeta, colsMeta, docInfo] = await (metaRead || readColumnMeta());
       const tableIdByRowId = tableIdsByRowId(tablesMeta);
       const colIdByRowId = {};
       const colIndexByRowId = {};
@@ -589,11 +669,20 @@ const GristAPI = (function () {
         if (shown) rowOf(referenceCols, tableId)[colId] = shown;
         const columnChoices = choicesOf(colsMeta, i);
         if (columnChoices) rowOf(choices, tableId)[colId] = columnChoices;
+        const label = labelOf(colsMeta, i);
+        if (label) rowOf(labels, tableId)[colId] = label;
+        if (hasFormulaOf(colsMeta, i)) rowOf(formulaColumns, tableId)[colId] = true;
+        const formatOptions = formatOptionsOf(colsMeta, i);
+        if (formatOptions) rowOf(formats, tableId)[colId] = formatOptions;
       }
       _columnTypesByTable = types;
       _columnChoicesByTable = choices;
       _displayColByTable = displayCols;
       _referenceColumnByTable = referenceCols;
+      _columnLabelsByTable = labels;
+      _formulaColumnsByTable = formulaColumns;
+      _columnFormatsByTable = formats;
+      _documentSettings = documentSettingsOf(docInfo);
     } catch (e) {
       console.warn('[GristAPI] refreshColumnTypes: échec', e);
     }
@@ -614,13 +703,14 @@ const GristAPI = (function () {
     }
     return (_columnTypesByTable[tableId] && _columnTypesByTable[tableId][colId]) || null;
   }
-  // Table où mène une suite de colonnes Référence simples à partir de `tableId` (la table elle-même si la suite est vide), null si un maillon manque
-  // ou n'est pas une Référence (une liste de références désigne plusieurs lignes : on ne descend pas dedans).
-  function tableAtEndOf(tableId, hops) {
+  // Table où mène une suite de colonnes Référence ou Liste de références à partir de `tableId` (la table elle-même si la suite est vide), null si un maillon
+  // manque ou n'est pas une référence. Une liste de références désigne plusieurs lignes : la suite les lit toutes (Variables.resolveRows) et ce qu'on y lit est
+  // une valeur par ligne. `singleOnly` : les seules Références simples, pour ce qui n'ouvre qu'une ligne (la flèche des listes de colonnes).
+  function tableAtEndOf(tableId, hops, singleOnly) {
     let table = tableId;
     for (let i = 0; i < hops.length; i++) {
       const ref = referenceOf(_columnTypesByTable[table] && _columnTypesByTable[table][hops[i]]);
-      if (!ref || ref.list) return null;
+      if (!ref || (ref.list && singleOnly)) return null;
       table = ref.table;
     }
     return table;
@@ -682,6 +772,26 @@ const GristAPI = (function () {
     return (_columnChoicesByTable[tableId] && _columnChoicesByTable[tableId][colId]) || null;
   }
 
+  // Le libellé que Grist montre en tête d'une colonne, '' quand il redit l'identifiant. Grist tire l'identifiant du libellé en retirant les accents et
+  // en remplaçant le reste (espaces, ponctuation, « œ ») par « _ » (« Date d'envoi » devient Date_d_envoi), mais les deux peuvent ensuite être
+  // changés l'un sans l'autre : la recherche par nom (js/variables.js:columnSearchText) cherche dans les deux.
+  function getColumnLabel(tableId, colId) {
+    return (_columnLabelsByTable[tableId] && _columnLabelsByTable[tableId][colId]) || '';
+  }
+  // Vrai pour une colonne à formule : Grist n'y accepte aucune écriture (le lot entier est refusé), la date du dernier export (js/export-date.js) ne la propose pas.
+  function isFormulaColumn(tableId, colId) {
+    return !!(_formulaColumnsByTable[tableId] && _formulaColumnsByTable[tableId][colId]);
+  }
+  // Les réglages d'affichage d'une colonne nombre ou date tels que Grist les garde (formatOptionsOf), {} quand elle n'a rien de réglé, null quand ils sont
+  // inconnus ou illisibles. Un chemin « Ref.Colonne » (cf. resolveColumnPath) se lit sur sa dernière colonne, comme getColumnType.
+  function getColumnFormatOptions(tableId, colId) {
+    const end = resolveColumnPath(tableId, colId);
+    const options = end && _columnFormatsByTable[end.table] && _columnFormatsByTable[end.table][end.column];
+    return options || null;
+  }
+  // Les réglages du document, { locale, currency } (facultatifs), dont la devise par défaut des colonnes « Monnaie » ; null quand Grist ne les a pas rendus.
+  function getDocumentSettings() { return _documentSettings; }
+
   function getTables() { return _tables; }
 
   function getColumns(tableId) {
@@ -695,8 +805,8 @@ const GristAPI = (function () {
   function getAllVariables() {
     const vars = [];
     for (const t of _tables) {
-      for (const c of getColumns(t)) {
-        vars.push({ key: t + '.' + c, table: t, column: c });
+      for (const column of getColumns(t)) {
+        vars.push({ key: t + '.' + column, table: t, column: column });
       }
     }
     return vars;
@@ -711,12 +821,38 @@ const GristAPI = (function () {
     }
   }
 
+  // La table à laquelle Grist a rattaché ce widget, telle que grist-plugin-api la retient dès le premier message de Grist (getSelectedTableIdSync), avec ou sans ligne :
+  // onRecord ne se déclenche pas quand la table est vide ni quand « Sélectionner par » n'a choisi aucune ligne (il ignore un message sans `rowId` ou dont il vaut « new »),
+  // et _currentTableId, la table de la dernière ligne reçue, reste alors inconnue - la liste « # » ne mettait plus la table de la page en tête - ou périmée quand le widget
+  // change de table sans qu'une ligne suive. null quand l'API n'a pas ce lecteur ou qu'il n'a encore rien reçu : on retombe sur la table de la dernière ligne.
+  function selectedTableId() {
+    try {
+      const id = typeof grist !== 'undefined' && typeof grist.getSelectedTableIdSync === 'function' ? grist.getSelectedTableIdSync() : null;
+      return id ? String(id).trim() || null : null;
+    } catch (e) { return null; }
+  }
+
   function getCurrentRecord() { return _currentRecord; }
-  function getCurrentTableId() { return _currentTableId; }
+  function getCurrentTableId() { return selectedTableId() || _currentTableId; }
 
   // Options JSON propres au widget (jamais accessLevel, cf. init()) : lues au démarrage par getOptions puis tenues à jour par onOptions.
   function getWidgetOptions() { return _currentOptions; }
   function onWidgetOptionsChange(cb) { _optionsCallbacks.push(cb); }
+  // Ce qu'un écran vient d'écrire dans les options du widget : Grist le renvoie par onOptions, parfois après un choix plus récent, et l'écho d'une valeur déjà remplacée ne doit pas défaire le réglage
+  // en cours. `remember(texte)` note une écriture (vingt au plus) ; `isEcho(texte)` rend vrai pour le renvoi d'une écriture notée (et oublie celles d'avant), faux pour un changement venu d'ailleurs.
+  function createEchoGuard() {
+    const expected = [];
+    return {
+      remember(text) { expected.push(text); if (expected.length > 20) expected.shift(); },
+      isEcho(text) {
+        const at = expected.indexOf(text);
+        if (at !== -1) { expected.splice(0, at + 1); return true; }
+        expected.length = 0;
+        return false;
+      },
+    };
+  }
+  function onWidgetOptionWrite(cb) { _optionWriteCallbacks.push(cb); }
   // 'linked' (relié à une autre vue), 'unlinked' (« Sélectionner par » vide) ou 'unknown' ; le rappel reçoit le nouvel état à chaque changement.
   function getLinkState() { return _linkState; }
   function onLinkStateChange(cb) { _linkStateCallbacks.push(cb); }
@@ -726,9 +862,11 @@ const GristAPI = (function () {
   function onAccessLevelChange(cb) { _accessLevelCallbacks.push(cb); }
   // grist.setOption ne pose qu'un brouillon des options de la section (ViewSectionRec.activeCustomOptions, grist-core) : Grist affiche alors un
   // bouton Enregistrer en haut du widget, seul moyen de le rendre durable et visible des autres personnes. Recopié localement tout de suite, sans
-  // attendre le retour d'onOptions.
+  // attendre le retour d'onOptions ; les abonnés aux écritures (le rappel « Enregistrer », js/save-reminder.js) en sont prévenus au même moment.
   async function setWidgetOption(key, value) {
+    const before = _currentOptions;
     _currentOptions = Object.assign({}, _currentOptions, { [key]: value });
+    notifyAll(_optionWriteCallbacks, 'onWidgetOptionWrite', { before, after: _currentOptions });
     await grist.setOption(key, value);
   }
 
@@ -758,12 +896,12 @@ const GristAPI = (function () {
   }
 
   async function fetchRowById(tableId, rowId, fresh) {
-    const data = await readTable(tableId, fresh);
-    const ids = data && data.id ? data.id : [];
+    const tableData = await readTable(tableId, fresh);
+    const ids = tableData && tableData.id ? tableData.id : [];
     const idx = ids.indexOf(rowId);
     if (idx === -1) return null;
     const row = {};
-    for (const key of Object.keys(data)) row[key] = data[key][idx];
+    for (const key of Object.keys(tableData)) row[key] = tableData[key][idx];
     _rawRows.add(row);
     return row;
   }
@@ -795,8 +933,10 @@ const GristAPI = (function () {
   }
 
   // Table de bookkeeping stockant, pour chaque table cible référencée via # depuis une autre table, comment en trouver la bonne ligne : "singleton"
-  // (une seule ligne pertinente) ou "match" (comparer ColonneCible à ColonneSource, "id" désignant l'identifiant de ligne Grist). Créée à la volée au
-  // 1er besoin.
+  // (une seule ligne pertinente) ou "match" (comparer ColonneCible à ColonneSource, "id" désignant l'identifiant de ligne Grist). Une ligne par couple
+  // « table de la page (TableSource), table cible (TableCible) » : ColonneSource est une colonne de la table de la page. Une ligne sans TableSource est
+  // le lien commun à toutes les tables, celui d'avant cette colonne, qui sert de repli aux tables qui n'ont pas le leur. Créée à la volée au 1er besoin ;
+  // la colonne TableSource n'est ajoutée qu'au premier lien propre à une table (ensureLinkSourceColumn), jamais à la lecture.
   async function ensureLinksTableExists() {
     const tables = await listAllTablesCached();
     try {
@@ -812,23 +952,30 @@ const GristAPI = (function () {
     }
   }
 
+  const LINK_SOURCE_COLUMN = 'TableSource';
+  const linkPairKey = (tableCible, tableSource) => tableCible + '\u0000' + (tableSource || '');
+
   async function loadLinkRules() {
     try { await ensureLinksTableExists(); }
     catch (e) {
       if (!isTablesDeclined(e)) throw e;
-      _linkRulesByTable = {}; // pas de table, donc aucune règle : rien à lire
+      _linkRulesByPair = {}; // pas de table, donc aucune règle : rien à lire
       return;
     }
-    _linkRulesByTable = {};
+    _linkRulesByPair = {};
     try {
-      const data = await grist.docApi.fetchTable(LINKS_TABLE_NAME);
-      const ids = data && data.id ? data.id : [];
+      const linksData = await grist.docApi.fetchTable(LINKS_TABLE_NAME);
+      const ids = linksData && linksData.id ? linksData.id : [];
       for (let i = 0; i < ids.length; i++) {
-        _linkRulesByTable[data.TableCible[i]] = {
-          id: data.id[i],
-          mode: data.Mode[i],
-          colonneCible: data.ColonneCible[i],
-          colonneSource: data.ColonneSource[i]
+        // Une table créée avant la colonne TableSource, ou une ligne qui l'a vide, ne porte que le lien commun à toutes les tables.
+        const tableSource = (linksData[LINK_SOURCE_COLUMN] && linksData[LINK_SOURCE_COLUMN][i]) || '';
+        _linkRulesByPair[linkPairKey(linksData.TableCible[i], tableSource)] = {
+          id: linksData.id[i],
+          tableCible: linksData.TableCible[i],
+          tableSource,
+          mode: linksData.Mode[i],
+          colonneCible: linksData.ColonneCible[i],
+          colonneSource: linksData.ColonneSource[i]
         };
       }
     } catch (e) {
@@ -836,38 +983,93 @@ const GristAPI = (function () {
     }
   }
 
-  function getLinkRule(tableId) { return _linkRulesByTable[tableId] || null; }
-
-  function getAllLinkRules() {
-    return Object.keys(_linkRulesByTable).map(t => Object.assign({ tableCible: t }, _linkRulesByTable[t]));
+  // Une règle « match » lit, dans la ligne de la page, la colonne `colonneSource` : quand la table de la page n'a pas cette colonne, la règle n'a rien à y lire et
+  // ne s'applique pas à cette page. Un lien commun écrit avant les liens propres à une table, ou pour une autre page, masquait sinon la colonne Référence qui relie
+  // vraiment les deux tables : des champs vides, sans un mot (consigne 038 de GFS). La règle reste telle quelle dans « Tables liées » (getAllLinkRules, findLinkRule),
+  // seule sa portée change. L'identifiant de ligne (« Auto », `id`) et la règle « singleton » ne lisent aucune colonne de la page : ils s'appliquent à toute page.
+  // Tant que le schéma de la page n'est pas lu (métadonnées illisibles, table pas encore connue), la règle s'applique comme avant.
+  function linkRuleApplies(rule, page) {
+    if (!rule || rule.mode !== 'match' || rule.colonneSource === 'id') return !!rule;
+    const columns = page && _columnTypesByTable[page];
+    return !columns || Object.prototype.hasOwnProperty.call(columns, rule.colonneSource);
   }
 
-  // Upsert (une seule règle par table cible) - écrase la précédente si l'utilisateur reconfigure une table déjà liée (depuis le panneau de gestion,
-  // ou en réinsérant la variable après une modification de schéma).
+  // Le lien à suivre pour lire `tableId` depuis `pageTable` (la table de la page du moment quand on ne la donne pas) : celui de ce couple, sinon le lien
+  // commun à toutes les tables, pourvu que sa colonne source soit une colonne de la table de la page (linkRuleApplies) ; null s'il n'y en a aucun.
+  function getLinkRule(tableId, pageTable) {
+    const page = pageTable == null ? getCurrentTableId() : pageTable;
+    const own = page && _linkRulesByPair[linkPairKey(tableId, page)];
+    if (own && linkRuleApplies(own, page)) return own;
+    const shared = _linkRulesByPair[linkPairKey(tableId, '')];
+    return shared && linkRuleApplies(shared, page) ? shared : null;
+  }
+
+  // Le lien réglé pour ce couple exactement, sans repli sur le lien commun (`tableSource` vide : le lien commun lui-même).
+  function findLinkRule(tableCible, tableSource) { return _linkRulesByPair[linkPairKey(tableCible, tableSource)] || null; }
+
+  function getAllLinkRules() {
+    return Object.keys(_linkRulesByPair).map(key => Object.assign({}, _linkRulesByPair[key]));
+  }
+
+  // La colonne TableSource, ajoutée à la table des liens d'un document qui l'a créée sans elle. Au premier lien propre à une table seulement : lire
+  // n'écrit rien, et un compte en lecture seule n'a rien à migrer. Un seul essai à la fois (deux appels qui se chevauchent liraient tous deux la colonne
+  // absente, puis la poseraient deux fois : Grist nommerait la seconde « TableSource2 ») ; un échec se retente au lien suivant.
+  let _linkSourceColumn = null;
+  function ensureLinkSourceColumn() {
+    if (!_linkSourceColumn) {
+      _linkSourceColumn = (async () => {
+        const linksData = await grist.docApi.fetchTable(LINKS_TABLE_NAME);
+        if (linksData && LINK_SOURCE_COLUMN in linksData) return;
+        await grist.docApi.applyUserActions([['AddVisibleColumn', LINKS_TABLE_NAME, LINK_SOURCE_COLUMN, { type: 'Text', isFormula: false, label: 'Table de la page' }]]);
+      })();
+      _linkSourceColumn.catch(() => { _linkSourceColumn = null; });
+    }
+    return _linkSourceColumn;
+  }
+
+  // Upsert (un seul lien par couple) - écrase le précédent si l'utilisateur reconfigure un couple déjà lié (depuis le panneau de gestion, ou en
+  // réinsérant la variable après une modification de schéma). `rule.tableSource` : la table de la page pour laquelle le lien est réglé ; absent ou vide,
+  // c'est le lien commun à toutes les tables. Un compte qui ne peut pas poser la colonne TableSource (pas le droit de modifier la structure du
+  // document) enregistre quand même le premier lien d'une table liée, pour toutes les tables comme avant : il n'écrase rien. Pour une table liée qui a
+  // déjà un lien, l'erreur remonte plutôt que d'écraser celui d'une autre table.
   async function saveLinkRule(tableCible, rule) {
     await ensureLinksTableExists();
+    let tableSource = rule.tableSource || '';
+    if (tableSource) {
+      try { await ensureLinkSourceColumn(); }
+      catch (e) {
+        if (Object.keys(_linkRulesByPair).some(key => _linkRulesByPair[key].tableCible === tableCible)) throw e;
+        tableSource = '';
+      }
+    }
     const columns = {
       TableCible: tableCible,
       Mode: rule.mode,
       ColonneCible: rule.mode === 'match' ? (rule.colonneCible || '') : '',
       ColonneSource: rule.mode === 'match' ? (rule.colonneSource || '') : ''
     };
-    const existing = _linkRulesByTable[tableCible];
+    if (tableSource) columns[LINK_SOURCE_COLUMN] = tableSource;
+    const key = linkPairKey(tableCible, tableSource);
+    const existing = _linkRulesByPair[key];
+    let id;
     if (existing) {
       await grist.docApi.applyUserActions([['UpdateRecord', LINKS_TABLE_NAME, existing.id, columns]]);
-      _linkRulesByTable[tableCible] = { id: existing.id, mode: columns.Mode, colonneCible: columns.ColonneCible, colonneSource: columns.ColonneSource };
+      id = existing.id;
     } else {
       const result = await grist.docApi.applyUserActions([['AddRecord', LINKS_TABLE_NAME, null, columns]]);
-      const newId = result.retValues[0];
-      _linkRulesByTable[tableCible] = { id: newId, mode: columns.Mode, colonneCible: columns.ColonneCible, colonneSource: columns.ColonneSource };
+      id = result.retValues[0];
     }
+    _linkRulesByPair[key] = { id, tableCible, tableSource, mode: columns.Mode, colonneCible: columns.ColonneCible, colonneSource: columns.ColonneSource };
   }
 
-  async function deleteLinkRule(tableCible) {
-    const existing = _linkRulesByTable[tableCible];
-    if (!existing) return;
-    await grist.docApi.applyUserActions([['RemoveRecord', LINKS_TABLE_NAME, existing.id]]);
-    delete _linkRulesByTable[tableCible];
+  // Retire le lien d'un couple (`tableSource` vide : le lien commun). Sans `tableSource`, tous les liens de `tableCible`.
+  async function deleteLinkRule(tableCible, tableSource) {
+    const keys = tableSource === undefined
+      ? Object.keys(_linkRulesByPair).filter(key => _linkRulesByPair[key].tableCible === tableCible)
+      : [linkPairKey(tableCible, tableSource)].filter(key => _linkRulesByPair[key]);
+    if (!keys.length) return;
+    await grist.docApi.applyUserActions(keys.map(key => ['RemoveRecord', LINKS_TABLE_NAME, _linkRulesByPair[key].id]));
+    keys.forEach(key => { delete _linkRulesByPair[key]; });
   }
 
   // Sur certaines instances Grist auto-hébergées (APP_HOME_URL mal configuré), getAccessToken() renvoie un baseUrl dont l'hôte interne est
@@ -936,6 +1138,9 @@ const GristAPI = (function () {
   // auraient créé la table deux fois.
   let _userProbeRead = null;
   function probeUserRow() {
+    // La sonde écrit une ligne : un compte Lecteur ne le peut pas, la tenter ne ferait que fabriquer un refus (js/access-rights.js : un Lecteur n'est pas
+    // identifié, et ne cherche pas à l'être).
+    if (isDocumentReadOnly()) return Promise.reject(new Error('document ouvert en lecture seule : identification impossible'));
     if (!_userProbeRead) {
       _userProbeRead = readUserProbeRow();
       const done = () => { _userProbeRead = null; };
@@ -983,6 +1188,9 @@ const GristAPI = (function () {
     const name = userNameOf(row);
     if (name !== null) _userNameCache = name;
   }
+  // Ce que la session sait déjà de la personne devant l'écran : { email, name }, '' pour ce qui n'est pas lu. Ne lit ni n'écrit rien (jamais de passage par la table-sonde) : l'enregistrement d'un
+  // modèle s'en sert pour dire qui l'a écrit (colonne « Modifié par ») sans rien ajouter à ses écritures.
+  function peekCurrentUser() { return { email: _userEmailCache || '', name: _userNameCache || '' }; }
   async function getCurrentUserName() {
     if (_userNameCache !== null) return _userNameCache;
     if (!_userNameRead) {
@@ -1035,5 +1243,5 @@ const GristAPI = (function () {
     return { tableId: _currentTableId, record: _currentRecord, mappings: _currentMappings };
   }
 
-  return { init, refreshSchema, refreshColumnTypes, withReadPass, getTables, getColumns, getVisibleColumns, isHelperColumn, referenceOf, getColumnType, getColumnChoices, getAllVariables, onRecord, getCurrentRecord, getCurrentTableId, getWidgetOptions, onWidgetOptionsChange, setWidgetOption, detectTableId, findReferenceColumns, fetchRowById, fetchTableRows, detectCurrentContext, getAttachmentDownloadUrl, getCurrentUserEmail, getCurrentUserName, hydrateAttachmentImages, getLinkRule, getAllLinkRules, saveLinkRule, deleteLinkRule, getDisplayColumn, getReferenceColumn, getReferenceValues, isRawRow, resolveColumnPath, tableAtEndOf, getLinkState, onLinkStateChange, getAccessLevel, onAccessLevelChange, ensureTable, setTableConsent, isTablesDeclined, createWriteQueue, createUserEmailCache, createMemoizedLoad };
+  return { init, refreshSchema, refreshColumnTypes, withReadPass, getTables, getColumns, getVisibleColumns, isHelperColumn, referenceOf, getColumnType, getColumnChoices, getColumnLabel, isFormulaColumn, getColumnFormatOptions, getDocumentSettings, getAllVariables, onRecord, getCurrentRecord, getCurrentTableId, getWidgetOptions, onWidgetOptionsChange, createEchoGuard, onWidgetOptionWrite, setWidgetOption, detectTableId, findReferenceColumns, fetchRowById, fetchTableRows, detectCurrentContext, getAttachmentDownloadUrl, getCurrentUserEmail, getCurrentUserName, peekCurrentUser, hydrateAttachmentImages, getLinkRule, findLinkRule, getAllLinkRules, saveLinkRule, deleteLinkRule, getDisplayColumn, getReferenceColumn, getReferenceValues, isRawRow, resolveColumnPath, tableAtEndOf, getLinkState, onLinkStateChange, getAccessLevel, onAccessLevelChange, ensureTable, setTableConsent, isTablesDeclined, isDocumentReadOnly, isReadOnlyAddress, createWriteQueue, createUserEmailCache, createMemoizedLoad };
 })();

@@ -1,0 +1,278 @@
+/* Cadres de texte libres d'une présentation (js/free-frame.js). Un cadre est une ancre de HAUTEUR NULLE posée au début de sa diapositive : sa boîte flotte à sa place (position absolue
+   dans l'ancre), si bien que ni la pagination de l'éditeur, ni celle de la Lecture, ni le diaporama, ni la bande ne lui comptent de hauteur - un cadre n'est jamais « du texte qui
+   dépasse », et le texte d'une diapositive ne se décale pas quand on en pose un. Les mesures sont celles de la page, en points, depuis son coin haut gauche (`--ff-x`, `--ff-y`,
+   `--ff-w`, `--ff-h`, écrites par le nœud) : l'ancre est au coin du texte, les marges de la page (`--pp-margin-*`, posées par PageLayout sur :root) sont retranchées, et la bande que
+   l'en-tête réserve en haut de chaque page (`--pp-top-band`, posée par l'éditeur et par la Lecture, 0 sans en-tête ; les miniatures de la bande, qui n'ont pas de bande, ne la reçoivent pas) aussi. La hauteur est un
+   minimum : la boîte grandit avec son texte et ne rétrécit pas en dessous de ce que la personne a réglé. Les mêmes règles servent l'éditeur, la Lecture, le diaporama, l'impression
+   et les miniatures (leur HTML est le même). Ce qui n'existe que dans l'éditeur (contour, bords à saisir, poignées) est dans `.pp-ff-ui` et le contour de la boîte.
+   Une FORME (js/shape-geometry.js) est le même cadre, dessiné par deux calques de la boîte : son fond derrière le texte (`::before`) et son trait devant le fond (`::after`). Le nœud écrit ce
+   qu'ils lisent : `--ff-fill` (le fond), `--ff-line` et `--ff-edge` (la couleur et l'épaisseur du trait d'une boîte rectangulaire, arrondie ou elliptique : une bordure), `--ff-radius`
+   (l'arrondi), `--ff-clip` (le polygone du fond d'un triangle, d'un losange, d'une flèche, d'une étoile, en pourcentages de la boîte : elle grandit avec son texte, la forme la suit) et
+   `--ff-ring` / `--ff-ring-bg` (l'anneau de son trait), `--ff-pt/-pr/-pb/-pl` (les marges du texte, que la forme et le trait règlent). Sans elles, rien ne se voit de plus : un cadre
+   de texte nu est celui d'avant. La TRANSPARENCE est l'opacité de chaque calque : `--ff-fill-op` (le fond) et `--ff-line-op` (le trait), de 0 à 1 ; un trait translucide ne couvre pas le fond
+   qu'il borde, qui s'arrête au milieu de lui (`--ff-fill-inset` et `--ff-fill-radius` pour une boîte rectangulaire ou elliptique, `--ff-clip` rentré pour un polygone).
+   Un trait en TIRETS ou à bouts arrondis n'a ni bordure ni anneau : `--ff-art` (ou `--ff-art-nine`) est l'image de son dessin, peinte par le calque du trait (`::after`).
+   Une LIGNE (js/shape-geometry.js, `lineLook`) est une boîte de ses DEUX BOUTS dont l'encre déborde : `--ff-bleed` agrandit la boîte de ce tour de chaque côté (sans lui, rien ne change),
+   `--ff-fill` est la couleur du trait (`--ff-fill-op` son opacité) et `--ff-clip` le polygone qui le découpe dans le calque de fond (le corps et les pointes d'un seul tenant) ; la boîte n'a pas de texte et ne prend
+   aucun clic : seules la bande `--ff-grab` et les deux bouts de l'éditeur (`--ff-sx/-sy/-ex/-ey`) se saisissent, si bien que le texte dessous reste atteignable.
+   Un cadre PIVOTÉ (`data-ff-rot`, `--ff-rot` : des degrés dans le sens des aiguilles d'une montre) tourne autour du centre de sa boîte ; son rognage à la page se fait alors par son ancre. */
+
+.pp-free-frame { position: relative; display: block; height: 0; margin: 0; padding: 0; border: 0; overflow: visible; }
+.pp-free-frame-box {
+  position: absolute; box-sizing: border-box; display: flex; flex-direction: column;
+  left: calc(var(--ff-x, 0pt) - var(--pp-margin-left, 0px) - var(--ff-bleed, 0pt)); top: calc(var(--ff-y, 0pt) - var(--pp-margin-top, 0px) - var(--pp-top-band, 0px) - var(--ff-bleed, 0pt));
+  width: calc(var(--ff-w, 288pt) + 2 * var(--ff-bleed, 0pt)); min-height: calc(var(--ff-h, 36pt) + 2 * var(--ff-bleed, 0pt)); max-width: none;
+  /* La diapositive est la limite : ce qui sort de la page est rogné, dans l'éditeur comme à la Lecture, au diaporama et dans le PDF (jamais montré sur la diapositive d'à côté). Chaque côté
+     rogne de ce qui dépasse la page, ou s'élargit de 10 px là où le cadre est dans la page (les bords à saisir et les poignées de l'éditeur dépassent de la boîte), de 34 px en haut (la poignée de
+     rotation, au bout de sa tige). `100%`, pour le haut et le bas, est la hauteur de la boîte, pour la gauche et la droite sa largeur. */
+  clip-path: inset(
+    max(-34px, calc(var(--ff-bleed, 0pt) - var(--ff-y, 0pt)))
+    max(-10px, calc(var(--ff-x, 0pt) + 100% - var(--ff-bleed, 0pt) - var(--pp-page-width, 100000px)))
+    max(-10px, calc(var(--ff-y, 0pt) + 100% - var(--ff-bleed, 0pt) - var(--pp-page-height, 100000px)))
+    max(-10px, calc(var(--ff-bleed, 0pt) - var(--ff-x, 0pt))));
+}
+.pp-free-frame-content { flex: 1 1 auto; min-width: 0; box-sizing: border-box; padding: var(--ff-pt, 3.6pt) var(--ff-pr, 7.2pt) var(--ff-pb, 3.6pt) var(--ff-pl, 7.2pt); overflow-wrap: break-word; }
+/* Le texte TOURNÉ d'un cadre (`data-ff-vert`, js/free-frame.js) : « vert » se lit de haut en bas (ses lignes se suivent de droite à gauche), « vert270 » de bas en haut (de gauche à droite). Le texte garde la
+   hauteur du cadre pour longueur de ligne (la boîte ne grandit pas avec lui : un texte trop long ajoute des lignes, côté gauche ou droit). */
+.pp-free-frame[data-ff-vert] > .pp-free-frame-box > .pp-free-frame-content { flex: none; height: calc(var(--ff-h, 36pt) + 2 * var(--ff-bleed, 0pt)); text-orientation: mixed; }
+.pp-free-frame[data-ff-vert="vert"] > .pp-free-frame-box > .pp-free-frame-content { writing-mode: vertical-rl; }
+.pp-free-frame[data-ff-vert="vert270"] > .pp-free-frame-box > .pp-free-frame-content { writing-mode: sideways-lr; }
+/* Les colonnes de texte d'un cadre (`--ff-cols`, `--ff-col-gap`, js/free-frame.js) : le texte les remplit l'une après l'autre, équilibrées. */
+.pp-free-frame-content { column-count: var(--ff-cols, auto); column-gap: var(--ff-col-gap, normal); }
+.pp-free-frame-content > :first-child { margin-top: 0; }
+.pp-free-frame-content > :last-child { margin-bottom: 0; }
+/* Un tableau posé dans un cadre (import PowerPoint) y est à sa place exacte : sans la marge de 6 px que le texte laisse au-dessus et au-dessous d'un tableau. */
+.pp-free-frame .pp-free-frame-content > table, .pp-free-frame .pp-free-frame-content > .tableWrapper > table { margin: 0; }
+/* Le fond et le trait : sous le texte (z-index -1 dans la boîte, qui est un contexte d'empilement par son clip-path), jamais sous la souris. L'impression garde les couleurs. */
+.pp-free-frame-box::before, .pp-free-frame-box::after {
+  content: ''; position: absolute; inset: 0; z-index: -1; box-sizing: border-box; border-radius: var(--ff-radius, 0); pointer-events: none;
+  -webkit-print-color-adjust: exact; print-color-adjust: exact;
+}
+.pp-free-frame-box::before {
+  inset: var(--ff-fill-inset, 0); border-radius: var(--ff-fill-radius, var(--ff-radius, 0));
+  background: var(--ff-fill, transparent); clip-path: var(--ff-clip, none); opacity: var(--ff-fill-op, 1);
+  /* Une forme de la norme (le cylindre, le cœur, les flèches courbes... : js/shape-geometry.js, `presetArt`) peint son fond en image, étirée à la boîte, faces éclaircies ou assombries comprises ;
+     elle n'a pas de `--ff-fill`. Sans cette variable, rien ne change. */
+  background-image: var(--ff-fill-art, none); background-size: 100% 100%; background-repeat: no-repeat;
+}
+.pp-free-frame-box::after {
+  border: var(--ff-edge, 0pt) solid var(--ff-line, transparent); background: var(--ff-ring-bg, transparent); clip-path: var(--ff-ring, none); opacity: var(--ff-line-op, 1);
+  /* Un trait en tirets, en pointillés ou à bouts arrondis est une image SVG (js/shape-geometry.js : `strokeArt`, `lineArt`) que le nœud écrit : étirée à la boîte (`--ff-art`), ou en bordure image à neuf
+     cases pour un rectangle, un rectangle arrondi et un cadre de texte (`--ff-art-nine`, coupée à `--ff-slice`, de l'épaisseur `--ff-edge`) : la boîte grandit avec son texte, les coins et l'épaisseur du trait
+     gardent leur taille. Sans ces variables, rien ne change. */
+  background-image: var(--ff-art, none); background-size: 100% 100%; background-repeat: no-repeat;
+  border-image: var(--ff-art-nine, none) var(--ff-slice, 100%) stretch;
+}
+/* Une ligne : son encre est le calque de fond découpé par son polygone (`--ff-fill` : la couleur du trait) ; sa boîte n'a ni texte ni clic. */
+.pp-free-frame[data-ff-shape="line"] > .pp-free-frame-box { pointer-events: none; }
+.pp-free-frame[data-ff-shape="line"] .pp-free-frame-content { display: none; }
+/* Une forme centre son texte dans sa boîte (le paragraphe qu'elle reçoit est centré à l'horizontale). */
+.pp-free-frame[data-ff-shape] > .pp-free-frame-box { justify-content: center; }
+.pp-free-frame[data-ff-shape] > .pp-free-frame-box > .pp-free-frame-content { flex: 0 0 auto; }
+
+/* Un cadre PIVOTÉ tourne autour du centre de sa boîte, comme dans PowerPoint. Le rognage de la boîte (plus haut) est écrit dans ses axes : il tournerait avec elle et rognerait ses coins. C'est donc
+   l'ANCRE du cadre (de hauteur nulle, au coin du texte de la diapositive) qui rogne, au rectangle de la PAGE, depuis ce coin : la marge et la bande d'en-tête en haut et à gauche, la taille de la page
+   pour les deux autres bords (`100%` est la largeur de l'ancre, sa hauteur est nulle). Ce que la boîte dessine, ses bords et ses poignées compris, est rogné à la page, jamais montré sur la diapositive
+   d'à côté. */
+.pp-free-frame[data-ff-rot] > .pp-free-frame-box { transform: rotate(var(--ff-rot, 0deg)); transform-origin: 50% 50%; clip-path: none; }
+.pp-free-frame[data-ff-rot] {
+  clip-path: inset(
+    calc(0px - var(--pp-margin-top, 0px) - var(--pp-top-band, 0px))
+    calc(100% + var(--pp-margin-left, 0px) - var(--pp-page-width, 100000px))
+    calc(var(--pp-margin-top, 0px) + var(--pp-top-band, 0px) - var(--pp-page-height, 100000px))
+    calc(0px - var(--pp-margin-left, 0px)));
+}
+
+/* La COUCHE (`data-ff-layer="behind"`, js/free-frame.js) : un cadre « derrière le texte » est peint SOUS le texte de sa diapositive - dans l'éditeur, la Lecture, le diaporama, l'impression et les miniatures - par
+   `z-index: -1` sur son ANCRE (déjà `position: relative`), qui devient un contexte d'empilement : le cadre entier, texte, bords et poignées compris, passe derrière le texte, un cadre pivoté (dont l'ancre
+   rogne déjà) comme un cadre droit. Il reste au-dessus du fond de la diapositive (le repère qui le dessine précède les cadres) et sous les images derrière le texte qui le suivent. `.tiptap` et
+   `.reader-content` sont des contextes d'empilement (`z-index: 0`, css/editor-v2.css) : le cadre ne passe jamais sous le papier. Un cadre devant le texte n'a pas de couche : rien ne change pour lui. */
+.pp-free-frame[data-ff-layer="behind"] { z-index: -1; }
+/* L'éditeur : le texte de la diapositive couvre toute la largeur de sa colonne, même là où il n'y a pas une lettre. Tant que le pointeur est sur un cadre derrière le texte sans être sur une lettre
+   (js/free-frame.js:reachBehind, qui pose `pp-ff-reaching` sur le parent de l'éditeur), le texte laisse passer les clics : le cadre les reçoit, son texte, ses bords et ses poignées. La règle vise les blocs
+   de premier niveau qui ne sont pas des cadres par une CLASSE (`pp-ff-flow`, que le plugin `freeFrameFlow` de js/free-frame.js leur pose tant qu'un cadre est derrière le texte) et non par `:not(.pp-free-frame)` :
+   un sujet sans classe ni balise fait refaire le style de TOUS les descendants à chaque bascule (les cadres d'une présentation de 39 diapositives : 12 000 éléments, 90 ms, deux fois par mouvement de la souris
+   sur un cadre derrière le texte) ; avec une classe, seuls les blocs du texte le sont (2 ms). */
+.pp-ff-reaching > .tiptap > .pp-ff-flow { pointer-events: none; }
+
+/* Le FOND d'une diapositive (js/slide-props.js) : une couleur sur toute la page, sous le texte. Dans l'éditeur et les miniatures, c'est le repère de la diapositive (hauteur nulle, au coin
+   de son texte, comme l'ancre d'un cadre) qui le dessine : un pseudo-élément de la taille de la page, posé depuis son coin (marges et bande d'en-tête retranchées, comme la boîte d'un cadre),
+   à `z-index: -1` dans le contexte d'empilement du texte (donc sous lui et sous les cadres libres), jamais sous la souris. Les sorties n'ont plus de repère (SlideProps.forOutput) : le fond y
+   est un cadre libre de la page entière (`data-ff-bg`), auquel on ôte ce qui le ferait ressembler à un cadre - la taille de la page remplace ses mesures, il passe sous le texte. L'impression
+   garde les couleurs. */
+.pp-slide-props[data-bg] { position: relative; }
+.pp-slide-props[data-bg]::before {
+  content: ''; position: absolute; z-index: -1; pointer-events: none; box-sizing: border-box;
+  left: calc(0px - var(--pp-margin-left, 0px)); top: calc(0px - var(--pp-margin-top, 0px) - var(--pp-top-band, 0px));
+  width: var(--pp-page-width, 100%); height: var(--pp-page-height, 100%);
+  background: var(--pp-slide-bg, transparent);
+  -webkit-print-color-adjust: exact; print-color-adjust: exact;
+}
+.pp-free-frame[data-ff-bg] > .pp-free-frame-box { z-index: -1; width: var(--pp-page-width, 100%); min-height: var(--pp-page-height, 100%); pointer-events: none; }
+
+/* L'éditeur : un contour au survol, plein quand le curseur est dans le cadre ou que le cadre est sélectionné ; les bords se saisissent pour déplacer, les poignées redimensionnent. */
+#editor-container .tiptap .pp-free-frame-box { outline: 1px dashed transparent; outline-offset: 0; }
+#editor-container .tiptap .pp-free-frame.pp-ff-empty > .pp-free-frame-box { outline-color: var(--border-strong, #c3cad6); }
+/* Une forme vide se voit par son dessin : pas de contour en tirets (le survol, le curseur et la sélection gardent le leur, plus bas). */
+#editor-container .tiptap .pp-free-frame:where([data-ff-shape]).pp-ff-empty > .pp-free-frame-box { outline-color: transparent; }
+#editor-container .tiptap .pp-free-frame:hover > .pp-free-frame-box { outline-color: var(--accent, #2f6fed); }
+#editor-container .tiptap .pp-free-frame.pp-ff-active > .pp-free-frame-box { outline: 1px dashed var(--accent, #2f6fed); }
+#editor-container .tiptap .pp-free-frame.pp-ff-selected > .pp-free-frame-box { outline: 2px solid var(--accent, #2f6fed); }
+.pp-ff-ui { position: absolute; inset: 0; z-index: 6; pointer-events: none; user-select: none; -webkit-user-select: none; }
+.pp-ff-edge { position: absolute; pointer-events: auto; cursor: move; }
+.pp-ff-edge-n { top: -4px; left: 0; right: 0; height: 8px; }
+.pp-ff-edge-s { bottom: -4px; left: 0; right: 0; height: 8px; }
+.pp-ff-edge-w { left: -4px; top: 0; bottom: 0; width: 8px; }
+.pp-ff-edge-e { right: -4px; top: 0; bottom: 0; width: 8px; }
+.pp-ff-handle { display: none; position: absolute; pointer-events: auto; box-sizing: border-box; width: 10px; height: 10px; background: #fff; border: 1.5px solid var(--accent, #2f6fed); border-radius: 50%; }
+.pp-ff-active > .pp-free-frame-box > .pp-ff-ui .pp-ff-handle, .pp-ff-selected > .pp-free-frame-box > .pp-ff-ui .pp-ff-handle { display: block; }
+.pp-ff-handle-nw { top: -5px; left: -5px; cursor: nwse-resize; }
+.pp-ff-handle-n { top: -5px; left: calc(50% - 5px); cursor: ns-resize; }
+.pp-ff-handle-ne { top: -5px; right: -5px; cursor: nesw-resize; }
+.pp-ff-handle-e { top: calc(50% - 5px); right: -5px; cursor: ew-resize; }
+.pp-ff-handle-se { bottom: -5px; right: -5px; cursor: nwse-resize; }
+.pp-ff-handle-s { bottom: -5px; left: calc(50% - 5px); cursor: ns-resize; }
+.pp-ff-handle-sw { bottom: -5px; left: -5px; cursor: nesw-resize; }
+.pp-ff-handle-w { top: calc(50% - 5px); left: -5px; cursor: ew-resize; }
+/* La poignée de rotation : un rond à flèche circulaire au bout d'une tige, au-dessus du milieu du haut de la boîte (elle tourne avec elle) ; visible comme les huit autres poignées. Pendant le geste,
+   l'angle se lit dans une pastille près de la souris, hors de la feuille (donc droite), aux couleurs inverses de la page. */
+.pp-ff-rotate { display: none; position: absolute; pointer-events: auto; box-sizing: border-box; top: -30px; left: calc(50% - 8px); width: 16px; height: 16px; padding: 1px; color: var(--accent, #2f6fed); background: #fff; border: 1.5px solid var(--accent, #2f6fed); border-radius: 50%; cursor: grab; }
+.pp-ff-rotate svg { display: block; width: 100%; height: 100%; }
+.pp-ff-rotate::before { content: ''; position: absolute; left: calc(50% - 0.75px); top: 100%; width: 1.5px; height: 13px; background: var(--accent, #2f6fed); }
+.pp-ff-active > .pp-free-frame-box > .pp-ff-ui .pp-ff-rotate, .pp-ff-selected > .pp-free-frame-box > .pp-ff-ui .pp-ff-rotate { display: block; }
+.pp-ff-angle { position: fixed; z-index: var(--z-tip); padding: 2px 6px; border-radius: var(--radius-xs, 4px); background: var(--text); color: var(--surface); font: 600 11px/1.3 var(--font-ui); font-variant-numeric: tabular-nums; pointer-events: none; }
+/* Une ligne : pas de contour de boîte (celle de ses deux bouts n'est pas son dessin) ; la bande qui suit le trait se saisit pour la déplacer, ses deux bouts se glissent (ronds, comme les poignées
+   d'un cadre, visibles quand la ligne est sélectionnée). Tout le reste de la boîte laisse passer les clics. */
+#editor-container .tiptap .pp-free-frame[data-ff-shape="line"] > .pp-free-frame-box, #editor-container .tiptap .pp-free-frame[data-ff-shape="line"]:hover > .pp-free-frame-box,
+#editor-container .tiptap .pp-free-frame[data-ff-shape="line"].pp-ff-selected > .pp-free-frame-box { outline: none; }
+.pp-ff-line-grab { position: absolute; inset: 0; pointer-events: auto; cursor: move; clip-path: var(--ff-grab, none); }
+.pp-ff-line-handle { display: none; position: absolute; pointer-events: auto; box-sizing: border-box; width: 10px; height: 10px; background: #fff; border: 1.5px solid var(--accent, #2f6fed); border-radius: 50%; cursor: crosshair; }
+.pp-ff-line-handle-start { left: calc(var(--ff-sx, 0pt) - 5px); top: calc(var(--ff-sy, 0pt) - 5px); }
+.pp-ff-line-handle-end { left: calc(var(--ff-ex, 0pt) - 5px); top: calc(var(--ff-ey, 0pt) - 5px); }
+.pp-ff-selected > .pp-free-frame-box > .pp-ff-ui .pp-ff-line-handle { display: block; }
+/* Ni dans les miniatures, ni dans un éditeur en lecture seule. */
+.pp-slide-page .pp-ff-ui, .tiptap[contenteditable="false"] .pp-ff-ui { display: none; }
+
+/* La marque d'un objet à lien (`data-ff-link`, js/frame-link.js) : une petite chaîne dans le coin haut droit de sa boîte, dans l'éditeur seulement (l'interface `.pp-ff-ui` n'est ni dans le texte, ni dans les sorties, ni
+   dans les miniatures), qui ne prend aucun clic. Au diaporama et à la Lecture, un clic sur l'objet suit son lien : le pointeur y devient une main (au diaporama tant que la souris bouge, le pointeur s'y cache sinon ; à la Lecture, sauf pour une action du diaporama, qui n'y fait rien). */
+.pp-ff-link-badge { display: none; position: absolute; top: 4px; right: 4px; width: 18px; height: 18px; box-sizing: border-box; padding: 2px; border-radius: var(--radius-xs, 4px); background: var(--surface, #fff); color: var(--text, #1b2430); border: 1px solid var(--border-strong, #c3cad6); pointer-events: none; }
+.pp-ff-link-badge svg { display: block; width: 100%; height: 100%; }
+.pp-free-frame[data-ff-link] > .pp-free-frame-box > .pp-ff-ui .pp-ff-link-badge { display: block; }
+.pp-slide-show-layer.pp-slide-show-awake .pp-free-frame[data-ff-link] > .pp-free-frame-box, .reader-content .pp-free-frame[data-ff-link]:not([data-ff-link^="pp:"]) > .pp-free-frame-box { cursor: pointer; }
+/* Au diaporama (extensions/diapositives/slide-player.js), la copie mesurée est inerte - le lecteur reçoit tous les clics - : la boîte de chaque objet reçoit la souris, ce qui dit quel objet un clic touche (js/frame-link.js:frameAt) ;
+   rien dedans n'en reçoit (un lien web du texte n'agit pas au diaporama, comme avant). Un fond et une ligne (règles plus haut, plus précises) et la copie figée d'une transition restent inertes. */
+:where(.pp-slide-show-layer:not(.pp-slide-show-ghost)) .pp-free-frame-box { pointer-events: auto; }
+:where(.pp-slide-show-layer) .pp-free-frame-box * { pointer-events: none; }
+.pp-slide-page .pp-free-frame-box, .tiptap[contenteditable="false"] .pp-free-frame-box { outline: none; }
+
+/* La barre d'un objet sélectionné : le fond, le trait et son épaisseur sont des pastilles à icône et chevron, plus larges que les boutons carrés des barres flottantes ; la liste
+   des épaisseurs montre un échantillon de chaque trait. */
+.v2-frame-toolbar .v2-fill-chip { width: auto; padding: 0 5px; gap: 3px; }
+.v2-frame-toolbar .v2-fill-chip svg:last-child { width: 10px; height: 10px; }
+.v2-format-panel.v2-frame-width-menu button { display: flex; align-items: center; min-width: 120px; }
+/* Les colonnes de texte : une ligne par choix, l'icône puis le nombre ; la ligne cochée est cernée comme dans les autres menus de la barre. */
+.v2-format-panel.v2-frame-columns-menu button { display: flex; align-items: center; gap: 8px; min-width: 140px; }
+.v2-frame-columns-menu button svg { display: block; flex: none; width: 20px; height: 20px; }
+.v2-format-panel.v2-frame-columns-menu button.is-active { box-shadow: inset 0 0 0 1.5px currentColor; }
+/* Les extrémités d'une ligne : en haut quatre icônes (aucune pointe, à la fin, au début, aux deux bouts), dessous une section par bout - « Début » puis « Fin » - avec la forme de sa pointe (six échantillons en
+   deux rangées) et sa taille (neuf échantillons : la largeur en rangées, la longueur en colonnes). Le nom de chaque choix est son info-bulle ; la taille d'un bout sans pointe est grisée et garde sa place, la raison
+   est son info-bulle. */
+.v2-format-panel.v2-frame-ends-menu { padding: 4px; }
+.v2-format-panel.v2-frame-ends-menu button { display: flex; align-items: center; justify-content: center; width: auto; padding: 0; }
+.v2-frame-ends-menu button svg { display: block; flex: none; }
+.v2-format-panel.v2-frame-ends-menu button.is-active { box-shadow: inset 0 0 0 1.5px currentColor; }
+.v2-frame-ends-menu .pp-ff-ends-presets { display: flex; gap: 2px; margin-bottom: 4px; padding-bottom: 4px; border-bottom: 1px solid var(--border, #d7dde3); }
+.v2-format-panel.v2-frame-ends-menu .pp-ff-ends-presets button { flex: 1 1 0; min-width: 0; height: 30px; }
+.v2-frame-ends-menu .pp-ff-ends-presets button svg { width: 22px; height: 22px; }
+.v2-frame-ends-menu .pp-ff-end + .pp-ff-end { margin-top: 4px; padding-top: 4px; border-top: 1px solid var(--border, #d7dde3); }
+.v2-frame-ends-menu .pp-ff-end-title { margin: 0 2px 2px; font: 11px/1.3 var(--font-ui); color: var(--text-muted, #5f6b7e); }
+.v2-frame-ends-menu .pp-ff-end-body { display: flex; align-items: flex-start; gap: 8px; }
+.v2-frame-ends-menu .pp-ff-end-types { display: grid; grid-template-columns: repeat(3, 32px); grid-auto-rows: 26px; gap: 2px; }
+.v2-frame-ends-menu .pp-ff-end-sizes { display: grid; grid-template-columns: repeat(3, 30px); grid-auto-rows: 20px; gap: 2px; }
+.v2-frame-ends-menu button:disabled { opacity: .35; cursor: default; }
+.v2-frame-ends-menu button:disabled:hover { background: none; }
+.pp-ff-width-sample { display: inline-block; flex: none; width: 40px; height: 0; margin-right: 10px; border-top: var(--w, 1pt) solid currentColor; }
+/* Le style du trait : les cinq types composés, une grille de trois colonnes d'échantillons (une famille de tirets par rangée ; leur nom est l'info-bulle), puis les trois bouts. Le bout grisé garde
+   sa place : la raison est son info-bulle. */
+.v2-format-panel.v2-frame-dash-menu { padding: 4px; }
+.v2-frame-dash-menu .pp-ff-dash-grid { display: grid; grid-template-columns: repeat(3, auto); gap: 2px; }
+.v2-format-panel.v2-frame-dash-menu button { display: flex; align-items: center; justify-content: center; width: auto; min-width: 76px; padding: 6px 8px; }
+.v2-frame-dash-menu button svg { display: block; flex: none; }
+.v2-format-panel.v2-frame-dash-menu button.is-active { box-shadow: inset 0 0 0 1.5px currentColor; }
+.v2-frame-dash-menu .pp-ff-cmpd-row { display: flex; gap: 2px; margin-bottom: 4px; padding-bottom: 4px; border-bottom: 1px solid var(--border, #d7dde3); }
+.v2-format-panel.v2-frame-dash-menu .pp-ff-cmpd-row button { flex: 1 1 0; min-width: 0; }
+.v2-frame-dash-menu .pp-ff-cap-row { display: flex; gap: 2px; margin-top: 4px; padding-top: 4px; border-top: 1px solid var(--border, #d7dde3); }
+.v2-frame-dash-menu .pp-ff-cap-row button { flex: 1 1 0; }
+.v2-frame-dash-menu button:disabled { opacity: .35; cursor: default; }
+.v2-frame-dash-menu button:disabled:hover { background: none; }
+/* La transparence du fond ou du trait : sous la palette de son menu, le titre, une glissière de 0 à 100 et sa valeur (grisée, jamais retirée, quand le cadre n'a ni fond ni trait à voiler). */
+.v2-frame-tr { display: flex; align-items: center; gap: 8px; margin-top: 8px; padding-top: 6px; border-top: 1px solid var(--border, #d7dde3); font: 12.5px/1.3 var(--font-ui); color: var(--text); }
+.v2-frame-tr-name { flex: none; }
+.v2-frame-tr input[type="range"] { flex: 1 1 auto; min-width: 80px; margin: 0; accent-color: var(--accent-solid); cursor: pointer; }
+.v2-frame-tr input[type="range"]:disabled { cursor: default; opacity: .45; }
+.v2-frame-tr-value { flex: none; min-width: 3.4em; text-align: right; font-variant-numeric: tabular-nums; }
+
+/* Le menu « Objets » de la barre d'outils du haut (js/objects-menu.js, #v2-objects-flyout : un menu au survol comme celui de l'Image, `.v2-hover-flyout`) : la ligne « Cadre de texte », puis les
+   onglets des formes et la grille de l'onglet choisi (seize formes), puis sous un titre les trois lignes, une icône chacune (le nom est l'info-bulle `data-tip`). La grille a huit colonnes : à
+   700 x 400, quatre rangées de formes feraient sortir le menu sous le bas du panneau (il finit vers 375 px avec deux). Grisé (l'extension de GFS absente, un modèle qui n'est pas une présentation),
+   le bouton garde son menu, qui ne montre plus que la raison. Jamais de défilement ici : `overflow-y: auto` rognerait les info-bulles des icônes. */
+#v2-objects-flyout { min-width: 0; }
+#v2-objects-flyout .v2-objects-grid { display: grid; grid-template-columns: repeat(8, 30px); gap: 3px; padding: 0 1px 2px; }
+#v2-objects-flyout .v2-objects-grid[hidden] { display: none; }
+/* « Cadre de texte », « Tableau » et « Vue… » côte à côte, le titre « Lignes » et ses trois lignes sur une même ligne : avec « Tableau d'un modèle Grille… » le menu a une ligne de plus, et une de plus
+   encore avec la vue d'une diapositive, qui feraient sortir sa dernière rangée sous le bas d'un panneau de 700 x 400 (il finit vers 381 px). Trois boutons : leurs marges sont serrées (4 px) pour que le
+   plus long des noms (« Cadre de texte », « Vue… ») tienne dans la largeur de la grille des formes, sans élargir le menu. */
+#v2-objects-flyout .v2-objects-pair { display: flex; gap: 2px; }
+#v2-toolbar #v2-objects-flyout .v2-objects-pair > .v2-menu-row { flex: 1 1 auto; width: auto; min-width: 0; gap: 4px; padding-left: 4px; padding-right: 4px; white-space: nowrap; }
+#v2-objects-flyout .v2-objects-lines-row { display: flex; align-items: center; }
+#v2-objects-flyout .v2-objects-lines-row > .v2-hover-flyout-label { flex: none; padding-top: 0; padding-bottom: 0; }
+#v2-objects-flyout .v2-objects-lines-row > .v2-objects-grid { grid-template-columns: repeat(3, 30px); padding-bottom: 0; }
+/* Les onglets des formes prennent la place et la hauteur du titre « Formes » (`.v2-hover-flyout-label` : le menu ne grandit pas) : son petit texte gras, l'onglet choisi au texte plein et souligné,
+   les autres en gris lisible (`--text-muted`, >= 4,5:1 sur le fond du menu et sur celui du survol). Plus précis que `#v2-toolbar button` (30 x 28, centré), qui vise tout bouton de la barre. Une
+   langue aux noms plus longs élargit le menu, sans jamais passer à la ligne. */
+#v2-objects-flyout .v2-objects-tabs { display: flex; justify-content: space-between; gap: 1px; padding: 2px 1px 1px; }
+#v2-toolbar #v2-objects-flyout .v2-objects-tab { width: auto; height: auto; padding: 3px 4px 2px; border: 0; border-radius: var(--radius-xs, 4px); font: inherit; font-size: 11px; font-weight: 600; line-height: 15px; white-space: nowrap; color: var(--text-muted, #5f6b7e); }
+#v2-toolbar #v2-objects-flyout .v2-objects-tab:hover { background: var(--surface-sunken, #eef1f6); }
+#v2-toolbar #v2-objects-flyout .v2-objects-tab[aria-checked="true"] { color: var(--text, #1b2430); text-decoration: underline; text-decoration-thickness: 2px; text-underline-offset: 3px; }
+#v2-objects-flyout .v2-objects-reason { display: none; max-width: 230px; padding: 3px 9px 7px; color: var(--text-muted, #6b7684); font-size: 11.5px; line-height: 1.35; white-space: normal; }
+#v2-objects-flyout.pp-objects-off .v2-objects-reason { display: block; width: 224px; }
+#v2-objects-flyout.pp-objects-off > :not(.v2-hover-flyout-label:first-child):not(.v2-objects-reason) { display: none; }
+#v2-objects-group > button[aria-disabled="true"] { opacity: .35; cursor: default; }
+#v2-objects-group > button[aria-disabled="true"]:hover { background: transparent; border-color: transparent; }
+
+/* Un objet MASQUÉ (`data-ff-hidden`, js/free-frame.js ; le volet Sélection de PowerPoint) : atténué dans l'éditeur et les miniatures, où l'on peut encore le choisir et le rendre ; la Lecture, le diaporama, l'impression et
+   les exports (sauf PowerPoint, qui l'écrit masqué) ne le reçoivent pas (FreeFrame.withoutHidden). */
+.pp-free-frame[data-ff-hidden] > .pp-free-frame-box { opacity: 0.3; outline: 1px dashed currentColor; outline-offset: -1px; }
+
+/* Plusieurs objets choisis (js/frame-multi.js) : chacun a le contour du cadre sélectionné, sans ses poignées (on les déplace, on les aligne ; on ne les redimensionne qu'un à un). */
+#editor-container .tiptap .pp-free-frame.pp-ff-multi > .pp-free-frame-box { outline: 2px solid var(--accent, #2f6fed); }
+#editor-container .tiptap .pp-free-frame.pp-ff-multi > .pp-free-frame-box > .pp-ff-ui .pp-ff-handle,
+#editor-container .tiptap .pp-free-frame.pp-ff-multi > .pp-free-frame-box > .pp-ff-ui .pp-ff-rotate { display: none; }
+
+/* La VUE d'une diapositive (`data-ff-view`, js/slide-view.js) : le calque `.pp-ff-view` couvre la boîte du cadre (dans son trait : `--ff-edge`) et montre une copie de la diapositive visée, à la taille de la page,
+   que ses variables réduisent (`--ffv-w` et `--ffv-h` : la page, `--ffv-scale` : le facteur, `--ffv-dx` et `--ffv-dy` : le centrage). Le texte de repli du cadre (le titre de cette diapositive) reste dessous,
+   caché tant que le calque est rempli (`.pp-ff-has-view`) : sans calque - le PDF, le Word, le HTML, le PowerPoint - il se lit. La copie est inerte : rien n'y reçoit la souris, sauf le calque de l'éditeur (un clic
+   choisit le cadre, un glisser le déplace). La page copiée porte les classes de la feuille (`.tiptap` dans l'éditeur, `.reader-content` à la Lecture) pour que les règles des blocs la reconnaissent : ses mesures sont
+   donc imposées (`!important`), les règles de la feuille elle-même (`#editor-container.a4-preview .tiptap`, `#reader-container.a4-preview .reader-content` : largeur, marges, fond, ombre, et le zoom que la Lecture
+   donne à sa feuille : la copie est déjà dans le calque, qui le subit, elle ne le double pas) la visant aussi. */
+.pp-ff-view { position: absolute; inset: var(--ff-edge, 0pt); z-index: 1; overflow: hidden; background: #fff; pointer-events: none; }
+.pp-ff-view[hidden] { display: none; }
+.pp-ff-view > .pp-ff-view-page {
+  position: absolute !important; left: 0 !important; top: 0 !important; box-sizing: border-box !important; margin: 0 !important; min-height: 0 !important; overflow: hidden !important; background: #fff !important; box-shadow: none !important;
+  width: var(--ffv-w, 1280px) !important; height: var(--ffv-h, 720px) !important; zoom: 1 !important;
+  padding: var(--pp-margin-top, 37.33px) var(--pp-margin-right, 37.33px) var(--pp-margin-bottom, 37.33px) var(--pp-margin-left, 37.33px) !important;
+  transform-origin: 0 0; transform: translate(var(--ffv-dx, 0px), var(--ffv-dy, 0px)) scale(var(--ffv-scale, .25));
+  user-select: none; -webkit-user-select: none; white-space: pre-wrap; white-space: break-spaces; word-wrap: break-word; font-variant-ligatures: none; font-feature-settings: "liga" 0;
+}
+.pp-ff-view, .pp-ff-view * { pointer-events: none !important; }
+.ProseMirror .pp-ff-view { pointer-events: auto !important; cursor: move; }
+.pp-ff-view .pp-ff-ui { display: none; }
+.pp-free-frame.pp-ff-has-view > .pp-free-frame-box > .pp-free-frame-content { visibility: hidden; }
+
+/* Les repères d'un glissé (js/frame-multi.js:snapper) : des traits roses sur la feuille, au premier plan, que la souris traverse. Les couleurs sont ici (une seule teinte, claire sur fond sombre). */
+.pp-ff-guides { position: fixed; inset: 0; z-index: var(--z-tip); pointer-events: none; --pp-ff-guide: #d6336c; }
+:root[data-theme="dark"] .pp-ff-guides { --pp-ff-guide: #ff6f9c; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .pp-ff-guides { --pp-ff-guide: #ff6f9c; } }
+.pp-ff-guide { position: fixed; background: var(--pp-ff-guide); pointer-events: none; }
+.pp-ff-guide-x { width: 1px; }
+.pp-ff-guide-y { height: 1px; }

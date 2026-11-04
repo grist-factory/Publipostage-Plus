@@ -5,12 +5,12 @@
 .pp-find-bar[hidden], .pp-find-row[hidden] { display: none; }
 .pp-find-row { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; }
 
-.pp-find-input { flex: 1 1 150px; min-width: 110px; height: 28px; box-sizing: border-box; padding: 0 8px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); background: var(--surface); color: var(--text); font-family: var(--font-ui); font-size: 13px; }
+.pp-find-input { flex: 1 1 150px; min-width: 110px; height: 28px; box-sizing: border-box; padding: 0 8px; border: 1px solid var(--border-strong); border-radius: var(--radius-input, var(--radius-sm)); background: var(--surface); color: var(--text); font-family: var(--font-ui); font-size: 13px; }
 .pp-find-input::placeholder { color: var(--text-muted); opacity: 1; }
 .pp-find-input:focus-visible { outline: 2px solid var(--accent); outline-offset: 0; border-color: var(--accent); }
 
 /* Boutons icône : nus au repos, fond et bordure discrets au survol (comme ceux de la barre d'outils, css/editor-v2.css). */
-.pp-find-btn { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; padding: 0; border: 1px solid transparent; border-radius: 5px; background: transparent; color: var(--text); cursor: pointer; }
+.pp-find-btn { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; padding: 0; border: 1px solid transparent; border-radius: var(--radius-xs, 5px); background: transparent; color: var(--text); cursor: pointer; }
 .pp-find-btn svg { width: 16px; height: 16px; pointer-events: none; }
 .pp-find-btn:hover { background: var(--surface-sunken); border-color: var(--border); }
 .pp-find-btn:focus-visible, .pp-find-text-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
@@ -22,7 +22,7 @@
 .pp-find-toggle[aria-expanded="true"] svg { transform: rotate(90deg); }
 .pp-find-spacer { flex: none; width: 28px; }
 
-.pp-find-text-btn { flex: none; height: 28px; padding: 0 10px; box-sizing: border-box; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); background: var(--surface); color: var(--text); font-family: var(--font-ui); font-size: 12px; font-weight: 600; cursor: pointer; white-space: nowrap; }
+.pp-find-text-btn { flex: none; height: 28px; padding: 0 10px; box-sizing: border-box; border: 1px solid var(--border-strong); border-radius: var(--radius-btn, var(--radius-sm)); background: var(--surface); color: var(--text); font-family: var(--font-ui); font-size: 12px; font-weight: 600; cursor: pointer; white-space: nowrap; }
 .pp-find-text-btn:hover { background: var(--surface-sunken); }
 /* Grisé, jamais retiré, et toujours atteignable au clavier (aria-disabled) : le bouton qui vient de remplacer le dernier résultat ne doit pas
    faire perdre le focus. */
@@ -34,8 +34,17 @@
    la frappe. */
 .pp-find-count { flex: none; min-width: 5.5em; padding: 0 4px; text-align: right; white-space: nowrap; color: var(--text-muted); font-size: 12px; font-weight: 600; }
 .pp-find-count[data-kind="flash"] { color: var(--text); }
+/* Expression régulière fausse : le compteur le dit en rouge lisible (--danger-ink, jamais --danger pour du texte) et le champ prend le même cadre. */
+.pp-find-count[data-kind="error"] { color: var(--danger-ink); }
+.pp-find-input[aria-invalid="true"] { border-color: var(--danger-ink); }
 
 /* Surlignage dans le texte : toutes les correspondances en jaune pâle, la courante en orange cerclé (le cerclage la distingue sans la couleur
    seule). Le texte garde sa couleur : au moins 8:1 sur ces deux fonds avec le noir bleuté du texte de la page. */
 .tiptap .pp-find-match { background: #ffe58f; border-radius: 2px; }
 .tiptap .pp-find-match.pp-find-current { background: #ffb347; box-shadow: 0 0 0 1.5px #8a4b00; }
+/* Une bulle trouvée (nom, « Avant », « Après », « sinon », formule d'un calcul) : toute la bulle prend le surlignage du texte, et son texte la couleur de la
+   page - le vert d'une bulle de calcul tombe à 3,6:1 sur l'orange du résultat courant, le rouge d'une bulle cassée à 4,2:1, la couleur de la page garde 8:1.
+   La classe répétée passe devant les couleurs propres des bulles : css/variable-calc.css se charge après celui-ci, et sa bulle cassée a le même poids
+   qu'un seul `.pp-find-match`. */
+.tiptap :is(.var-badge, .calc-badge).pp-find-match.pp-find-match { background: #ffe58f; color: inherit; border-color: #8a4b00; }
+.tiptap :is(.var-badge, .calc-badge).pp-find-match.pp-find-match.pp-find-current { background: #ffb347; box-shadow: 0 0 0 1.5px #8a4b00; }

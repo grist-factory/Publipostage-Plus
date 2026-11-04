@@ -7,9 +7,9 @@
 // où `html` est le contenu en ligne déjà écrit (marques comprises) : le presse-papiers (`fromClipboardHtml`) et un classeur .xlsx
 // (js/grid-xlsx-import.js) y arrivent chacun de leur côté et sortent par le même `toHtml`, si bien qu'un tableau collé et un tableau importé ne
 // peuvent pas diverger.
-// Un document (hors grille) reçoit le même tableau, en cases : `toDocumentHtml` n'écrit que ce que le PDF et le Word d'un tableau de document lisent
-// (fusions, fond, texte, alignement horizontal, liens, largeur des colonnes) et ni traits case par case, ni alignement vertical, ni hauteur de ligne
-// : l'éditeur les montrerait, mais l'export ne les lit que pour une grille (une ligne qui porte `data-row-height` en fait une).
+// Un document (hors grille) reçoit le même tableau, en cases, avec tout ce que la grille garde : `toDocumentHtml` écrit aussi les traits case par case,
+// l'alignement vertical et la hauteur des lignes. Un tableau de document porte ces réglages (barre du tableau, bandeaux) et ses sorties les lisent
+// (aperçu A4, Lecture, PDF, Word) : un tableau collé d'Excel s'y voit comme dans Excel.
 // Pur : DOMParser seulement, ni éditeur ni ProseMirror. Script classique, portée globale comme TableBorders.
 const GridTable = (function () {
   const MAX_ROWS = 3000;
@@ -354,8 +354,8 @@ const GridTable = (function () {
         };
       });
       // Une ligne qui laisse des emplacements libres (HTML bancal) reçoit des cases vides : le tableau est un rectangle.
-      for (let c = 0; c < width; c++) {
-        if (!(occupied[r] && occupied[r][c])) cells.push({ col: c, colspan: 1, rowspan: 1, html: '', align: null, valign: null, fill: null, borders: { top: null, right: null, bottom: null, left: null } });
+      for (let col = 0; col < width; col++) {
+        if (!(occupied[r] && occupied[r][col])) cells.push({ col: col, colspan: 1, rowspan: 1, html: '', align: null, valign: null, fill: null, borders: { top: null, right: null, bottom: null, left: null } });
       }
       cells.sort((a, b) => a.col - b.col);
       model.rows.push({ height: row.height, cells });
@@ -369,7 +369,7 @@ const GridTable = (function () {
     // voisine.
     const sizes = !!(options && options.sizes);
     const widths = [];
-    for (let c = 0; c < model.width; c++) widths.push(Math.round(model.cols[c] || 100));
+    for (let col = 0; col < model.width; col++) widths.push(Math.round(model.cols[col] || 100));
     const cellHtml = (cell) => {
       const attrs = [];
       if (cell.colspan > 1) attrs.push(`colspan="${cell.colspan}"`);
@@ -390,15 +390,25 @@ const GridTable = (function () {
     return `<table${sizes ? ` style="width: ${total}px;"` : ''}>${colgroup}<tbody>${rows}</tbody></table>`;
   }
 
+  // Le modèle avec les traits que deux cases se partagent mis d'accord (js/table-borders.js : un trait n'a qu'une valeur, écrite sur ses deux cases).
+  // Un tableur n'écrit souvent qu'un des deux côtés (le trait du bas d'un titre, pas le haut de la ligne dessous). La grille s'accorde après coup
+  // (js/grid-editor.js:fixBorders) ; le tableau d'un document est montré tel que le collage l'écrit, et le CSS ne retient que la case du dessus ou de
+  // gauche alors que les exports retiennent la couleur : écrit d'accord, l'éditeur, la Lecture et les exports dessinent le même trait.
+  function withSharedEdges(model) {
+    if (!model.rows.some(row => row.cells.some(cell => cell.borders && Object.values(cell.borders).some(Boolean)))) return model;
+    const cells = [];
+    model.rows.forEach((row, r) => row.cells.forEach(cell => cells.push(Object.assign({ row: r, col: cell.col, rowspan: cell.rowspan, colspan: cell.colspan }, cell.borders))));
+    const sides = TableBorders.resolve({ width: model.width, height: model.rows.length, cells });
+    let index = 0;
+    return Object.assign({}, model, {
+      rows: model.rows.map(row => Object.assign({}, row, { cells: row.cells.map(cell => Object.assign({}, cell, { borders: sides[index++] })) })),
+    });
+  }
+
   function toDocumentHtml(model) {
-    // Le modèle en HTML de document : les largeurs des colonnes (le tableau garde les proportions du tableur, l'éditeur le ramène à la page s'il la
-    // dépasse), sans hauteur de ligne, sans trait case par case ni alignement vertical (voir l'en-tête).
-    const plain = {
-      width: model.width,
-      cols: model.cols,
-      rows: model.rows.map(row => ({ height: 0, cells: row.cells.map(cell => Object.assign({}, cell, { valign: null, borders: null })) })),
-    };
-    return toHtml(plain, { sizes: true });
+    // Le modèle en HTML de document : celui de la grille avec ses tailles. Les largeurs des colonnes gardent les proportions du tableur (l'éditeur
+    // ramène le tableau à la page s'il la dépasse) ; une hauteur de ligne est un minimum, comme dans Excel : un texte plus haut agrandit la ligne.
+    return toHtml(withSharedEdges(model), { sizes: true });
   }
 
   function isSpreadsheetHtml(html) {

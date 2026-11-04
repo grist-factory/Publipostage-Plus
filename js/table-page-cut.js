@@ -6,7 +6,8 @@
 // tableau qu'on sait couper et leurs groupes, décider lesquels ouvrent une page (`plan`), écrire la règle CSS qui descend une ligne sous la couture
 // (`padRule`) et celle qui rogne le tableau sur la place libre de la page qui finit et sur les marges de la couture (`clipRule`). Les aperçus ne
 // touchent jamais au DOM de ProseMirror : la ligne est descendue par une feuille de style (comme les marges de coupure des autres blocs), le document
-// enregistré n'en sait rien.
+// enregistré n'en sait rien. Une ligne peut aussi porter un saut de page avant elle (`data-page-break-before`, js/grid-editor.js) : la page change là,
+// que la place restante suffise ou non (`forcedOf`) - le PDF et le Word coupent le tableau au même endroit.
 const TablePageCut = (function () {
   // Une ligne (ou un groupe de lignes) plus haute que cette part de la page ne se range plus : avec dontBreakRows, pdfmake fait disparaître la ligne
   // du PDF (mesuré : ligne de 80 lignes de texte sur une page de 60, ni sur la page 1 ni sur la page 2). Le tableau n'est alors pas coupé entre ses
@@ -18,14 +19,15 @@ const TablePageCut = (function () {
   // alors un bloc d'une pièce) :
   //  - un seul <tbody>, sans <thead> ni <tfoot> : ce que l'éditeur et getHTML() produisent ;
   //  - toutes ses lignes sont des <tr> (une ligne proposée en suivi des modifications est enveloppée dans un <ins> ou un <del>) ;
-  //  - pas une grille (js/grid-editor.js) : ses lignes portent leur hauteur et la grille n'a pas de feuille A4 ;
   //  - au moins deux lignes : un tableau d'une ligne n'a aucun endroit où se couper.
+  // Une ligne à hauteur réglée (`data-row-height`, js/grid-editor.js) se coupe comme une autre : sa hauteur est un minimum que `measure` lit sur le
+  // rendu. La grille ouverte n'a pas de feuille A4 : ni l'aperçu ni la Lecture ne la découpent, et le PDF la range lui-même (js/pdf-export.js).
   function rowsOf(table) {
     if (!table || table.tagName !== 'TABLE') return null;
     const sections = Array.from(table.children).filter(child => /^(THEAD|TBODY|TFOOT)$/.test(child.tagName));
     if (sections.length !== 1 || sections[0].tagName !== 'TBODY') return null;
     const rows = Array.from(sections[0].children);
-    if (rows.length < 2 || rows.some(row => row.tagName !== 'TR' || row.hasAttribute('data-row-height'))) return null;
+    if (rows.length < 2 || rows.some(row => row.tagName !== 'TR')) return null;
     return rows;
   }
 
@@ -46,6 +48,13 @@ const TablePageCut = (function () {
     return units;
   }
 
+  // Les groupes qui s'ouvrent sur une page neuve : ceux dont la première ligne porte un saut de page avant elle (`data-page-break-before`), dans l'ordre
+  // des groupes d'`unitsOf`. Jamais le premier (il n'y a rien à quitter : pas de page vide) ni un saut posé au milieu d'un groupe de lignes qu'une case
+  // fusionnée lie (une case ne se coupe pas en deux : ce saut-là n'est pas suivi, comme ExportCommon.gridRowSegments).
+  function forcedOf(rows, units) {
+    return units.map((unit, i) => i > 0 && rows[unit.from].hasAttribute('data-page-break-before'));
+  }
+
   // Toutes les lignes tiennent-elles dans la page ? `heights` et `pageHeight` dans la même unité (px dans les aperçus, pt dans le PDF).
   function rowsFit(heights, pageHeight) {
     return heights.every(h => h <= MAX_ROW_RATIO * pageHeight);
@@ -54,8 +63,9 @@ const TablePageCut = (function () {
   // Mesure un tableau pour `plan`. `blockEl` est le bloc de premier niveau qui le porte (l'enveloppe .tableWrapper de l'éditeur, le <table> lui-même
   // en Lecture), `zoom` le facteur de la feuille (les rectangles sont en pixels écran, la page en pixels de mise en page), `pageHeightPx` la hauteur
   // utile d'une page, `padOf(ligne)` le rembourrage que l'aperçu a déjà ajouté à une ligne pour la descendre sous une couture (0 s'il n'y en a pas) :
-  // une mesure faite après la pose des coupures ne doit pas le compter. Rend { rows, units, starts, segs, heights, keepsTail } ou null si le tableau
-  // ne se coupe pas entre deux lignes, ni entre deux groupes de lignes (un groupe plus haut que la page). Les tranches sont celles des groupes
+  // une mesure faite après la pose des coupures ne doit pas le compter. Rend { rows, units, starts, forced, segs, heights, keepsTail } (`forced` : cf.
+  // forcedOf) ou null si le tableau ne se coupe pas entre deux lignes, ni entre deux groupes de lignes (un groupe plus haut que la page, auquel cas
+  // un saut de page avant une ligne n'est pas suivi non plus : le tableau reste un bloc d'une pièce). Les tranches sont celles des groupes
   // (unitsOf : une ligne chacun sans case fusionnée, un seul groupe quand une case fusionnée lie tout le tableau : c'est lui qui passe alors en
   // entier à la page suivante) ; `starts[i]` : le rang de la première ligne du groupe i. `segs` découpe la hauteur du bloc : la tranche de chaque
   // groupe, du haut de sa première ligne au haut du groupe suivant (la première reprend ce qui est au-dessus d'elle, la dernière ce qui est
@@ -79,40 +89,60 @@ const TablePageCut = (function () {
     segs[0] += tops[0];
     const keepsTail = captionPx > 0 && heights[heights.length - 1] + captionPx <= MAX_ROW_RATIO * pageHeightPx;
     if (keepsTail) segs[segs.length - 1] += captionPx;
-    return { rows, units, starts: units.map(unit => unit.from), segs, heights, keepsTail };
+    return { rows, units, starts: units.map(unit => unit.from), forced: forcedOf(rows, units), segs, heights, keepsTail };
   }
 
   // Où le tableau change de page. `consumedBefore` : ce que la page en cours porte déjà avant lui (0 : il est en haut de page) ; `segs` : les
   // tranches de `measure` ; `capacity` : la hauteur utile d'une page ; `starts` : les rangs de lignes que `measure` rend (omis, une tranche est une
-  // ligne). Une ligne (un groupe de lignes) qui ne tient pas dans la place restante ouvre la page suivante, avec tout ce qui la suit. Rend
+  // ligne) ; `forced` : les tranches qui ouvrent une page quoi qu'il reste de place (omis, aucune) ; `gapAbove` : l'écart qui sépare le tableau de ce
+  // qui le précède (sa marge, que le bloc ne porte pas : EditorCore.gapAbove), compté dans la place prise tant que le tableau reste sur cette page, perdu
+  // s'il passe à la suivante (omis : 0). Une ligne (un groupe de lignes) qui ne tient pas dans la place restante ouvre la page suivante, avec tout ce
+  // qui la suit. Rend
   //  - blockBreakBefore : même la première ligne ne tient pas, le tableau entier passe à la page suivante (coupure avant le tableau, comme pour tout
   //    autre bloc) ;
   //  - cuts : les rangs de lignes (à partir de 1) qui ouvrent une page ;
   //  - ranks : les rangs des tranches qui les portent (les mêmes sans case fusionnée), pour retrouver la hauteur de ce qui précède ;
+  //  - forcedCuts : pour chaque coupure de `cuts`, vrai quand un saut de page avant la ligne l'a voulue (faux : la place manquait) ;
   //  - consumedAfter : ce que la dernière page du tableau porte, pour le bloc suivant.
   // Une ligne seule en haut de page qui dépasse la page reste là et déborde : il n'y a rien de mieux à faire (rowsFit l'écarte déjà du plan).
-  function plan(consumedBefore, segs, capacity, starts) {
+  function plan(consumedBefore, segs, capacity, starts, forced, gapAbove) {
     const ranks = [];
+    const forcedCuts = [];
     let blockBreakBefore = false;
-    let acc = consumedBefore;
+    let acc = consumedBefore + (gapAbove || 0);
     segs.forEach((seg, i) => {
-      if (acc > 0 && acc + seg > capacity) {
-        if (i === 0) blockBreakBefore = true; else ranks.push(i);
+      if (i > 0 && forced && forced[i]) {
+        ranks.push(i);
+        forcedCuts.push(true);
+        acc = seg;
+      } else if ((i > 0 ? acc : consumedBefore) > 0 && acc + seg > capacity) {
+        if (i === 0) blockBreakBefore = true; else { ranks.push(i); forcedCuts.push(false); }
         acc = seg;
       } else {
         acc += seg;
       }
     });
-    return { blockBreakBefore, cuts: ranks.map(rank => (starts ? starts[rank] : rank)), ranks, consumedAfter: acc };
+    return { blockBreakBefore, cuts: ranks.map(rank => (starts ? starts[rank] : rank)), ranks, forcedCuts, consumedAfter: acc };
   }
 
   // Règle CSS qui descend la ligne `rowIndex` (0 = la première) de `padPx` en rembourrant le haut de ses cases ; la bande de couture, posée sur le
   // haut de la ligne, recouvre exactement ce rembourrage. `tableSelector` désigne le <table> (il est à une profondeur connue de chaque aperçu). Les
   // cases d'une colonne proposée en suivi sont enveloppées dans un <ins>/<del>/<span> (css/track-changes.css) : elles sont visées aussi.
   // `!important` : un style en ligne sur une case ne doit pas l'annuler.
-  function padRule(tableSelector, rowIndex, padPx) {
+  //
+  // Une ligne à hauteur réglée (`fixedHeightPx`, cf. fixedHeightPx : un minimum que son <tr> porte en ligne) ne grandit du rembourrage que s'il dépasse
+  // la place que sa hauteur lui laisse : elle ne descendrait pas ce qui la suit de toute la descente. Sa hauteur réglée grandit donc elle aussi de
+  // `extraPx`, la descente (le rembourrage moins celui de la ligne au repos).
+  function padRule(tableSelector, rowIndex, padPx, fixedHeightPx, extraPx) {
     const row = tableSelector + ' > tbody > tr:nth-child(' + (rowIndex + 1) + ')';
-    return row + ' > :is(td, th), ' + row + ' > :is(ins, del, span) > :is(td, th) { padding-top: ' + padPx + 'px !important; }';
+    const cells = row + ' > :is(td, th), ' + row + ' > :is(ins, del, span) > :is(td, th) { padding-top: ' + padPx + 'px !important; }';
+    return fixedHeightPx > 0 ? cells + ' ' + row + ' { height: ' + (fixedHeightPx + (extraPx || 0)) + 'px !important; }' : cells;
+  }
+
+  // La hauteur réglée d'une ligne (`data-row-height`, en px), null quand personne n'en a réglé : elle a la hauteur de son texte.
+  function fixedHeightPx(row) {
+    const px = row ? parseFloat(row.getAttribute('data-row-height')) : NaN;
+    return px > 0 ? px : null;
   }
 
   // Règle CSS qui rogne un tableau sur les bandes `strips` ([{ top, bottom }], pixels de mise en page depuis le haut du bloc que vise
@@ -134,5 +164,5 @@ const TablePageCut = (function () {
     return isFinite(pad) ? pad : 4;
   }
 
-  return { MAX_ROW_RATIO, rowsOf, unitsOf, rowsFit, measure, plan, padRule, clipRule, restingPadTop };
+  return { MAX_ROW_RATIO, rowsOf, unitsOf, forcedOf, rowsFit, measure, plan, padRule, fixedHeightPx, clipRule, restingPadTop };
 })();

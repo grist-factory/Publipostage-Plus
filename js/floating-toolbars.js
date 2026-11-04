@@ -52,79 +52,88 @@ const FloatingToolbars = (function () {
     }
     nodeEditor.chain().updateAttributes('tableCell', { backgroundColor: color }).updateAttributes('tableHeader', { backgroundColor: color }).run();
   }
-  const TEXT_COLOR_PRESETS = ['#000000', '#5f6368', '#c0392b', '#d68910', '#8a7000', '#1e8449', '#2874a6', '#7d3c98'];
-  const FILL_COLOR_PRESETS = ['#fff2a8', '#c8f7c5', '#c8e6ff', '#ffd6d6', '#e6d6ff', '#ffe0b3', '#e0e0e0'];
 
-  // Grille de nuances + case "personnalisé"/"aucune", partagée entre police, surlignage et fond de cellule. `onPick`/`onNone` reçoivent une chaîne
-  // déjà focus+sélection restaurée et ne doivent jamais appeler .run() eux-mêmes.
-  function createColorDropdown(presets, { noneLabel, onPick, onNone, withSavedSelection }) {
-    const swatches = presets.map(c => `<button data-action="pick:${c}" style="background:${c}" title="${c}"></button>`).join('');
-    const html = '<div class="v2-color-grid">' + swatches + '</div>'
-      + '<div class="v2-color-dropdown-footer">'
-      + `<button data-action="custom" title="${I18n.t('colorDropdown.custom')}">${Icons.svg('fill')}<span>${I18n.t('colorDropdown.customLabel')}</span></button>`
-      + (onNone ? `<button data-action="none" title="${noneLabel}">${Icons.svg('noColor')}<span>${noneLabel}</span></button>` : '')
-      + '</div>'
-      + '<input type="color" class="v2-color-dropdown-native">';
-    const panel = EditorCore.createFloatingPanel('v2-color-dropdown', html, (action) => {
-      if (action === 'custom') { panel.el.querySelector('.v2-color-dropdown-native').click(); return; }
-      if (action === 'none') { withSavedSelection(chain => onNone(chain)); EditorCore.closeDropdownPanel(); return; }
-      if (action.indexOf('pick:') === 0) { const color = action.slice(5); withSavedSelection(chain => onPick(chain, color)); EditorCore.closeDropdownPanel(); }
+  // Menu de couleur partagé entre police, surlignage et fond de cellule (la palette, les couleurs gardées et le pied « Personnalisé… » / « aucune »
+  // sont à js/color-palette.js). `onPick`/`onNone` reçoivent une chaîne déjà focus+sélection restaurée et ne doivent jamais appeler .run() eux-mêmes ;
+  // `current` rend la couleur du moment, marquée dans la palette.
+  function createColorDropdown({ noneKey, onPick, onNone, withSavedSelection, current }) {
+    const apply = fn => { withSavedSelection(fn); EditorCore.closeDropdownPanel(); };
+    return ColorPalette.createMenu({
+      className: 'v2-color-dropdown',
+      noneKey,
+      current,
+      onPick: color => apply(chain => onPick(chain, color)),
+      onNone: () => apply(chain => onNone(chain)),
     });
-    panel.el.querySelector('.v2-color-dropdown-native').addEventListener('input', (event) => {
-      withSavedSelection(chain => onPick(chain, event.target.value));
-      EditorCore.closeDropdownPanel();
-    });
-    return panel;
   }
 
-  // Menu « Bordures » d'une grille (css/grid.css) : une rangée de réglages en icônes, puis la couleur du stylo - la grille de nuances et le pied
-  // « personnalisé » / « par défaut » du menu de couleur ci-dessus, sans refermer le menu au choix d'une couleur. `onPreset(preset)` et `onPen(color
-  // | null)` ne touchent pas à l'éditeur eux-mêmes.
-  function createBordersDropdown(presets, colors, { onPreset, onPen }) {
+  // Menu « Bordures » d'une grille ou d'un tableau de document (css/grid.css) : une rangée de réglages en icônes, puis la couleur du stylo - le menu de
+  // couleur ci-dessus, réduit à deux rangées de la palette (les gris et les tons foncés, ceux d'un trait) pour tenir sous la bande de la barre dans un
+  // petit panneau, sans refermer le menu au choix d'une couleur (la fenêtre « Personnalisé… » le rouvre en se fermant) - et, tout en bas, la ligne à
+  // cocher « Quadrillage » (montré ou masqué en Lecture et dans les exports, sans refermer le menu non plus : la coche répond). La couleur du trait a trois
+  // choix en plus des nuances : « Personnalisé… » et « Par défaut » (le trait fin gris) au pied, « Transparent » à droite de son titre (pas de trait : le réglage
+  // suivant n'efface que le côté qu'il vise, là où « Aucune bordure » les efface tous). `onPreset(preset)`, `onPen(color | null)`, `onTransparent()` et
+  // `onGridLines()` ne touchent pas à l'éditeur eux-mêmes.
+  function createBordersDropdown(presets, { onPreset, onPen, onTransparent, onGridLines, current, afterRender }) {
     const buttons = presets.map(([preset, icon, title]) => `<button data-action="borders:${preset}" title="${title}" aria-label="${title}">${Icons.svg(icon)}</button>`).join('');
-    const swatches = colors.map(c => `<button data-action="pen:${c}" style="background:${c}" title="${c}" aria-label="${c}"></button>`).join('');
-    const html = '<div class="v2-borders-presets">' + buttons + '</div>'
-      + `<div class="v2-borders-pen">${I18n.t('table.bordersPen')}</div>`
-      + '<div class="v2-color-grid">' + swatches + '</div>'
-      + '<div class="v2-color-dropdown-footer">'
-      + `<button data-action="pen-custom" title="${I18n.t('colorDropdown.custom')}">${Icons.svg('fill')}<span>${I18n.t('colorDropdown.customLabel')}</span></button>`
-      + `<button data-action="pen-auto" title="${I18n.t('colorDropdown.noneDefault')}">${Icons.svg('noColor')}<span>${I18n.t('colorDropdown.noneDefault')}</span></button>`
-      + '</div>'
-      + '<input type="color" class="v2-color-dropdown-native">';
-    const panel = EditorCore.createFloatingPanel('v2-color-dropdown v2-borders-dropdown', html, (action) => {
-      if (action.indexOf('borders:') === 0) { onPreset(action.slice('borders:'.length)); return; }
-      if (action === 'pen-custom') { panel.el.querySelector('.v2-color-dropdown-native').click(); return; }
-      if (action === 'pen-auto') { onPen(null); return; }
-      if (action.indexOf('pen:') === 0) onPen(action.slice('pen:'.length));
+    const gridLines = '<div class="v2-borders-gridlines">'
+      + `<button type="button" class="v2-hover-row v2-hover-row-check" data-action="gridlines" role="checkbox" aria-checked="true" title="${I18n.t('table.gridLinesTip')}">`
+      + `<span><span class="v2-borders-gridlines-name">${I18n.t('table.gridLines')}</span><small>${I18n.t('table.gridLinesHint')}</small></span></button>`
+      + '</div>';
+    // « Transparent » : à droite de « Couleur du trait », sur la même ligne, pour que le menu ne grandisse ni en hauteur (il tient sous la bande de la barre d'une
+    // grille) ni en largeur (le pied n'a pas la place d'un troisième bouton dans la colonne de la palette).
+    const transparent = `<button type="button" data-action="pen-transparent" aria-pressed="false" title="${I18n.t('table.bordersTransparentTip')}">${Icons.svg('transparent')}<span>${I18n.t('colorDropdown.transparent')}</span></button>`;
+    return ColorPalette.createMenu({
+      className: 'v2-color-dropdown v2-borders-dropdown',
+      head: '<div class="v2-borders-presets">' + buttons + '</div>'
+        + `<div class="v2-borders-pen"><span>${I18n.t('table.bordersPen')}</span>${transparent}</div>`,
+      tail: gridLines,
+      rows: [0, 1],
+      pickAction: 'pen',
+      customAction: 'pen-custom',
+      noneAction: 'pen-auto',
+      noneKey: 'colorDropdown.noneDefault',
+      markNone: true,
+      transparentAction: 'pen-transparent',
+      reopenAfterCustom: true,
+      current,
+      afterRender,
+      onPick: color => onPen(color),
+      onNone: () => onPen(null),
+      onTransparent: () => onTransparent(),
+      onAction: (action) => {
+        if (action.indexOf('borders:') === 0) onPreset(action.slice('borders:'.length));
+        else if (action === 'gridlines') onGridLines();
+      },
     });
-    panel.el.querySelector('.v2-color-dropdown-native').addEventListener('input', event => onPen(event.target.value.toLowerCase()));
-    return panel;
   }
 
   // Couleur de police / surlignage : bouton "appliquer" (réapplique la dernière couleur choisie) + bouton chevron séparé (menu de nuances).
   function wireColorPickers() {
     const { captureSelection, withSavedSelection } = EditorCore.createSelectionPreserver();
     // « Aucune couleur » n'est jamais mémorisée comme dernier choix : un clic rapide sur l'icône doit toujours appliquer une vraie couleur.
-    let lastTextColor = TEXT_COLOR_PRESETS[0];
-    let lastHighlightColor = FILL_COLOR_PRESETS[0];
+    let lastTextColor = ColorPalette.DEFAULT_TEXT;
+    let lastHighlightColor = ColorPalette.DEFAULT_HIGHLIGHT;
     const wireQuickApply = (id, fn) => {
       const btn = document.getElementById(id);
       if (!btn) return;
       btn.addEventListener('mousedown', (event) => { event.preventDefault(); captureSelection(); withSavedSelection(fn); });
     };
 
-    const textColorPanel = createColorDropdown(TEXT_COLOR_PRESETS, {
-      noneLabel: I18n.t('colorDropdown.noneDefault'),
+    const textColorPanel = createColorDropdown({
+      noneKey: 'colorDropdown.noneDefault',
       withSavedSelection,
+      current: () => editor.getAttributes('textStyle').color || null,
       onPick: (chain, color) => { lastTextColor = color; chain.setTextColor(color); EditorCore.setColorIcon('v2-text-color-icon', color); },
       onNone: (chain) => { chain.unsetTextColor(); EditorCore.setColorIcon('v2-text-color-icon', null); },
     });
     wireQuickApply('v2-btn-text-color', chain => chain.setTextColor(lastTextColor));
     EditorCore.wireDropdownButton(document.getElementById('v2-btn-text-color-caret'), textColorPanel, captureSelection);
 
-    const highlightPanel = createColorDropdown(FILL_COLOR_PRESETS, {
-      noneLabel: I18n.t('colorDropdown.none'),
+    const highlightPanel = createColorDropdown({
+      noneKey: 'colorDropdown.none',
       withSavedSelection,
+      current: () => editor.getAttributes('textStyle').backgroundColor || null,
       onPick: (chain, color) => { lastHighlightColor = color; chain.setHighlight(color); EditorCore.setColorIcon('v2-highlight-icon', color); },
       onNone: (chain) => { chain.unsetHighlight(); EditorCore.setColorIcon('v2-highlight-icon', null); },
     });
@@ -141,6 +150,16 @@ const FloatingToolbars = (function () {
     return Editor.isTrackChangesOn() && Editor.selectedRowsCrossMergedCell();
   }
 
+  // Dans un en-tête ou un pied de page ouvert, la pastille « Terminer » est collée en haut du plan de travail, juste au-dessus de la zone : une barre posée au-dessus d'un
+  // tableau ou d'une image de la zone la recouvrirait (la barre du tableau qu'on vient d'insérer cachait « Terminer »). Elle passe dessous quand elle n'aurait pas la place
+  // entre le haut de la fenêtre et la pastille : c'est le `padding` du retournement de floating-ui. Relu à chaque calcul de position, la pastille suit le défilement.
+  const zonePillClearance = () => {
+    const pill = document.getElementById('v2-hf-pill');
+    return pill ? { padding: { top: pill.getBoundingClientRect().bottom + 6 } } : undefined;
+  };
+  // Les options d'une barre posée sur un élément du document : la grille garde les siennes (hors de ses bandeaux), une zone ouverte ne cache pas sa pastille.
+  const anchoredBarOptions = () => GridEditor.floatingOptions() || { flip: zonePillClearance() };
+
   const { tableToolbarSpec, tableToolbarHtml } = (function () {
     // La barre d'un tableau : ses boutons, lus au câblage (la langue d'alors), et son HTML
 
@@ -150,16 +169,19 @@ const FloatingToolbars = (function () {
           ['row-before', 'rowBefore', I18n.t('table.rowBefore')],
           ['row-after', 'rowAfter', I18n.t('table.rowAfter')],
           ['row-del', 'rowDel', I18n.t('table.rowDel')],
+          ['rows-equalize', 'rowsEqualize', I18n.t('table.rowsEqualize')],
           ['col-before', 'colBefore', I18n.t('table.colBefore')],
           ['col-after', 'colAfter', I18n.t('table.colAfter')],
           ['col-del', 'colDel', I18n.t('table.colDel')],
+          ['cols-equalize', 'colsEqualize', I18n.t('table.colsEqualize')],
           ['table-del', 'trash', I18n.t('table.tableDel')],
         ],
-        // Ce que seule une grille a (js/grid-editor.js) : bordures, alignement vertical. Posé dans la barre pour tous les tableaux, montré par
-        // css/grid.css sous `body.pp-grid-mode` seulement. La fusion et la scission de cases sont à tous les tableaux (js/table-merge.js pour un
-        // document, js/grid-editor.js pour une grille).
+        // Alignement vertical des cases : le même dans la barre d'une grille et dans celle d'un tableau de document (js/grid-editor.js). La fusion et
+        // la scission de cases aussi (js/table-merge.js pour un document, js/grid-editor.js pour une grille).
         valign: [['valign-top', 'valignTop', 'top', I18n.t('table.valignTop')], ['valign-middle', 'valignMiddle', 'middle', I18n.t('table.valignMiddle')], ['valign-bottom', 'valignBottom', 'bottom', I18n.t('table.valignBottom')]],
-        // Menu « Bordures » d'une grille : les huit réglages (icône, info-bulle).
+        // « Répéter la ligne » : la Boucle de la ligne du curseur (js/variable-loop.js:rowStatus), après les alignements.
+        repeat: ['row-repeat', 'varLoop', I18n.t('table.rowRepeat')],
+        // Menu « Bordures » d'une grille et d'un tableau de document : les huit réglages (icône, info-bulle).
         borders: [['all', 'bordersAll', I18n.t('table.bordersAll')], ['outer', 'bordersOuter', I18n.t('table.bordersOuter')], ['inner', 'bordersInner', I18n.t('table.bordersInner')],
           ['top', 'bordersTop', I18n.t('table.bordersTop')], ['bottom', 'bordersBottom', I18n.t('table.bordersBottom')], ['left', 'bordersLeft', I18n.t('table.bordersLeft')],
           ['right', 'bordersRight', I18n.t('table.bordersRight')], ['none', 'bordersNone', I18n.t('table.bordersNone')]],
@@ -167,34 +189,42 @@ const FloatingToolbars = (function () {
     }
 
     function tableToolbarHtml(spec) {
-      const gridButton = (action, icon, title) => `<button data-action="${action}" class="v2-grid-only" title="${title}">${Icons.svg(icon)}</button>`;
-      return spec.buttons.map(([action, icon, title]) =>
-        `<button data-action="${action}" title="${title}">${Icons.svg(icon)}</button>`).join('')
+      const barButton = (action, icon, title) => `<button data-action="${action}" title="${title}">${Icons.svg(icon)}</button>`;
+      return spec.buttons.map(([action, icon, title]) => barButton(action, icon, title)).join('')
         + '<span class="v2-floating-sep"></span>'
-        + `<button data-action="cell-merge" title="${I18n.t('table.cellMerge')}">${Icons.svg('cellMerge')}</button>`
-        + `<button data-action="cell-split" title="${I18n.t('table.cellSplit')}">${Icons.svg('cellSplit')}</button>`
+        + barButton('cell-merge', 'cellMerge', I18n.t('table.cellMerge'))
+        + barButton('cell-split', 'cellSplit', I18n.t('table.cellSplit'))
         + '<span class="v2-floating-sep"></span>'
         + `<button data-action="caption" title="${I18n.t('caption.addTable')}" aria-label="${I18n.t('caption.addTable')}">${Icons.svg('caption')}</button>`
         + `<button data-action="fill-open" class="v2-fill-chip" id="v2-table-fill-btn" title="${I18n.t('table.fillOpen')}">`
         + Icons.svg('fill') + '<span class="v2-fill-bar" id="v2-table-fill-bar"></span>' + Icons.svg('caretDown')
         + '</button>'
-        + `<button data-action="borders-open" class="v2-fill-chip v2-borders-chip v2-grid-only" id="v2-table-borders-btn" title="${I18n.t('table.bordersOpen')}" aria-haspopup="true" aria-expanded="false">`
+        + `<button data-action="borders-open" class="v2-fill-chip v2-borders-chip" id="v2-table-borders-btn" title="${I18n.t('table.bordersOpen')}" aria-haspopup="true" aria-expanded="false">`
         + Icons.svg('borders') + Icons.svg('caretDown') + '</button>'
-        + '<span class="v2-floating-sep v2-grid-only"></span>'
-        + spec.valign.map(([action, icon, , title]) => gridButton(action, icon, title)).join('');
+        + '<span class="v2-floating-sep"></span>'
+        + spec.valign.map(([action, icon, , title]) => barButton(action, icon, title)).join('')
+        + '<span class="v2-floating-sep"></span>'
+        + barButton(...spec.repeat)
+        // Tableau lié à un modèle Grille (js/linked-table.js) : un seul bouton à menu (icône du lien et chevron, comme « Bordures »), caché (jamais grisé : il n'a de sens que pour
+        // un tableau lié) tant que le tableau du curseur n'est pas lié. Le nom du modèle et les actions sur le lien sont dans son menu : dans 700 px la barre n'a pas la place
+        // d'un nom, et les lots suivants y ajoutent des actions.
+        + '<span class="v2-floating-sep" data-linked-only hidden></span>'
+        + `<button data-action="linked-open" class="v2-fill-chip v2-linked-btn" id="v2-table-linked-btn" data-linked-only hidden aria-haspopup="true" aria-expanded="false">`
+        + Icons.svg('linkedTable') + Icons.svg('caretDown') + '</button>';
     }
 
     return { tableToolbarSpec, tableToolbarHtml };
   })();
 
-  const { tableFillMenu, tableBordersMenu, openFillMenu, openBordersMenu } = (function () {
-    // Les deux menus de la barre d'un tableau : le fond des cases et, pour une grille, les bordures
+  const { tableFillMenu, tableBordersMenu, tableLinkedMenu, openFillMenu, openBordersMenu, openLinkedMenu } = (function () {
+    // Les trois menus de la barre d'un tableau : le fond des cases, les bordures et, pour un tableau lié à un modèle Grille, le lien
 
     function tableFillMenu() {
       // Pas de sélection à restaurer ici : setCellsBackground lit editor.state.selection directement (persiste indépendamment du focus DOM).
-      return createColorDropdown(FILL_COLOR_PRESETS, {
-        noneLabel: I18n.t('colorDropdown.none'),
+      return createColorDropdown({
+        noneKey: 'colorDropdown.none',
         withSavedSelection: fn => fn(null),
+        current: () => editor.getAttributes('tableCell').backgroundColor || editor.getAttributes('tableHeader').backgroundColor || null,
         onPick: (chain, color) => { setCellsBackground(editor, color); EditorCore.setColorBar('v2-table-fill-bar', color); },
         onNone: () => { setCellsBackground(editor, null); EditorCore.setColorBar('v2-table-fill-bar', null); },
       });
@@ -203,38 +233,83 @@ const FloatingToolbars = (function () {
     function tableBordersMenu(presets) {
       // Menu « Bordures » : un réglage pose la couleur du stylo sur les traits qu'il vise (une seule transaction, un seul Annuler) et referme le menu ;
       // une couleur se choisit sans le refermer. La couleur du stylo (null = le trait de départ) se choisit une fois et reste pour les réglages
-      // suivants. `sync` : à l'ouverture du menu.
+      // suivants. Le « Quadrillage » se coche ou se décoche sans refermer le menu non plus (une transaction, un Annuler). À chaque ouverture le menu se
+      // redessine : « Intérieures » n'a rien à tracer pour une seule case, grisé (jamais retiré), un clic dessus ne fait rien. « Transparent » fait du stylo
+      // « pas de trait » (TableBorders.NONE) : le réglage suivant n'efface que les traits qu'il vise, comme « Aucune bordure » le fait pour tous.
       let penColor = null;
-      const panel = createBordersDropdown(presets, TEXT_COLOR_PRESETS, {
+      const penForPalette = () => (penColor === TableBorders.NONE ? ColorPalette.TRANSPARENT : penColor);
+      const markGridLines = (menu) => {
+        const row = menu.el.querySelector('button[data-action="gridlines"]');
+        if (row) row.setAttribute('aria-checked', GridEditor.gridLinesShown(editor) ? 'true' : 'false');
+      };
+      const panel = createBordersDropdown(presets, {
+        current: penForPalette,
         onPreset: (preset) => { if (GridEditor.applyBorders(editor, preset, penColor)) EditorCore.closeDropdownPanel(); },
-        onPen: (color) => { penColor = color; markPen(); },
+        onPen: (color) => { penColor = color; panel.mark(penForPalette()); },
+        onTransparent: () => { penColor = TableBorders.NONE; panel.mark(penForPalette()); },
+        onGridLines: () => { GridEditor.setGridLinesShown(editor, !GridEditor.gridLinesShown(editor)); markGridLines(panel); },
+        afterRender: (menu) => {
+          const inner = menu.el.querySelector('button[data-action="borders:inner"]');
+          if (inner) inner.setAttribute('aria-disabled', GridEditor.canApplyBorders(editor, 'inner') ? 'false' : 'true');
+          markGridLines(menu);
+        },
       });
-      const markPen = () => {
-        panel.el.querySelectorAll('button[data-action^="pen:"]').forEach(btn => btn.classList.toggle('is-active', btn.dataset.action === 'pen:' + penColor));
-        const auto = panel.el.querySelector('button[data-action="pen-auto"]');
-        if (auto) auto.classList.toggle('is-active', penColor === null);
-        const custom = panel.el.querySelector('button[data-action="pen-custom"]');
-        if (custom) custom.classList.toggle('is-active', penColor !== null && !TEXT_COLOR_PRESETS.includes(penColor));
+      return panel;
+    }
+
+    function tableLinkedMenu() {
+      // Le menu du tableau lié à un modèle Grille (js/linked-table.js) : le nom du modèle, ce que le lien veut dire pour les cases, puis les actions sur le lien (mettre à jour depuis
+      // le modèle, envoyer au modèle, ouvrir le modèle, détacher). `refresh(link)` le redessine d'après l'état du tableau sous le curseur (LinkedTable.status) à l'ouverture et à
+      // chaque changement du document : verrouillé (suivi des modifications allumé), les actions qui écrivent dans le document sont grisées avec la raison en info-bulle, un clic dessus
+      // ne fait rien (comme « Intérieures » du menu Bordures) ; « Ouvrir le modèle » n'écrit rien dans le document, il reste libre. Le nom d'un modèle est écrit comme texte, jamais
+      // comme HTML.
+      const ACTIONS = [
+        ['linked-pull', 'linkedPull', 'linkedTable.pullRow', 'linkedTable.pull', true],
+        ['linked-push', 'linkedPush', 'linkedTable.pushRow', 'linkedTable.push', true],
+        ['linked-open', 'linkedOpen', 'linkedTable.openRow', 'linkedTable.open', false],
+        ['linked-detach', 'unlink', 'linkedTable.detachRow', 'linkedTable.detach', true],
+      ];
+      const rows = ACTIONS.map(([action, icon]) => `<button type="button" class="v2-linked-menu-row" data-action="${action}">${Icons.svg(icon)}<span></span></button>`).join('');
+      const panel = EditorCore.createFloatingPanel('v2-color-dropdown v2-linked-menu',
+        `<div class="v2-linked-menu-head">${Icons.svg('linkedTable')}<span class="v2-linked-menu-name"></span></div>`
+        + '<div class="v2-linked-menu-hint"></div>'
+        + `<div class="v2-linked-menu-rows">${rows}</div>`,
+        (action) => {
+          // Verrouillé, une action ne fait rien et le menu reste ouvert, avec sa raison. Les deux sens sont asynchrones (le modèle se relit, « Envoyer » demande confirmation) :
+          // le menu se referme tout de suite, ce qu'elles disent passe par la ligne d'état. « Ouvrir le modèle » referme le menu avant que le modèle prenne la place du document.
+          if (action === 'linked-open') { EditorCore.closeDropdownPanel(); LinkedTable.open(editor); return; }
+          if (action === 'linked-detach') { if (LinkedTable.detach(editor)) EditorCore.closeDropdownPanel(); return; }
+          const run = action === 'linked-pull' ? LinkedTable.pull : action === 'linked-push' ? LinkedTable.push : null;
+          if (!run || LinkedTable.lockReason()) return;
+          EditorCore.closeDropdownPanel();
+          run(editor);
+        });
+      panel.refresh = (link) => {
+        const at = selector => panel.el.querySelector(selector);
+        at('.v2-linked-menu-name').textContent = link.name;
+        at('.v2-linked-menu-head').title = link.name;
+        at('.v2-linked-menu-hint').textContent = I18n.t(link.locked ? 'linkedTable.menuLocked' : 'linkedTable.menuHint');
+        ACTIONS.forEach(([action, , labelKey, titleKey, writes]) => {
+          const row = at(`[data-action="${action}"]`);
+          const locked = !!link.locked && writes;
+          row.querySelector('span').textContent = I18n.t(labelKey);
+          row.title = I18n.t(locked ? link.locked : titleKey, { name: link.name });
+          row.setAttribute('aria-disabled', locked ? 'true' : 'false');
+        });
       };
-      // « Intérieures » n'a rien à tracer pour une seule case : grisé (jamais retiré), un clic dessus ne fait rien.
-      const sync = () => {
-        const inner = panel.el.querySelector('button[data-action="borders:inner"]');
-        if (inner) inner.setAttribute('aria-disabled', GridEditor.canApplyBorders(editor, 'inner') ? 'false' : 'true');
-        markPen();
-      };
-      return { panel, sync };
+      return panel;
     }
 
     function tableMenuPlacement() {
       // Les menus de la barre d'une grille (fond, bordures) s'ouvrent sous la bande où elle est fixée : au-dessus, ils recouvriraient la barre
-      // d'outils.
+      // d'outils. Ceux de la barre d'un tableau de document, ancrée sur le tableau, s'ouvrent au-dessus de la barre (dessous si la place manque) et,
+      // dans un panneau de 400 px, glissent le long de leur bouton pour tenir tout entiers (js/color-palette.js:fitInWindow).
       return GridEditor.isActive() ? { placement: 'bottom-start' } : undefined;
     }
     function openBordersMenu(menus) {
       const btn = document.getElementById('v2-table-borders-btn');
       if (EditorCore.getOpenDropdownPanel() === menus.borders) { EditorCore.closeDropdownPanel(); return; }
       EditorCore.closeDropdownPanel();
-      menus.syncBorders();
       menus.borders.show(btn, tableMenuPlacement());
       EditorCore.setOpenDropdownPanel(menus.borders, btn);
     }
@@ -246,29 +321,49 @@ const FloatingToolbars = (function () {
       EditorCore.setOpenDropdownPanel(menus.fill);
     }
 
-    return { tableFillMenu, tableBordersMenu, openFillMenu, openBordersMenu };
+    function openLinkedMenu(menus) {
+      const btn = document.getElementById('v2-table-linked-btn');
+      if (EditorCore.getOpenDropdownPanel() === menus.linked) { EditorCore.closeDropdownPanel(); return; }
+      const link = LinkedTable.status(editor.state);
+      if (!btn || !link) return;
+      EditorCore.closeDropdownPanel();
+      menus.linked.refresh(link);
+      menus.linked.show(btn, tableMenuPlacement());
+      EditorCore.setOpenDropdownPanel(menus.linked, btn);
+    }
+
+    return { tableFillMenu, tableBordersMenu, tableLinkedMenu, openFillMenu, openBordersMenu, openLinkedMenu };
   })();
 
   const { tableCommands } = (function () {
     // Ce que fait chaque bouton de la barre d'un tableau
 
     function tableCommands(menus) {
+      // Ajouter autant de lignes ou de colonnes que la sélection en couvre (comme les supprimer), dans une grille comme dans un tableau de document.
+      const lines = command => () => GridEditor.insertLines(editor, command);
       return {
-        'row-before': () => editor.chain().focus().addRowBefore().run(),
-        'row-after': () => editor.chain().focus().addRowAfter().run(),
+        'row-before': lines('addRowBefore'),
+        'row-after': lines('addRowAfter'),
         'row-del': () => { if (!rowDeleteBlocked()) editor.chain().focus().deleteRow().run(); },
-        'col-before': () => editor.chain().focus().addColumnBefore().run(),
-        'col-after': () => editor.chain().focus().addColumnAfter().run(),
+        'col-before': lines('addColumnBefore'),
+        'col-after': lines('addColumnAfter'),
         'col-del': () => { if (!columnDeleteBlocked()) editor.chain().focus().deleteColumn().run(); },
+        // Égaliser : la moyenne des lignes (colonnes) que la sélection couvre ; sans effet (le bouton est grisé) quand elle n'en couvre qu'une.
+        'rows-equalize': () => GridEditor.equalizeLines(editor, 'row'),
+        'cols-equalize': () => GridEditor.equalizeLines(editor, 'col'),
         'table-del': () => editor.chain().focus().deleteTable().run(),
         'cell-merge': () => (GridEditor.isActive() ? GridEditor.mergeCells(editor) : TableMerge.mergeCells(editor)),
         'cell-split': () => (GridEditor.isActive() ? GridEditor.splitCell(editor) : TableMerge.splitCell(editor)),
         'valign-top': () => GridEditor.setVerticalAlign(editor, 'top'),
         'valign-middle': () => GridEditor.setVerticalAlign(editor, 'middle'),
         'valign-bottom': () => GridEditor.setVerticalAlign(editor, 'bottom'),
-        'borders-open': () => openBordersMenu(menus),
+        'borders-open': () => { if (!GridEditor.tableSettingsBlocked()) openBordersMenu(menus); },
+        // Grisé (cf. tableButtonSync), « Répéter la ligne » ne fait rien : openRow vérifie la ligne, et un tableau lié verrouillé refuserait d'écrire la boucle (le
+        // garde-fou de js/linked-table.js) : la fenêtre ne s'ouvrirait que pour ne rien enregistrer.
+        'row-repeat': () => { const link = LinkedTable.status(editor.state); if (!(link && link.locked)) VariableLoop.openRow(editor); },
         caption: () => Caption.run(editor, 'table'),
         'fill-open': () => openFillMenu(menus),
+        'linked-open': () => openLinkedMenu(menus),
       };
     }
 
@@ -278,10 +373,11 @@ const FloatingToolbars = (function () {
   const { tableButtonSync } = (function () {
     // L'état des boutons de la barre d'un tableau selon la sélection : une grille, un tableau de document
 
-    function tableButtonSync(panel, valign) {
+    function tableButtonSync(panel, spec, menus) {
+      const valign = spec.valign;
       // Boutons d'une grille selon la sélection : « Fusionner » et « Scinder » grisés quand ils n'ont pas de sens (jamais retirés), l'alignement
       // vertical des cases visées enfoncé (aucun quand la sélection mêle plusieurs alignements).
-      const { button, setDisabled } = controlsOf(panel);
+      const { button, setActive, setDisabled } = controlsOf(panel);
       const setLocked = (action, locked) => {
         const btn = button(action);
         if (!btn) return;
@@ -304,20 +400,79 @@ const FloatingToolbars = (function () {
           setDisabled(action, !!reason, I18n.t(reason || labelKey));
         });
       };
+      // L'alignement vertical des cases visées, enfoncé (aucun quand la sélection en mêle plusieurs), et ses boutons, avec celui des bordures, grisés
+      // quand ces réglages sont refusés : sous le suivi des modifications dans un document (js/grid-editor.js:tableSettingsBlocked).
+      // Le grisé d'un document porte sa raison en info-bulle, comme « Supprimer la colonne » ; la barre passe d'une grille à un document sans se redessiner.
+      const syncSettingButtons = () => {
+        const blocked = GridEditor.tableSettingsBlocked();
+        const align = GridEditor.selectedVerticalAlign(editor);
+        valign.forEach(([action, , value, title]) => {
+          const btn = button(action);
+          if (!btn) return;
+          btn.classList.toggle('is-active', align === value);
+          btn.setAttribute('aria-pressed', align === value ? 'true' : 'false');
+          setDisabled(action, blocked, blocked ? I18n.t('table.settingTracked') : title);
+        });
+        setDisabled('borders-open', blocked, I18n.t(blocked ? 'table.settingTracked' : 'table.bordersOpen'));
+      };
+      // « Égaliser » : grisé, avec sa raison pour info-bulle, tant que la sélection ne couvre pas au moins deux lignes (colonnes) - dans une grille comme
+      // dans un document, de la même façon (jamais retiré).
+      const EQUALIZE_BUTTONS = [['rows-equalize', 'row', 'table.rowsEqualize', 'table.rowsEqualizeNeed'], ['cols-equalize', 'col', 'table.colsEqualize', 'table.colsEqualizeNeed']];
+      const syncEqualizeButtons = () => {
+        EQUALIZE_BUTTONS.forEach(([action, kind, labelKey, needKey]) => {
+          const can = GridEditor.canEqualize(editor, kind);
+          setDisabled(action, !can, I18n.t(can ? labelKey : needKey));
+        });
+      };
+      // « Répéter la ligne » (js/variable-loop.js:rowStatus) : allumé quand la ligne du curseur est déjà répétée par une Boucle ; grisé, sa raison en info-bulle comme
+      // « Égaliser », quand aucune variable de la ligne ne peut la répéter, qu'une case fusionnée la traverse ou que la sélection couvre plusieurs lignes - dans une
+      // grille comme dans un document (jamais retiré).
+      const syncRepeatButton = () => {
+        const row = VariableLoop.rowStatus(editor);
+        setDisabled('row-repeat', !row.enabled, row.title);
+        setActive('row-repeat', row.active);
+      };
+      // Tableau lié à un modèle Grille : son bouton se montre pour lui seul, jamais dans une grille. Verrouillé (suivi des modifications allumé), tout ce qui changerait ses
+      // cases se grise avec la raison - le garde-fou (js/linked-table.js) refuserait de toute façon ; les boutons que les autres synchronisations ne regrisent pas (ligne,
+      // colonne, supprimer, fond) retrouvent leur titre au dégrisage. Le bouton du lien reste ouvert : son menu dit pourquoi le tableau est verrouillé. Le menu, s'il est
+      // ouvert, suit le tableau sous le curseur et se referme quand il n'est plus lié.
+      const LINK_LOCKED = ['row-before', 'row-after', 'row-del', 'rows-equalize', 'col-before', 'col-after', 'col-del', 'cols-equalize', 'table-del', 'cell-merge', 'cell-split', 'fill-open', 'row-repeat'];
+      const LINK_UNMANAGED = ['row-before', 'row-after', 'col-before', 'col-after', 'table-del', 'fill-open'];
+      const plainTitles = { 'fill-open': I18n.t('table.fillOpen') };
+      spec.buttons.forEach(([action, , title]) => { plainTitles[action] = title; });
+      let greyedByLink = false;
+      const syncLinkedGroup = () => {
+        const link = LinkedTable.status(editor.state);
+        panel.el.querySelectorAll('[data-linked-only]').forEach((part) => { part.hidden = !link; });
+        const menuOpen = EditorCore.getOpenDropdownPanel() === menus.linked;
+        if (!link && menuOpen) EditorCore.closeDropdownPanel();
+        if (link) {
+          const open = button('linked-open');
+          open.title = I18n.t(link.locked || 'linkedTable.barTip', { name: link.name });
+          open.classList.toggle('is-locked', !!link.locked);
+          if (menuOpen) menus.linked.refresh(link);
+          if (link.locked) {
+            LINK_LOCKED.forEach(action => setDisabled(action, true, I18n.t(link.locked, { name: link.name })));
+            greyedByLink = true;
+            return;
+          }
+        }
+        if (greyedByLink) {
+          LINK_UNMANAGED.forEach(action => setDisabled(action, false, plainTitles[action]));
+          greyedByLink = false;
+        }
+      };
       const syncGridButtons = () => {
+        panel.el.querySelectorAll('[data-linked-only]').forEach((part) => { part.hidden = true; });
         setLocked('table-del', true);
+        syncEqualizeButtons();
         // Pas de légende dans une grille : le bouton reste dans la barre, grisé, avec sa raison pour info-bulle (js/caption.js).
         Caption.syncButton(button('caption'), editor, 'table');
         MERGE_BUTTONS.forEach(([action, labelKey]) => setDisabled(action, false, I18n.t(labelKey)));
         setLocked('cell-merge', !GridEditor.canMerge(editor));
         setLocked('cell-split', !GridEditor.canSplit(editor));
-        const align = GridEditor.selectedVerticalAlign(editor);
-        valign.forEach(([action, , value]) => {
-          const btn = button(action);
-          if (!btn) return;
-          btn.classList.toggle('is-active', align === value);
-          btn.setAttribute('aria-pressed', align === value ? 'true' : 'false');
-        });
+        syncSettingButtons();
+        syncRepeatButton();
       };
       const syncDocumentButtons = () => {
         setLocked('table-del', false);
@@ -325,9 +480,13 @@ const FloatingToolbars = (function () {
         setDisabled('col-del', colBlocked, I18n.t(colBlocked ? 'table.colDelMerged' : 'table.colDel'));
         const rowBlocked = rowDeleteBlocked();
         setDisabled('row-del', rowBlocked, I18n.t(rowBlocked ? 'table.rowDelMerged' : 'table.rowDel'));
+        syncEqualizeButtons();
         syncDocumentMergeButtons();
+        syncSettingButtons();
+        syncRepeatButton();
         Caption.syncButton(button('caption'), editor, 'table');
         syncFillBar();
+        syncLinkedGroup();
       };
       return { syncGridButtons, syncDocumentButtons, syncFillBar };
     }
@@ -362,15 +521,24 @@ const FloatingToolbars = (function () {
       return dom.tagName === 'TABLE' ? dom : (dom.querySelector && dom.querySelector('table')) || dom;
     }
 
-    function tableToolbarCheck(panel, sync) {
+    // L'écart entre la barre et son tableau : 8 px, plus la hauteur des lettres des bandeaux quand elles se montrent (js/grid-editor.js:documentStripsOffset),
+    // pour que la barre ne les recouvre pas. Relu à chaque calcul de position.
+    const tableBarOptions = () => ({ offset: 8 + GridEditor.documentStripsOffset(), flip: zonePillClearance() });
+
+    function tableToolbarCheck(panel, sync, menus) {
+      // La barre qui se cache emporte le menu du lien (il n'a plus de bouton où s'ancrer) ; les menus de fond et de bordures, eux, se ferment au prochain clic.
+      const hideBar = () => {
+        panel.hide();
+        if (EditorCore.getOpenDropdownPanel() === menus.linked) EditorCore.closeDropdownPanel();
+      };
       return () => {
         if (dockInGridBar(panel, sync)) return;
         if (panel.isDocked()) panel.undock();
         // editor.isActive(...) ne change pas seul quand le focus quitte l'éditeur : hasFocus() ferme le panneau au clic hors de l'éditeur.
-        if (!editor.view.hasFocus() || !editor.isActive('table')) { panel.hide(); return; }
+        if (!editor.view.hasFocus() || !editor.isActive('table')) { hideBar(); return; }
         const anchor = tableUnderCursor();
-        if (!anchor) { panel.hide(); return; }
-        panel.show(anchor);
+        if (!anchor) { hideBar(); return; }
+        panel.show(anchor, tableBarOptions);
         sync.syncDocumentButtons();
       };
     }
@@ -378,17 +546,16 @@ const FloatingToolbars = (function () {
     // Toolbar de gestion de tableau : panneau flottant, visible seulement curseur dans une cellule, ancré sur le <table> réel.
     function wireTableFloatingToolbar() {
       const spec = tableToolbarSpec();
-      // Les deux menus (fond, bordures) viennent après la barre qui les ouvre : ses commandes les retrouvent ici.
+      // Les menus (fond, bordures, lien) viennent après la barre qui les ouvre : ses commandes les retrouvent ici.
       const menus = {};
-      const panel = EditorCore.createFloatingPanel('v2-floating-toolbar', tableToolbarHtml(spec), (action) => {
+      const panel = EditorCore.createFloatingPanel('v2-floating-toolbar v2-table-toolbar', tableToolbarHtml(spec), (action) => {
         (tableCommands(menus)[action] || (() => {}))();
       });
       menus.fill = tableFillMenu();
-      const borders = tableBordersMenu(spec.borders);
-      menus.borders = borders.panel;
-      menus.syncBorders = borders.sync;
+      menus.borders = tableBordersMenu(spec.borders);
+      menus.linked = tableLinkedMenu();
       EditorCore.registerFloatingPanel(panel);
-      const check = tableToolbarCheck(panel, tableButtonSync(panel, spec.valign));
+      const check = tableToolbarCheck(panel, tableButtonSync(panel, spec, menus), menus);
       editor.on('selectionUpdate', check);
       editor.on('transaction', check);
     }
@@ -396,7 +563,7 @@ const FloatingToolbars = (function () {
     return { wireTableFloatingToolbar };
   })();
 
-  const { imageToolbarHtml, selectedImageNode, selectedImageDom, updateSelectedImage } = (function () {
+  const { imageToolbarHtml, selectedImageNode, updateSelectedImage } = (function () {
     // L'image sélectionnée : son nœud, son <img>, la mise à jour de ses attributs ; le HTML de la barre
 
     function imageToolbarHtml() {
@@ -426,19 +593,13 @@ const FloatingToolbars = (function () {
 
     function selectedImageNode() { return selectedNode('editorImage'); }
 
-    function selectedImageDom() {
-      // Dimensions intrinsèques (naturalWidth/Height) pour clampWidthForHfMaxSize.
-      const dom = editor.view.nodeDOM(editor.state.selection.from);
-      return (dom && dom.querySelector) ? dom.querySelector('img') : null;
-    }
-
     function updateSelectedImage(patch) {
       const node = selectedImageNode();
       if (!node) return;
       EditorCore.patchNodeAndReselect(editor, editor.state.selection.from, Object.assign({}, node.attrs, patch));
     }
 
-    return { imageToolbarHtml, selectedImageNode, selectedImageDom, updateSelectedImage };
+    return { imageToolbarHtml, selectedImageNode, updateSelectedImage };
   })();
 
   const { alignOrSnap, setLayer } = (function () {
@@ -456,7 +617,8 @@ const FloatingToolbars = (function () {
       // En pixels de mise en page, comme la largeur du conteneur : getBoundingClientRect est en pixels écran, plus petits que ceux de la page quand
       // la feuille est réduite (~0,85 à 700 px).
       const imgWidthPx = img.getBoundingClientRect().width / EditorCore.layoutZoom(img);
-      const containerWidthPx = EditorCore.editorContentWidthPx(editor);
+      // Une page plus étroite que la feuille (js/page-section-view.js) a un texte moins large : c'est celui de SA page que l'image vise.
+      const containerWidthPx = EditorCore.editorContentWidthPx(editor) - 2 * PageSectionView.layerGapAt(dom);
       // `left` est stocké depuis le bord de la boîte de padding, mais l'alignement vise le bord du texte - décalage explicite du padding.
       const rootCs = getComputedStyle(editor.view.dom);
       const padLeft = parseFloat(rootCs.paddingLeft) || 0;
@@ -467,7 +629,7 @@ const FloatingToolbars = (function () {
       const grid = HeaderFooterPreview.computePageGridPosition(dom);
       // offsetLeft/offsetTop après computePageGridPosition, qui corrige `dom` si l'alignement sortait de la page physique ; rattrape aussi un `top`
       // déjà hors bornes, sans quoi il resterait stocké tel quel malgré la correction visuelle.
-      if (grid) updateSelectedImage(Object.assign({ left: Math.round(dom.offsetLeft), top: Math.round(dom.offsetTop) }, grid));
+      if (grid) updateSelectedImage(Object.assign({ left: Math.round(dom.offsetLeft - PageSectionView.layerGapAt(dom)), top: Math.round(dom.offsetTop) }, grid));
     }
 
     function setLayer(target) {
@@ -489,10 +651,13 @@ const FloatingToolbars = (function () {
           const rootRect = (dom.offsetParent || editor.view.dom).getBoundingClientRect();
           // Écart mesuré en pixels écran, `left`/`top` s'écrivent en pixels de mise en page (feuille réduite à ~0,85 dans un panneau de ~700 px).
           const zoom = EditorCore.layoutZoom(img);
-          patch.left = Math.round((imgRect.left - rootRect.left) / zoom);
+          // Le décalage d'une page plus étroite que la feuille s'y ajoute à l'écran (la marge gauche d'une image en calque) : `left` s'enregistre sans lui.
+          patch.left = Math.round((imgRect.left - rootRect.left) / zoom - PageSectionView.layerGapAt(dom));
           patch.top = Math.round((imgRect.top - rootRect.top) / zoom);
           // Reporté tout de suite sur `dom`, pas seulement sur `patch` (appliqué à la fin) : computePageGridPosition mesure et corrige `dom` lui-même
-          // si cette position sort de la page physique, et la correction doit se retrouver dans le left/top enregistré.
+          // si cette position sort de la page physique, et la correction doit se retrouver dans le left/top enregistré. Sa classe de calque aussi (la vue la posera de toute façon) : c'est
+          // elle qui lui donne le décalage d'une page plus étroite que la feuille, que la mesure doit voir.
+          dom.classList.add('editor-image-layered');
           dom.style.position = 'absolute';
           dom.style.left = patch.left + 'px';
           dom.style.top = patch.top + 'px';
@@ -507,7 +672,7 @@ const FloatingToolbars = (function () {
             // de positionner `dom` (patch.left/top posés) ; pour un changement de calque ultérieur, `dom` n'est pas forcément en position:absolute au
             // bon endroit, et left/top restent ceux de node.attrs.
             if (patch.left != null && patch.top != null) {
-              patch.left = Math.round(dom.offsetLeft);
+              patch.left = Math.round(dom.offsetLeft - PageSectionView.layerGapAt(dom));
               patch.top = Math.round(dom.offsetTop);
             }
           }
@@ -659,16 +824,10 @@ const FloatingToolbars = (function () {
 
     function imageCommands(selNode) {
       const attrs = selNode.attrs;
-      // Plafond en mode en-tête/pied (HeaderFooterPreview.clampWidthForHfMaxSize) : zoom avant et réinitialisation restent utilisables (les
-      // poignées aussi, cf. startResize), bornés à la taille max, jamais bloqués ; zoom arrière ne fait que rétrécir.
-      const clampedWidth = widthPx => {
-        const dom = selectedImageDom();
-        return dom ? HeaderFooterPreview.clampWidthForHfMaxSize(widthPx, dom.naturalWidth, dom.naturalHeight) : widthPx;
-      };
       return {
         'zoom-out': () => updateSelectedImage({ width: Math.round((parseFloat(attrs.width) || 320) * 0.75) + 'px' }),
-        'zoom-in': () => updateSelectedImage({ width: Math.round(clampedWidth((parseFloat(attrs.width) || 320) * 1.25)) + 'px' }),
-        reset: () => updateSelectedImage({ width: Math.round(clampedWidth(320)) + 'px', align: null }),
+        'zoom-in': () => updateSelectedImage({ width: Math.round((parseFloat(attrs.width) || 320) * 1.25) + 'px' }),
+        reset: () => updateSelectedImage({ width: '320px', align: null }),
         'align-left': () => alignOrSnap('left'),
         'align-center': () => alignOrSnap('center'),
         'align-right': () => alignOrSnap('right'),
@@ -757,8 +916,13 @@ const FloatingToolbars = (function () {
         const img = dom && dom.querySelector && dom.querySelector('img');
         if (!img) { panel.hide(); return; }
         dom.classList.add('editor-image-selected');
+        // Éditeur masqué (Lecture, résumé d'un macro-modèle) : l'image reste la sélection mais n'a plus de boîte, et floating-ui poserait la barre en
+        // haut à gauche (8, 8), par-dessus la barre du haut et son bouton « Exporter ». Une transaction qui arrive alors - le choix du type d'export
+        // en Lecture entre dans l'historique (HistoryMarkers.track) par l'éditeur masqué - ne doit pas la rouvrir : même garde que la barre d'une bulle
+        // (variableToolbarCheck). La classe de sélection, posée plus haut, reste : l'image est toujours sélectionnée au retour en Édition.
+        if (!img.getClientRects().length) { panel.hide(); return; }
         syncImageToolbar(controls);
-        panel.show(img, GridEditor.floatingOptions);
+        panel.show(img, anchoredBarOptions);
       };
       editor.on('selectionUpdate', check);
       editor.on('transaction', check);
@@ -767,11 +931,59 @@ const FloatingToolbars = (function () {
     return { wireImageFloatingToolbar };
   })();
 
-  const { variableToolbarHtml } = (function () {
+  // Une fenêtre (condition, autres attributs, boucle, liste, calcul) est ouverte sur une bulle : sa barre reste masquée tant qu'elle l'est - son niveau,
+  // sous les fenêtres, la cacherait de toute façon derrière le voile - et le champ texte qui porte la bulle ne remplace pas son document (js/field-editor.js).
+  // `except` : la fenêtre dont la barre est celle d'un champ qu'elle porte (le sinon de js/variable-condition.js) - cette fenêtre-là est ouverte tant que le champ vit,
+  // elle ne cache pas sa propre barre ; la fenêtre de condition ouverte par-dessus elle, pour une variable du champ, la cache. 'condition' : la fenêtre de condition ; 'loop' :
+  // la fenêtre de la boucle (le texte « Si aucune ligne », js/variable-loop.js).
+  function variableWindowOpen(except) {
+    return VariableCondition.isOpen(except === 'condition' ? 1 : 0) || VariableLinkedAttrs.isOpen() || (except !== 'loop' && VariableLoop.isOpen()) || VariableList.isOpen() || VariableCalc.isOpen();
+  }
+
+  // La barre flottante d'une bulle #Variable pour UN éditeur : celui du document (wireVariableFloatingToolbar) ou celui d'un champ texte (Objet, À, Cc,
+  // Cci, nom du PDF, js/field-editor.js:attachVariableToolbar). Tout ce qui suit lit `editor`, le paramètre, qui cache celui du module : une barre par
+  // éditeur, chacune sur sa propre sélection. `options.field` : la barre d'un champ texte, qui n'écrit qu'une ligne de texte - la boucle n'y est que « dans
+  // la phrase », « Un document par valeur » n'a pas d'objet, le zéro s'y écrit toujours et un Oui / Non y garde « true » / « false » (Variables.formatValue,
+  // `rawNumbers`). `options.sinon` : le champ est le « Sinon afficher » d'un bloc, d'une valeur ou d'une bulle (js/variable-condition.js) ou le texte « Si aucune ligne » d'une boucle (js/variable-loop.js), qui s'écrit dans le document : même
+  // barre qu'un champ, mais le zéro et les cases Oui / Non s'y règlent comme dans le document. `options.hostWindow` : la fenêtre qui porte ce champ (variableWindowOpen).
+  // `options.ownerEl` : l'élément du champ, dont un clic ne ferme pas la barre (EditorCore.registerFloatingPanel).
+  function createVariableToolbar(editor, options) {
+    const inField = !!(options && options.field);
+    // Un champ qui s'écrit en texte brut (l'objet d'un e-mail) : la valeur d'une variable y est celle de Grist, sans la mise en forme du document.
+    const rawText = inField && !(options && options.sinon);
+    // La fenêtre de la boucle porte un champ (son texte « Si aucune ligne ») et n'existe qu'une fois : tant qu'elle est ouverte, la barre d'une variable d'un champ - le sien, ou le
+    // « Sinon afficher » d'une fenêtre de condition ouverte par-dessus - ne peut pas en ouvrir une seconde.
+    const loopWindowTaken = () => inField && VariableLoop.isOpen();
+    // Relit la sélection et remet la barre à jour (posé par wireToolbar) : pour un geste qui ne change pas le document et qui doit pourtant se voir (« Comme dans Grist » qui
+    // trouve la colonne réglée autrement qu'il n'y paraissait).
+    let refreshToolbar = () => {};
+
+    const { variableToolbarHtml } = createVariableToolbarHtml();
+
+    const { isFormatKind, variableTarget, variableColumnType } = createVariableTarget({ editor });
+
+    const { patchVariableFormat, applyVariableFormat, gristFormatOf } = createVariableFormat({ editor, rawText, refreshToolbar: (...args) => refreshToolbar(...args), isFormatKind, variableTarget, variableColumnType });
+
+    const { onVariableAction, onVariableInput } = createVariableHandlers({ editor, inField, loopWindowTaken, isFormatKind, variableTarget, patchVariableFormat, applyVariableFormat });
+
+    const { setLabeled, greyOut, syncColumnButton, syncListButton, syncConditionButton, showCalcEdit } = createVariableButtons({ editor });
+
+    const { syncConditionalState, syncBoolButtons } = createConditionalState({ greyOut, syncColumnButton, syncListButton, syncConditionButton, showCalcEdit });
+
+    const { syncVariableState } = createVariableState({ editor, rawText, loopWindowTaken, variableColumnType, gristFormatOf, setLabeled, greyOut, syncColumnButton, syncListButton, syncConditionButton, showCalcEdit, syncBoolButtons });
+
+    const { wireToolbar } = createVariableToolbarWiring({ editor, options, inField, rawText, setRefreshToolbar: value => { refreshToolbar = value; }, variableToolbarHtml, isFormatKind, variableTarget, variableColumnType, onVariableAction, onVariableInput, syncConditionalState, syncBoolButtons, syncVariableState });
+
+    return { wire: wireToolbar };
+  }
+
+  function createVariableToolbarHtml() {
     // Le HTML de la barre d'une bulle : les boutons de gauche, puis les sous-panneaux de format (nombre, date, Oui / Non)
 
     function variableToolbarHtml() {
       const dateOptions = VariableFormat.DATE_PRESETS.map(p => `<option value="${p.key}">${VariableFormat.presetLabel(p)}</option>`).join('');
+      const timeOptions = `<option value="">${I18n.t('varFmt.timeNone')}</option>` + VariableFormat.timeChoices().map(t => `<option value="${t.key}">${VariableFormat.timeLabel(t)}</option>`).join('');
+      const boolTitles = { accentStrike: 'varFmt.boolAccentStrike', classic: 'list.checklistClassic.tip', accentPlain: 'list.checklistAccentPlain.tip', text: 'varFmt.boolTextTitle' };
       return [
         '<div class="v2-varbadge-actions">',
         `<button data-action="calc-edit" title="${I18n.t('varToolbar.calcEdit')}" aria-label="${I18n.t('varToolbar.calcEdit')}" hidden>${Icons.svg('calc')}</button>`,
@@ -782,14 +994,21 @@ const FloatingToolbars = (function () {
         `<button data-action="var-column" title="${I18n.t('varToolbar.columnBroken')}" aria-label="${I18n.t('varToolbar.columnBroken')}" hidden>${Icons.svg('varColumn')}</button>`,
         '</div>',
         '<span class="v2-floating-sep" data-var-sep></span>',
+        // « Comme dans Grist » : pour une colonne nombre ou date seulement (showVariableFormatPanels) ; son info-bulle dit ce que le bouton écrirait, ou pourquoi il est
+        // grisé (syncGristButton).
+        '<div data-var-panel="grist" hidden>',
+        `<button data-action="grist-format" title="${I18n.t('varFmt.grist')}" aria-label="${I18n.t('varFmt.grist')}">${Icons.svg('gristFormat')}</button>`,
+        '<span class="v2-floating-sep"></span>',
+        '</div>',
         '<div data-var-panel="number">',
         '<span class="v2-varfmt-seg">',
         `<button data-action="num-style:fr" title="${I18n.t('varFmt.styleFr')}">FR</button>`,
         `<button data-action="num-style:us" title="${I18n.t('varFmt.styleUs')}">US</button>`,
         `<button data-action="num-style:none" title="${I18n.t('varFmt.styleNone')}">—</button>`,
         '</span>',
-        `<select data-role="num-decimals" title="${I18n.t('varFmt.decimals')}"><option value="">${I18n.t('varFmt.decimalsAuto')}</option><option value="0">0</option><option value="1">1</option><option value="2">2</option><option value="3">3</option></select>`,
+        `<select data-role="num-decimals" title="${I18n.t('varFmt.decimals')}"><option value="">${I18n.t('varFmt.decimalsAuto')}</option><option value="0">0</option><option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="range" hidden></option></select>`,
         `<input type="text" data-role="num-currency" placeholder="${I18n.t('varFmt.currencyPlaceholder')}" title="${I18n.t('varFmt.currencyTitle')}" maxlength="6">`,
+        `<button data-action="num-percent" title="${I18n.t('varFmt.percentTitle')}" aria-label="${I18n.t('varFmt.percentTitle')}" aria-pressed="false">%</button>`,
         '<span class="v2-floating-sep"></span>',
         `<button data-action="num-words" title="${I18n.t('varFmt.wordsNumberTitle')}">${I18n.t('varFmt.wordsButton')}</button>`,
         '<span class="v2-floating-sep"></span>',
@@ -797,29 +1016,30 @@ const FloatingToolbars = (function () {
         '</div>',
         '<div data-var-panel="date" hidden>',
         '<span class="v2-varfmt-seg">',
-        `<button data-action="date-part:day" title="${I18n.t('varFmt.showDay')}">J</button>`,
-        `<button data-action="date-part:month" title="${I18n.t('varFmt.showMonth')}">M</button>`,
-        `<button data-action="date-part:year" title="${I18n.t('varFmt.showYear')}">A</button>`,
+        `<button data-action="date-part:day" title="${I18n.t('varFmt.showDay')}">${I18n.t('varFmt.dayLetter')}</button>`,
+        `<button data-action="date-part:month" title="${I18n.t('varFmt.showMonth')}">${I18n.t('varFmt.monthLetter')}</button>`,
+        `<button data-action="date-part:year" title="${I18n.t('varFmt.showYear')}">${I18n.t('varFmt.yearLetter')}</button>`,
         '</span>',
         `<select data-role="date-preset" title="${I18n.t('varFmt.datePreset')}">${dateOptions}</select>`,
+        // L'heure : pour une colonne « Date et heure » seulement (showVariableFormatPanels) ; « Sans heure » est l'écriture d'avant ce réglage.
+        `<select data-role="date-time" title="${I18n.t('varFmt.time')}" aria-label="${I18n.t('varFmt.time')}" hidden>${timeOptions}</select>`,
         '<span class="v2-floating-sep"></span>',
         `<button data-action="date-words" title="${I18n.t('varFmt.wordsDateTitle')}">${I18n.t('varFmt.wordsButton')}</button>`,
         '</div>',
-        // Colonne Oui / Non : les trois cases de la liste à cases (mêmes icônes, mêmes noms) puis le texte « vrai / faux ». Libellés et infobulles
-        // réécrits par syncVariableState (langue en cours).
+        // Colonne Oui / Non : les trois cases de la liste à cases (mêmes icônes, mêmes noms) puis le texte « vrai / faux ».
         '<div data-var-panel="bool" hidden>',
         '<span class="v2-varfmt-seg">',
-        VariableFormat.BOOL_CHECKBOX_STYLES.map(style => `<button data-action="bool-style:${style}">${Icons.svg('checklist' + style.charAt(0).toUpperCase() + style.slice(1))}</button>`).join(''),
-        '<button data-action="bool-style:text"></button>',
+        VariableFormat.BOOL_CHECKBOX_STYLES.map(style => `<button data-action="bool-style:${style}" title="${I18n.t(boolTitles[style])}" aria-label="${I18n.t(boolTitles[style])}">${Icons.svg('checklist' + style.charAt(0).toUpperCase() + style.slice(1))}</button>`).join(''),
+        `<button data-action="bool-style:text" title="${I18n.t(boolTitles.text)}" aria-label="${I18n.t(boolTitles.text)}">${I18n.t('varFmt.boolTextButton')}</button>`,
         '</span>',
         '</div>',
       ].join('');
     }
 
     return { variableToolbarHtml };
-  })();
+  }
 
-  const { isFormatKind, variableTarget, variableColumnType } = (function () {
+  function createVariableTarget({ editor }) {
     // La cible de la barre d'une bulle (ce que la sélection désigne) et le type de sa colonne
 
     // Ce que la barre règle, d'après la sélection : une bulle (`badge`, variable) ou un `calc`, un bloc de texte conditionnel (`block`, clic sur son
@@ -846,14 +1066,39 @@ const FloatingToolbars = (function () {
     function variableColumnType(node) { return node.type.name === 'calcBadge' ? 'Numeric' : GristAPI.getColumnType(node.attrs.table, node.attrs.column); }
 
     return { isFormatKind, variableTarget, variableColumnType };
-  })();
+  }
 
-  const { patchVariableFormat, applyVariableFormat } = (function () {
+  function createVariableFormat({ editor, rawText, refreshToolbar, isFormatKind, variableTarget, variableColumnType }) {
     // Le format d'une bulle ou d'un calcul
 
     // `setVariableFormat` le remplace (null = format vide), `patchVariableFormat` fusionne dans l'existant.
     const setVariableFormat = ({ node, pos }, format) => EditorCore.patchNodeAndReselect(editor, pos, Object.assign({}, node.attrs, { format }));
-    const patchVariableFormat = (t, patch) => setVariableFormat(t, Object.assign({}, t.node.attrs.format, patch));
+    // Une clé laissée à `undefined` est retirée du format (« Sans heure » : le format garde la forme d'avant ce réglage).
+    const patchVariableFormat = (t, patch) => {
+      const next = Object.assign({}, t.node.attrs.format, patch);
+      Object.keys(next).forEach(key => { if (next[key] === undefined) delete next[key]; });
+      setVariableFormat(t, next);
+    };
+    // Le format que « Comme dans Grist » donne à cette variable, d'après la colonne qu'elle écrit : { format, exact } ou { refusal, detail } (VariableFormat.gristColumnFormat) ;
+    // un calcul n'a pas de colonne Grist.
+    function gristFormatOf(node) {
+      if (node.type.name === 'calcBadge') return { refusal: 'calc' };
+      const { table, column } = node.attrs;
+      return VariableFormat.gristColumnFormat(GristAPI.getColumnType(table, column), GristAPI.getColumnFormatOptions(table, column),
+        VariableFormat.documentCurrency(GristAPI.getDocumentSettings()), I18n.getLang());
+    }
+    // Pose le format de la colonne Grist en une seule opération (un seul « Annuler »). Les réglages de la colonne sont relus d'abord : ils ont pu changer dans Grist depuis la
+    // dernière lecture du schéma, et le bouton écrit ce que Grist montre maintenant. Si la sélection a bougé pendant la lecture, ou si la colonne n'a plus de format que le
+    // widget sait écrire, rien n'est posé et la barre se met à jour (le bouton se grise, avec sa raison).
+    async function applyGristColumnFormat(t) {
+      await GristAPI.refreshColumnTypes();
+      const now = variableTarget();
+      if (!now || !isFormatKind(now.kind) || now.pos !== t.pos || now.node.type !== t.node.type) return;
+      const result = gristFormatOf(now.node);
+      const next = result.refusal ? null : VariableFormat.applyGristFormat(now.node.attrs.format, result.format);
+      if (next && !VariableFormat.sameFormat(next, now.node.attrs.format)) setVariableFormat(now, next);
+      else refreshToolbar();
+    }
     function applyVariableFormat(t, action) {
       const [name, arg] = action.split(':');
       const format = t.node.attrs.format || {};
@@ -863,12 +1108,17 @@ const FloatingToolbars = (function () {
         // 'number'`, pour ne pas poser de style à la place de celui que la barre annonce déjà (FR, ou US en interface anglaise) ; revenir à
         // l'écriture par défaut retire la clé, et une bulle sans autre réglage retrouve un format vide.
         case 'num-zero': {
+          // Grisé dans un champ texte (syncNumberFormat) : le zéro s'y écrit toujours.
+          if (rawText) break;
           const next = Object.assign({}, format);
           if (Variables.zeroHidden(format, variableColumnType(t.node))) next.zero = 'show'; else delete next.zero;
           setVariableFormat(t, Object.keys(next).length ? next : null);
           break;
         }
-        case 'num-words': patchVariableFormat(t, { type: 'number', words: !format.words }); break;
+        // « Lettres » et « % » s'excluent (le pourcentage ne s'écrit pas en toutes lettres) : le dernier choisi reste, comme la devise, qu'un pourcentage ne porte pas.
+        case 'num-words': patchVariableFormat(t, { type: 'number', words: !format.words, percent: undefined }); break;
+        case 'num-percent': patchVariableFormat(t, format.percent ? { type: 'number', percent: undefined } : { type: 'number', percent: true, currency: undefined, words: undefined }); break;
+        case 'grist-format': applyGristColumnFormat(t); break;
         // Le dernier composant J/M/A actif ne peut pas être désactivé (date vide sinon).
         case 'date-part': {
           const active = ['day', 'month', 'year'].filter(part => format[part] !== false);
@@ -887,21 +1137,21 @@ const FloatingToolbars = (function () {
       }
     }
 
-    return { patchVariableFormat, applyVariableFormat };
-  })();
+    return { patchVariableFormat, applyVariableFormat, gristFormatOf };
+  }
 
-  const { onVariableAction, onVariableInput } = (function () {
+  function createVariableHandlers({ editor, inField, loopWindowTaken, isFormatKind, variableTarget, patchVariableFormat, applyVariableFormat }) {
     // Ce que fait un clic dans la barre d'une bulle, et un réglage de son format
 
     // Les fenêtres des boutons de gauche, ouvertes sur la bulle sélectionnée ; position capturée au clic, la fenêtre retire ensuite le focus de
     // l'éditeur. Un bouton grisé (cf. syncVariableState) ne fait rien. « Autres attributs » : variable d'une autre table (déjà liée à l'insertion)
     // ou colonne Référence de la table de la page, règle tenue par js/variable-linked-attrs.js.
     const WINDOWS = {
-      'var-condition': (node, pos) => VariableCondition.open(editor, pos),
-      'var-linked': (node, pos) => { if (VariableLinkedAttrs.isAvailable(node.attrs)) VariableLinkedAttrs.open(editor, pos); },
-      'var-loop': (node, pos) => { if (VariableLoop.status(editor, pos, node).enabled) VariableLoop.open(editor, pos); },
-      'var-list': (node, pos) => { if (VariableList.status(node).enabled) VariableList.open(editor, pos); },
-      'var-column': (node, pos) => VariableColumn.open(editor, pos),
+      'var-condition': (node, pos) => VariableCondition.openAt(editor, pos),
+      'var-linked': (node, pos) => { if (VariableLinkedAttrs.isAvailable(node.attrs)) VariableLinkedAttrs.openAt(editor, pos); },
+      'var-loop': (node, pos) => { if (VariableLoop.status(editor, pos, node).enabled && !loopWindowTaken()) VariableLoop.openAt(editor, pos, { inlineOnly: inField }); },
+      'var-list': (node, pos) => { if (VariableList.status(node).enabled) VariableList.openAt(editor, pos, { field: inField }); },
+      'var-column': (node, pos) => VariableColumn.openAt(editor, pos),
     };
     function onVariableAction(action) {
       const t = variableTarget();
@@ -923,15 +1173,17 @@ const FloatingToolbars = (function () {
     function onVariableInput(role, value) {
       const t = variableTarget();
       if (!t || !isFormatKind(t.kind)) return;
-      if (role === 'num-decimals') patchVariableFormat(t, { type: 'number', decimals: value === '' ? null : parseInt(value, 10) });
-      else if (role === 'num-currency') patchVariableFormat(t, { type: 'number', currency: value.trim() });
+      // Choisir un nombre de décimales remplace le « de x à y » que « Comme dans Grist » a pu poser (maxDecimals) ; une devise remplace le pourcentage.
+      if (role === 'num-decimals') patchVariableFormat(t, { type: 'number', decimals: value === '' ? null : parseInt(value, 10), maxDecimals: undefined });
+      else if (role === 'num-currency') patchVariableFormat(t, value.trim() ? { type: 'number', currency: value.trim(), percent: undefined } : { type: 'number', currency: '' });
       else if (role === 'date-preset') patchVariableFormat(t, { type: 'date', preset: value });
+      else if (role === 'date-time') patchVariableFormat(t, { type: 'date', time: value || undefined });
     }
 
     return { onVariableAction, onVariableInput };
-  })();
+  }
 
-  const { greyOut, syncColumnButton, syncListButton, syncConditionButton, showCalcEdit } = (function () {
+  function createVariableButtons({ editor }) {
     // Les boutons de gauche de la barre d'une bulle : grisés, actifs ou cachés selon la sélection. `ui` : les contrôles de la barre
 
     // Bouton grisé ou actif dont le nom accessible suit l'info-bulle.
@@ -946,14 +1198,18 @@ const FloatingToolbars = (function () {
       ui.setActive(action, false);
     }
     // « Colonne… » : là seulement sur une variable cassée (la bulle rouge : colonne, chemin ou table disparus dans Grist), pour y choisir la bonne
-    // colonne ; absente - cachée, pas grisée : demande expresse, exception à « rien ne disparaît » - d'une variable saine, d'un calcul (même cassé),
-    // d'un bloc de texte, d'une valeur et d'une case conditionnelle. Relue à chaque ouverture de la barre : une variable réparée la perd.
-    function syncColumnButton(ui, node) {
+    // colonne, ou sans lien (la bulle orange : sa table n'a plus de lien avec la page), pour y refaire le lien en choisissant sa colonne ; absente -
+    // cachée, pas grisée : demande expresse, exception à « rien ne disparaît » - d'une variable saine, d'un calcul (même cassé), d'un bloc de texte,
+    // d'une valeur et d'une case conditionnelle. Relue à chaque ouverture de la barre : une variable réparée la perd. `pos` : la place de la bulle
+    // (une variable sans lien l'est selon l'endroit où elle est, VariableColumn.isUnlinkedAt).
+    function syncColumnButton(ui, node, pos) {
       const btn = ui.button('var-column');
       if (!btn) return;
-      const broken = node.type.name === 'varBadge' && VariableColumn.isBroken(node.attrs);
-      btn.hidden = !broken;
-      if (broken) setLabeled(ui, 'var-column', false, I18n.t('varToolbar.columnBroken'));
+      const isVariable = node.type.name === 'varBadge';
+      const broken = isVariable && VariableColumn.isBroken(node.attrs);
+      const unlinked = isVariable && pos != null && VariableColumn.isUnlinkedAt(editor, pos, node.attrs);
+      btn.hidden = !broken && !unlinked;
+      if (broken || unlinked) setLabeled(ui, 'var-column', false, I18n.t(broken ? 'varToolbar.columnBroken' : 'varToolbar.columnUnlinked'));
     }
     // « Liste… » : active (bleue) quand la bulle a un réglage de liste, grisée pour une colonne qui n'est pas une liste, une bulle en boucle, un
     // calcul, un bloc de texte, une valeur et une case conditionnelle, avec sa raison en info-bulle. `status` : { active, enabled, title }, comme
@@ -963,13 +1219,15 @@ const FloatingToolbars = (function () {
       ui.setActive('var-list', status.active);
     }
     // La condition garde son nom d'origine pour une bulle et un bloc ; une case conditionnelle dit « cochée si… » (une condition d'affichage n'aurait
-    // pas de sens pour elle). `reasonKey` : grisée avec cette raison (un calcul).
+    // pas de sens pour elle). `reasonKey` : grisée avec cette raison (un calcul). Allumée aussi pour une bulle qui n'a que du texte « Avant » /
+    // « Après » : la même fenêtre le règle.
     function syncConditionButton(ui, node, labelKey, reasonKey) {
       const btn = ui.button('var-condition');
       if (!btn) return;
       btn.setAttribute('aria-label', I18n.t(labelKey));
       ui.setDisabled('var-condition', !!reasonKey, I18n.t(reasonKey || labelKey));
-      ui.setActive('var-condition', !reasonKey && !!ConditionRules.normalizeCondition(node.attrs.condition));
+      const set = !!ConditionRules.normalizeCondition(node.attrs.condition) || !!VariableFormat.affixes(node.attrs.before, node.attrs.after);
+      ui.setActive('var-condition', !reasonKey && set);
     }
     // « Modifier le calcul » n'est là que pour un calcul : un calcul choisi juste avant l'a montré, l'autre sélection le cache.
     function showCalcEdit(ui, shown) {
@@ -977,10 +1235,10 @@ const FloatingToolbars = (function () {
       if (btn) btn.hidden = !shown;
     }
 
-    return { greyOut, syncColumnButton, syncListButton, syncConditionButton, showCalcEdit };
-  })();
+    return { setLabeled, greyOut, syncColumnButton, syncListButton, syncConditionButton, showCalcEdit };
+  }
 
-  const { syncConditionalState, syncBoolButtons } = (function () {
+  function createConditionalState({ greyOut, syncColumnButton, syncListButton, syncConditionButton, showCalcEdit }) {
     // Un bloc de texte conditionnel, une valeur et une case conditionnelle, et les boutons des styles de case
 
     // Un bloc de texte conditionnel, une valeur et une case ont la même barre : seuls le nom de la condition et les raisons des boutons grisés
@@ -1001,30 +1259,26 @@ const FloatingToolbars = (function () {
     }
 
     // Les boutons des styles de case : celui du style en cours est allumé et enfoncé. « vrai / faux » (`text`) est le style d'une bulle sans
-    // réglage ; une case conditionnelle n'a pas ce bouton. Libellés et infobulles relus à chaque ouverture : la langue de l'interface a pu changer
-    // depuis la création de la barre.
+    // réglage ; une case conditionnelle n'a pas ce bouton.
     function syncBoolButtons(ui, currentStyle) {
-      const boolTitles = { accentStrike: 'varFmt.boolAccentStrike', classic: 'list.checklistClassic.tip', accentPlain: 'list.checklistAccentPlain.tip', text: 'varFmt.boolTextTitle' };
-      Object.keys(boolTitles).forEach(style => {
+      VariableFormat.BOOL_CHECKBOX_STYLES.concat('text').forEach(style => {
         const btn = ui.button(`bool-style:${style}`);
         if (!btn) return;
         btn.classList.toggle('is-active', style === currentStyle);
-        btn.title = I18n.t(boolTitles[style]);
-        btn.setAttribute('aria-label', btn.title);
         btn.setAttribute('aria-pressed', style === currentStyle ? 'true' : 'false');
-        if (style === 'text') btn.textContent = I18n.t('varFmt.boolTextButton');
       });
     }
 
     return { syncConditionalState, syncBoolButtons };
-  })();
+  }
 
-  const { syncVariableState } = (function () {
+  function createVariableState({ editor, rawText, loopWindowTaken, variableColumnType, gristFormatOf, setLabeled, greyOut, syncColumnButton, syncListButton, syncConditionButton, showCalcEdit, syncBoolButtons }) {
     // Une variable ou un calcul : la condition, les boutons de gauche et le sous-panneau de format que choisit le type de la colonne
 
     function syncVariableState(ui, node, pos) {
       const format = node.attrs.format || {};
       syncVariableActions(ui, node, pos);
+      syncGristButton(ui, node, format);
       syncNumberFormat(ui, node, format);
       syncDateFormat(ui, format);
       // Oui / Non : le style en cours est allumé, « vrai / faux » tant que rien n'est réglé (c'est ce que la bulle écrit).
@@ -1035,7 +1289,7 @@ const FloatingToolbars = (function () {
       const isCalc = node.type.name === 'calcBadge';
       showCalcEdit(ui, isCalc);
       syncConditionButton(ui, node, 'varToolbar.condition', isCalc ? 'varToolbar.notForCalc' : null);
-      syncColumnButton(ui, node);
+      syncColumnButton(ui, node, pos);
       if (isCalc) {
         // Un calcul n'a ni autre attribut de sa ligne ni boucle : les deux boutons restent à leur place, grisés, avec leur raison en info-bulle.
         greyOut(ui, 'var-linked', 'varToolbar.notForCalc');
@@ -1048,9 +1302,26 @@ const FloatingToolbars = (function () {
         // Boucle : active (bleue) quand posée ; grisée pour une variable qui ne montre qu'une ligne, ou déjà répétée avec une autre bulle
         // (js/variable-loop.js).
         const loop = VariableLoop.status(editor, pos, node);
+        const taken = loopWindowTaken();
         ui.setActive('var-loop', loop.active);
-        ui.setDisabled('var-loop', !loop.enabled, loop.title);
+        ui.setDisabled('var-loop', !loop.enabled || taken, taken ? I18n.t('varLoop.alreadyOpen') : loop.title);
       }
+    }
+
+    // « Comme dans Grist » : son info-bulle dit ce que le bouton écrirait (« Comme dans Grist : 1 234,57 € », suivi de « approché » quand ce n'est pas tout à fait le
+    // même texte) ; grisé - jamais retiré -, elle dit pourquoi : la variable est déjà écrite ainsi, c'est un calcul, ou le widget ne sait pas écrire ce format.
+    function syncGristButton(ui, node, format) {
+      const result = gristFormatOf(node);
+      let title;
+      let disabled = true;
+      if (result.refusal) title = I18n.t('varFmt.gristRefuse.' + result.refusal, { format: result.detail });
+      else if (VariableFormat.sameFormat(VariableFormat.applyGristFormat(format, result.format), format)) title = I18n.t('varFmt.gristSame');
+      else {
+        disabled = false;
+        const preview = VariableFormat.gristPreview(GristAPI.getColumnType(node.attrs.table, node.attrs.column), result.format);
+        title = I18n.t(result.exact ? 'varFmt.gristTip' : 'varFmt.gristTipApprox', { preview });
+      }
+      setLabeled(ui, 'grist-format', disabled, title);
     }
 
     function syncNumberFormat(ui, node, format) {
@@ -1061,52 +1332,63 @@ const FloatingToolbars = (function () {
       ['fr', 'us', 'none'].forEach(name => ui.setActive('num-style:' + name, style === name));
       ui.setActive('num-words', isNumber && format.words);
       ui.section('number').classList.toggle('v2-varfmt-words-active', isNumber && !!format.words);
-      ui.setField('select[data-role="num-decimals"]', isNumber && format.decimals != null ? String(format.decimals) : '');
+      // Les décimales : un nombre fixe de 0 à 3, « Auto », ou - ce que « Comme dans Grist » pose - un « de x à y » ou plus de trois, que l'option cachée « range » montre.
+      const digits = isNumber ? VariableFormat.decimalDigits(format) : null;
+      const range = digits && (digits.min !== digits.max || digits.min > 3);
+      const rangeOption = ui.section('number').querySelector('select[data-role="num-decimals"] option[value="range"]');
+      if (rangeOption) rangeOption.textContent = range ? I18n.t('varFmt.decimalsRange', { min: digits.min, max: digits.max }) : '';
+      ui.setField('select[data-role="num-decimals"]', range ? 'range' : (digits ? String(digits.min) : ''));
+      ui.setActive('num-percent', isNumber && !!format.percent);
+      const percentButton = ui.button('num-percent');
+      if (percentButton) percentButton.setAttribute('aria-pressed', isNumber && format.percent ? 'true' : 'false');
       ui.setField('input[data-role="num-currency"]', isNumber && format.currency ? format.currency : '');
       // Même règle que le rendu (Variables.zeroHidden) : la barre montre ce que le document écrit - bouton enfoncé et 0 barré tant que le zéro ne
       // s'écrit pas. Le trait du 0 se cache par son attribut `display` : remplacer le SVG pendant le mousedown détacherait la cible du clic, que le
       // filet de editor-core.js (clic hors de la barre = on ferme) prendrait pour un clic ailleurs.
       const zeroBtn = ui.button('num-zero');
       if (zeroBtn) {
-        const zeroOff = Variables.zeroHidden(format, variableColumnType(node));
+        // Dans un champ texte, le zéro s'écrit toujours (`rawNumbers`) : le bouton reste là, grisé et relâché, sa raison en info-bulle.
+        const zeroOff = !rawText && Variables.zeroHidden(format, variableColumnType(node));
         ui.setActive('num-zero', zeroOff);
         zeroBtn.setAttribute('aria-pressed', zeroOff ? 'true' : 'false');
         const slash = zeroBtn.querySelector('svg path');
         if (slash) slash.setAttribute('display', zeroOff ? 'inline' : 'none');
+        ui.setDisabled('num-zero', rawText, I18n.t(rawText ? 'varFmt.zeroInField' : 'varFmt.zero'));
+        zeroBtn.setAttribute('aria-label', zeroBtn.title);
       }
     }
 
     function syncDateFormat(ui, format) {
       const isDate = format.type === 'date';
       ui.setField('select[data-role="date-preset"]', isDate && format.preset ? format.preset : VariableFormat.DATE_PRESETS[0].key);
+      ui.setField('select[data-role="date-time"]', isDate ? VariableFormat.timeChoiceOf(format.time) : '');
       ['day', 'month', 'year'].forEach(part => ui.setActive('date-part:' + part, !isDate || format[part] !== false));
       ui.setActive('date-words', isDate && format.words);
     }
 
     return { syncVariableState };
-  })();
+  }
 
-  const { wireVariableFloatingToolbar } = (function () {
+  function createVariableToolbarWiring({ editor, options, inField, rawText, setRefreshToolbar, variableToolbarHtml, isFormatKind, variableTarget, variableColumnType, onVariableAction, onVariableInput, syncConditionalState, syncBoolButtons, syncVariableState }) {
     // Barre flottante d'une bulle #Variable : ce qu'elle montre selon la sélection, où elle se pose, et son câblage
 
     function showVariableFormatPanels(ui, panel, kind, node) {
       const type = isFormatKind(kind) ? variableColumnType(node) : null;
       const isNumber = type === 'Numeric' || type === 'Int';
-      const isDate = type === 'Date' || type === 'DateTime';
+      // Le type d'une colonne « Date et heure » est « DateTime:<fuseau> » (VariableFormat.isDateType) ; elle seule a la liste « Heure ».
+      const isDate = VariableFormat.isDateType(type);
       // Les trois cases : une colonne Oui / Non, et la case conditionnelle - dont la barre n'a pas « vrai / faux », elle est toujours une case.
-      const isBool = type === 'Bool' || kind === 'checkbox';
+      // Pas de cases dans un champ texte : un Oui / Non y est écrit « true » / « false », quel que soit le réglage (Variables.formatValue).
+      const isBool = !rawText && (type === 'Bool' || kind === 'checkbox');
+      ui.section('grist').hidden = !isNumber && !isDate;
       ui.section('number').hidden = !isNumber;
       ui.section('date').hidden = !isDate;
+      const timeSelect = panel.el.querySelector('select[data-role="date-time"]');
+      if (timeSelect) timeSelect.hidden = !VariableFormat.isDateTimeType(type);
       ui.section('bool').hidden = !isBool;
       const textButton = ui.button('bool-style:text');
       if (textButton) textButton.hidden = kind === 'checkbox';
       panel.el.querySelector('[data-var-sep]').hidden = !isNumber && !isDate && !isBool;
-    }
-
-    function variableWindowOpen() {
-      // Une fenêtre (condition, autres attributs, boucle, liste, calcul) est ouverte sur cette bulle : la barre reste masquée tant qu'elle l'est ;
-      // son niveau, sous les fenêtres, la cacherait de toute façon derrière le voile.
-      return VariableCondition.isOpen() || VariableLinkedAttrs.isOpen() || VariableLoop.isOpen() || VariableList.isOpen() || VariableCalc.isOpen();
     }
 
     function variableToolbarCheck(panel, ui) {
@@ -1120,7 +1402,7 @@ const FloatingToolbars = (function () {
         // du mousedown, fiable y compris pour un <select> ; ici, seule la sélection décide.
         const t = variableTarget();
         if (!t) { panel.hide(); return; }
-        if (variableWindowOpen()) { panel.hide(); return; }
+        if (variableWindowOpen(options && options.hostWindow)) { panel.hide(); return; }
         const { kind, node, pos } = t;
         showVariableFormatPanels(ui, panel, kind, node);
         const dom = editor.view.nodeDOM(pos);
@@ -1132,7 +1414,7 @@ const FloatingToolbars = (function () {
         else syncConditionalState(ui, node, kind);
         if (kind === 'checkbox') syncBoolButtons(ui, ConditionalCheckbox.styleOf(node.attrs.style));
         // Un bloc de texte conditionnel : la barre s'ancre sur son étiquette (en haut à gauche), pas au milieu de sa largeur.
-        panel.show(kind === 'block' ? (dom.querySelector && dom.querySelector(':scope > .conditional-text-tag')) || dom : dom, GridEditor.floatingOptions);
+        panel.show(kind === 'block' ? (dom.querySelector && dom.querySelector(':scope > .conditional-text-tag')) || dom : dom, inField ? undefined : anchoredBarOptions);
       };
     }
 
@@ -1143,17 +1425,150 @@ const FloatingToolbars = (function () {
     // Non : trois cases et « vrai / faux »). Une bulle « Calcul » (js/variable-calc.js) ouvre la même barre : « Modifier le calcul » prend la place du
     // groupe d'actions (condition, autres attributs et boucle sont grisés, sans objet pour une formule), avec le réglage nombre puisque son résultat
     // est un nombre.
-    function wireVariableFloatingToolbar() {
+    function wireToolbar() {
       const panel = EditorCore.createFloatingPanel('v2-floating-toolbar v2-varfmt-toolbar', variableToolbarHtml(), onVariableAction, onVariableInput);
-      EditorCore.registerFloatingPanel(panel);
+      EditorCore.registerFloatingPanel(panel, inField ? options.ownerEl : null);
       const ui = Object.assign(controlsOf(panel), { section: name => panel.el.querySelector(`[data-var-panel="${name}"]`) });
       const check = variableToolbarCheck(panel, ui);
+      setRefreshToolbar(() => check());
       editor.on('selectionUpdate', check);
       editor.on('transaction', check);
+      return panel;
     }
 
-    return { wireVariableFloatingToolbar };
-  })();
+    return { wireToolbar };
+  }
+
+
+  // La barre de la bulle du document : câblée une seule fois, à la création de l'éditeur (Editor.init).
+  function wireVariableFloatingToolbar() { return createVariableToolbar(editor).wire(); }
+  // La barre des bulles d'un champ texte : une par champ, sur son propre éditeur ; `ownerEl` est l'élément du champ. `extra` : les réglages d'un champ porté par une
+  // fenêtre (`sinon`, `hostWindow`, createVariableToolbar) et `windowEl`, l'élément de cette fenêtre : la barre passe devant elle.
+  function attachVariableToolbar(fieldEditor, ownerEl, extra) {
+    const panel = createVariableToolbar(fieldEditor, Object.assign({ field: true, ownerEl }, extra)).wire();
+    if (extra && extra.windowEl) Layers.above(panel.el, extra.windowEl);
+    return panel;
+  }
+
+  // La barre flottante de la puce « Heure actuelle » pour UN éditeur (celui du document ou celui d'un champ texte, comme createVariableToolbar) : la liste « Heure » d'une bulle sur une colonne
+  // « Date et heure » (VariableFormat.timeChoices : 14:30, 14 h 30, 2:30 PM, 2:30pm), sans « Sans heure » - une puce écrit toujours une heure. Une puce sans réglage écrit sur 24 heures
+  // (« 14:30 »), comme avant ce choix : choisir cette écriture retire le réglage (`data-chip-time`) au lieu de l'enregistrer, le modèle garde sa forme d'avant. Aucune autre puce n'a de barre.
+  function createTimeChipToolbar(editor, options) {
+    const inField = !!(options && options.field);
+    const DEFAULT_STYLE = 'colon';
+    function selectedTimeChip() {
+      const node = editor.state.selection.node;
+      return node && node.type.name === 'smartChip' && node.attrs.kind === 'time' ? { node, pos: editor.state.selection.from } : null;
+    }
+    function timeChipToolbarHtml() {
+      const items = VariableFormat.timeChoices().map(t => `<option value="${t.key}">${VariableFormat.timeLabel(t)}</option>`).join('');
+      return `<select data-role="chip-time" title="${I18n.t('varFmt.time')}" aria-label="${I18n.t('varFmt.time')}">${items}</select>`;
+    }
+    function onTimeChipInput(role, value) {
+      const chip = selectedTimeChip();
+      if (!chip || role !== 'chip-time') return;
+      EditorCore.patchNodeAndReselect(editor, chip.pos, Object.assign({}, chip.node.attrs, { time: value === DEFAULT_STYLE ? null : value }));
+    }
+    function wire() {
+      const panel = EditorCore.createFloatingPanel('v2-floating-toolbar v2-timechip-toolbar', timeChipToolbarHtml(), () => {}, onTimeChipInput);
+      EditorCore.registerFloatingPanel(panel, inField ? options.ownerEl : null);
+      const select = panel.el.querySelector('select[data-role="chip-time"]');
+      const check = ({ transaction } = {}) => {
+        // Le blur de l'éditeur ne change ni la sélection ni le document : cf. wireImageFloatingToolbar.
+        if (transaction && transaction.getMeta('blur')) return;
+        const chip = selectedTimeChip();
+        if (!chip) { panel.hide(); return; }
+        const dom = editor.view.nodeDOM(chip.pos);
+        // Éditeur masqué (Lecture, résumé d'un macro-modèle) : cf. createVariableToolbar.
+        if (!dom || !dom.getClientRects().length) { panel.hide(); return; }
+        select.value = VariableFormat.timeChoiceOf(chip.node.attrs.time) || DEFAULT_STYLE;
+        panel.show(dom, inField ? undefined : anchoredBarOptions);
+      };
+      editor.on('selectionUpdate', check);
+      editor.on('transaction', check);
+      return panel;
+    }
+    return { wire };
+  }
+  function wireTimeChipFloatingToolbar() { return createTimeChipToolbar(editor).wire(); }
+  function attachTimeChipToolbar(fieldEditor, ownerEl, extra) {
+    const panel = createTimeChipToolbar(fieldEditor, { field: true, ownerEl }).wire();
+    if (extra && extra.windowEl) Layers.above(panel.el, extra.windowEl);
+    return panel;
+  }
+
+  // La barre flottante d'une pastille « @ » (js/mention.js) sélectionnée, comme celle d'une bulle de variable : un seul bouton, « Autres colonnes de la même fiche », qui ouvre la fenêtre des bulles
+  // (js/variable-linked-attrs.js) sur la ligne de la fiche - et non sur celle que la page affiche - pour changer la colonne que la pastille lit ou en citer d'autres à la suite. Grisé, jamais retiré,
+  // quand la table ou la ligne de la fiche n'existe plus : sa raison en info-bulle est le message de la pastille rouge. Masquée tant qu'une fenêtre de bulle est ouverte, comme celle d'une bulle.
+  // Pour le document seulement : les champs texte (Objet, À, Cc…) n'ont pas de pastille « @ ».
+  function createMentionToolbar(editor) {
+    function selectedMention() {
+      const node = editor.state.selection.node;
+      return node && node.type.name === 'mention' ? { node, pos: editor.state.selection.from } : null;
+    }
+    function onAction(action) {
+      const chip = selectedMention();
+      if (action === 'mention-linked' && chip && Mention.columnsStatus(chip.node.attrs).enabled) VariableLinkedAttrs.openAt(editor, chip.pos);
+    }
+    function wire() {
+      const label = I18n.t('mention.toolbar.linked');
+      const html = `<button data-action="mention-linked" title="${label}" aria-label="${label}">${Icons.svg('varLinked')}</button>`;
+      const panel = EditorCore.createFloatingPanel('v2-floating-toolbar v2-mention-toolbar', html, onAction);
+      EditorCore.registerFloatingPanel(panel);
+      const ui = controlsOf(panel);
+      const check = ({ transaction } = {}) => {
+        // Le blur de l'éditeur ne change ni la sélection ni le document : cf. wireImageFloatingToolbar.
+        if (transaction && transaction.getMeta('blur')) return;
+        const chip = selectedMention();
+        if (!chip || variableWindowOpen()) { panel.hide(); return; }
+        const dom = editor.view.nodeDOM(chip.pos);
+        // Éditeur masqué (Lecture, résumé d'un macro-modèle) : cf. createVariableToolbar.
+        if (!dom || !dom.getClientRects().length) { panel.hide(); return; }
+        const status = Mention.columnsStatus(chip.node.attrs);
+        ui.setDisabled('mention-linked', !status.enabled, status.title);
+        ui.button('mention-linked').setAttribute('aria-label', status.title);
+        panel.show(dom, anchoredBarOptions);
+      };
+      editor.on('selectionUpdate', check);
+      editor.on('transaction', check);
+      return panel;
+    }
+    return { wire };
+  }
+  function wireMentionFloatingToolbar() { return createMentionToolbar(editor).wire(); }
+
+  // La barre flottante de la copie en texte d'une diapositive (js/slide-copies.js), tant que la sélection tient dans la copie : la diapositive qu'elle suit et « Détacher », qui la libère (elle
+  // garde ce qu'elle montre et s'écrit de nouveau). Ancrée sur le premier bloc de la copie ; elle se montre aussi quand la présentation ou la diapositive n'existe plus (la copie n'est alors plus
+  // verrouillée, « Détacher » en retire le repère). Pour le document seulement : les champs texte (Objet, À, Cc…) n'ont pas de copie.
+  function createCopyToolbar(editor) {
+    function wire() {
+      const html = `<span class="v2-copy-name"></span><button type="button" data-action="copy-detach" class="v2-copy-detach">${Icons.svg('unlink')}<span></span></button>`;
+      const panel = EditorCore.createFloatingPanel('v2-floating-toolbar v2-copy-toolbar', html, (action) => { if (action === 'copy-detach') SlideCopies.detach(editor); });
+      EditorCore.registerFloatingPanel(panel);
+      const name = panel.el.querySelector('.v2-copy-name');
+      const detach = panel.el.querySelector('.v2-copy-detach');
+      const check = ({ transaction } = {}) => {
+        // Le blur de l'éditeur ne change ni la sélection ni le document : cf. wireImageFloatingToolbar.
+        if (transaction && transaction.getMeta('blur')) return;
+        const status = SlideCopies.statusAt(editor.state);
+        if (!status) { panel.hide(); return; }
+        const dom = editor.view.nodeDOM(status.from);
+        // Éditeur masqué (Lecture, résumé d'un macro-modèle) : cf. createVariableToolbar.
+        if (!dom || !dom.getClientRects().length) { panel.hide(); return; }
+        const label = I18n.t(status.gone ? 'slides.copy.barGone' : 'slides.copy.bar', { n: status.n, name: status.name });
+        name.textContent = label;
+        name.title = label;
+        detach.querySelector('span').textContent = I18n.t('slides.copy.detach');
+        detach.title = I18n.t('slides.copy.detachTip');
+        panel.show(dom, anchoredBarOptions);
+      };
+      editor.on('selectionUpdate', check);
+      editor.on('transaction', check);
+      return panel;
+    }
+    return { wire };
+  }
+  function wireCopyFloatingToolbar() { return createCopyToolbar(editor).wire(); }
 
   const { suggestionToolbarHtml, wireSuggestionAuthors, createCaretAnchor } = (function () {
     // Barre flottante d'une modification suivie : son HTML, l'étiquette de l'auteur, l'ancre sous le curseur
@@ -1163,7 +1578,7 @@ const FloatingToolbars = (function () {
       // devant les boutons, elle les décalerait sous la souris.
       return ['accept', 'reject'].map((name) => {
         const key = 'trackChanges.' + name + '.label';
-        return `<button data-action="${name}" data-i18n="${key}">${I18n.t(key)}</button>`;
+        return `<button data-action="${name}">${I18n.t(key)}</button>`;
       }).join('') + '<span class="v2-suggest-author" hidden></span>';
     }
 
@@ -1190,7 +1605,6 @@ const FloatingToolbars = (function () {
         authorLabel.hidden = false;
       };
       if (authors) authors.onChange(() => { if (panel.el.classList.contains('visible')) showAuthors(); });
-      I18n.onChange(showAuthors);
       return showAuthors;
     }
 
@@ -1202,8 +1616,8 @@ const FloatingToolbars = (function () {
         get contextElement() { return editor.view.dom; },
         getBoundingClientRect() {
           try {
-            const c = editor.view.coordsAtPos(editor.state.selection.head);
-            lastRect = { x: c.left, y: c.top, width: 0, height: c.bottom - c.top, top: c.top, bottom: c.bottom, left: c.left, right: c.left };
+            const caret = editor.view.coordsAtPos(editor.state.selection.head);
+            lastRect = { x: caret.left, y: caret.top, width: 0, height: caret.bottom - caret.top, top: caret.top, bottom: caret.bottom, left: caret.left, right: caret.left };
           } catch (e) { /* position hors du document le temps d'une transaction : le dernier rectangle connu */ }
           return lastRect || { x: 0, y: 0, width: 0, height: 0, top: 0, bottom: 0, left: 0, right: 0 };
         },
@@ -1270,7 +1684,7 @@ const FloatingToolbars = (function () {
       document.addEventListener('mouseup', () => {
         if (!state.pointerDown) return;
         state.pointerDown = false;
-        setTimeout(check, 0);
+        setTimeout(() => check(), 0);
       }, true);
     }
 
@@ -1297,5 +1711,5 @@ const FloatingToolbars = (function () {
     return { wireSuggestionFloatingToolbar };
   })();
 
-  return { setEditor, wireColorPickers, wireTableFloatingToolbar, wireImageFloatingToolbar, wireVariableFloatingToolbar, wireSuggestionFloatingToolbar };
+  return { setEditor, wireColorPickers, wireTableFloatingToolbar, wireImageFloatingToolbar, wireVariableFloatingToolbar, attachVariableToolbar, wireTimeChipFloatingToolbar, attachTimeChipToolbar, wireMentionFloatingToolbar, wireCopyFloatingToolbar, variableWindowOpen, wireSuggestionFloatingToolbar };
 })();

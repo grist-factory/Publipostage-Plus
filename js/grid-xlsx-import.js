@@ -11,7 +11,7 @@
 //   GridXlsxImport.importFile(file, { lang, sheetIndex? }) -> Promise<{ html, model, sheetName, sheetIndex, sheetCount, rows, cols }>
 //     rejette avec une Error dont `code` dit pourquoi
 //   GridXlsxImport.fromArrayBuffer(buffer, { lang, sheetIndex? }) -> idem, depuis les octets du fichier
-//   GridXlsxImport.chooseFile(onFile) -> ouvre le sélecteur de fichier ; `onFile(file)` n'est appelé que si un fichier est choisi
+//   GridXlsxImport.chooseFile(onFile[, accept]) -> ouvre le sélecteur de fichier (celui des classeurs, ou des types `accept`) ; `onFile(file)` n'est appelé que si un fichier est choisi
 // Codes d'erreur : 'oldFormat' (un .xls ou un classeur protégé par mot de passe : le fichier est un conteneur OLE, pas un zip), 'unreadable' (pas un
 // classeur), 'empty' (aucune case utile), 'tooBig' (plus de MAX_ROWS lignes, MAX_COLS colonnes ou MAX_CELLS cases : la grille serait inutilisable,
 // rien n'est coupé en silence).
@@ -65,9 +65,9 @@ const GridXlsxImport = (function () {
       let s = 0;
       let l = (max + min) / 2;
       if (max !== min) {
-        const d = max - min;
-        s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
-        h = max === r ? (g - b) / d + (g < b ? 6 : 0) : max === g ? (b - r) / d + 2 : (r - g) / d + 4;
+        const delta = max - min;
+        s = l > 0.5 ? delta / (2 - max - min) : delta / (max + min);
+        h = max === r ? (g - b) / delta + (g < b ? 6 : 0) : max === g ? (b - r) / delta + 2 : (r - g) / delta + 4;
         h /= 6;
       }
       l = tint < 0 ? l * (1 + tint) : l * (1 - tint) + tint;
@@ -201,8 +201,8 @@ const GridXlsxImport = (function () {
 
   const hasLook = (cell, palette) => {
     const style = cell.style || {};
-    const b = style.border || {};
-    return !!(fillOf(style, palette) || sideColor(b.top, palette) || sideColor(b.left, palette) || sideColor(b.bottom, palette) || sideColor(b.right, palette));
+    const border = style.border || {};
+    return !!(fillOf(style, palette) || sideColor(border.top, palette) || sideColor(border.left, palette) || sideColor(border.bottom, palette) || sideColor(border.right, palette));
   };
 
   // Les traits qu'un côté de case partage avec sa voisine (ou, fusionnée, avec toute une file de voisines) n'ont qu'une valeur dans la grille
@@ -298,7 +298,7 @@ const GridXlsxImport = (function () {
     const shownRows = [];
     const shownCols = [];
     for (let r = 1; r <= extent.rows; r++) if (!sheet.getRow(r).hidden) shownRows.push(r);
-    for (let c = 1; c <= extent.cols; c++) if (!sheet.getColumn(c).hidden) shownCols.push(c);
+    for (let col = 1; col <= extent.cols; col++) if (!sheet.getColumn(col).hidden) shownCols.push(col);
     if (!shownRows.length || !shownCols.length) throw fail('empty', 'La feuille ne contient aucune case visible.');
     if (shownRows.length > MAX_ROWS || shownCols.length > MAX_COLS || shownRows.length * shownCols.length > MAX_CELLS) {
       throw fail('tooBig', 'La feuille est trop grande pour une grille.', { rows: shownRows.length, cols: shownCols.length, maxRows: MAX_ROWS, maxCols: MAX_COLS, maxCells: MAX_CELLS });
@@ -456,10 +456,11 @@ const GridXlsxImport = (function () {
 
   // Le sélecteur de fichier du navigateur, appelé dans le geste de la personne (le clic sur la ligne du menu) : l'élément n'existe que le temps du
   // choix.
-  function chooseFile(onFile) {
+  // `accept` : les types du sélecteur, ceux d'un classeur par défaut (l'import d'un Markdown, js/main.js:onImportMd, y met les siens).
+  function chooseFile(onFile, accept) {
     const input = document.createElement('input');
     input.type = 'file';
-    input.accept = '.xlsx,.xlsm,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+    input.accept = accept || '.xlsx,.xlsm,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
     input.style.display = 'none';
     input.addEventListener('change', () => { const file = input.files && input.files[0]; input.remove(); if (file) onFile(file); }, { once: true });
     input.addEventListener('cancel', () => input.remove(), { once: true });

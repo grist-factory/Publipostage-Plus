@@ -24,14 +24,83 @@ const EditorCore = (function () {
     view.dispatch(tr);
   }
 
+  // En Aperçu A4 la feuille a la largeur de la page, quel que soit le panneau (`--pp-page-width`, ou la plus large de ses pages quand elles ne sont pas toutes du même sens), et
+  // `.tiptap` la remplit moins les marges : la largeur du texte se lit sur ces variables (PageLayout.applyToPreviewCss, que la règle CSS lit de même) plutôt qu'à la mesure. `clientWidth`
+  // est un entier, que le moteur arrondit autrement à chaque échelle de la feuille (719 ou 720 px selon le panneau) : une largeur utile qui bouge d'un pixel avec le panneau fait bouger
+  // ce qu'on en écrit dans le document. 0 : variables absentes ou illisibles, l'appelant mesure.
+  function pageContentWidthPx(container) {
+    const cs = getComputedStyle(container);
+    const sheet = parseFloat(cs.getPropertyValue(container.classList.contains('pp-mixed-pages') ? '--pp-mixed-sheet-width' : '--pp-page-width'));
+    const left = parseFloat(cs.getPropertyValue('--pp-margin-left'));
+    const right = parseFloat(cs.getPropertyValue('--pp-margin-right'));
+    return sheet > 0 && left >= 0 && right >= 0 && sheet > left + right ? sheet - left - right : 0;
+  }
+
   function editorContentWidthPx(currentEditor) {
     // clientWidth inclut son propre padding (la marge de page de l'Aperçu A4) ; partagé entre clampOverflowingTables et l'alignement des images en
     // calque. Jamais négative : un éditeur masqué (Lecture, macro-modèle) a un clientWidth de 0 mais garde son padding calculé, et la soustraction
     // donnerait une largeur négative que clampOverflowingTables prendrait pour une vraie mesure, ramenant toutes les colonnes d'un tableau à 25 px. 0
-    // veut dire « pas de mise en page, rien à mesurer ».
+    // veut dire « pas de mise en page, rien à mesurer ». En Aperçu A4, la largeur de la page elle-même (pageContentWidthPx) : la même à toutes les tailles de panneau.
     const rootEl = currentEditor.view.dom;
     const rootCs = getComputedStyle(rootEl);
-    return Math.max(0, rootEl.clientWidth - (parseFloat(rootCs.paddingLeft) || 0) - (parseFloat(rootCs.paddingRight) || 0));
+    const measured = Math.max(0, rootEl.clientWidth - (parseFloat(rootCs.paddingLeft) || 0) - (parseFloat(rootCs.paddingRight) || 0));
+    const container = measured && rootEl.closest ? rootEl.closest('#editor-container.a4-preview') : null;
+    return (container && pageContentWidthPx(container)) || measured;
+  }
+
+  // --- Les mesures qui s'écrivent dans le document ---
+  // La taille du panneau ne doit jamais changer ce qu'un modèle enregistre. Or tout ce que le DOM mesure dépend de l'échelle de la feuille (le zoom d'ajustement à la largeur du panneau,
+  // que chaque moteur arrondit à sa façon : des entiers pour `clientWidth` et `offsetLeft`, des soixante-quatrièmes de pixel pour `getBoundingClientRect`) et, sans Aperçu A4, de la
+  // largeur du panneau même. `pageScale` ouvre donc, le temps d'une mesure, la page telle que l'export la voit : la feuille à l'échelle 1 (`--pp-fit-zoom` et `--pp-content-fix` à 1) et,
+  // sans aperçu, à la largeur d'une page A4 (la classe `a4-preview` posée le temps de la mesure). Ouverte à la première mesure seulement (`measure`) : un document sans colonne à geler
+  // ni image à placer ne paie rien. Le tout dans le même tour de boucle : rien ne s'affiche entre l'ouverture et la fermeture, et les observateurs (ResizeObserver, MutationObserver)
+  // ne voient que l'état d'avant et celui d'après, identiques. Aucune transaction ne doit partir pendant que la fenêtre est ouverte (la mise à jour d'une feuille de pages mêlées y
+  // poserait son propre zoom, que la fermeture écraserait) : l'appelant mesure, ferme, puis écrit. Un éditeur masqué n'a rien à mesurer : la fenêtre ne s'ouvre pas.
+  // Les variables qui font l'échelle de la feuille, avec leur valeur à l'échelle 1 : le zoom d'ajustement, sa correction, et l'écart de hauteur des lignes de tableau que le zoom provoque
+  // (`--pp-row-grow`, js/page-zoom.js:rowGrow, retranché du bas des cases par css/editor-v2.css) - nul à l'échelle 1, où la ligne est celle de l'hôte de mesure.
+  const PAGE_SCALE_VARS = { '--pp-fit-zoom': '1', '--pp-content-fix': '1', '--pp-row-grow': '0px' };
+  const PAGE_SCALE_NAMES = Object.keys(PAGE_SCALE_VARS);
+  function openPageScale(container) {
+    // Une grille n'a pas de page : ses tailles se mesurent là où elles sont, sans lui poser d'Aperçu A4 le temps d'une mesure.
+    if (container.classList.contains('v2-grid-mode')) return null;
+    const wasA4 = container.classList.contains('a4-preview');
+    const was = PAGE_SCALE_NAMES.map(name => container.style.getPropertyValue(name));
+    if (wasA4 && was.every((value, i) => !value || parseFloat(value) === parseFloat(PAGE_SCALE_VARS[PAGE_SCALE_NAMES[i]]))) return null;
+    const { scrollTop, scrollLeft } = container;
+    PAGE_SCALE_NAMES.forEach(name => container.style.setProperty(name, PAGE_SCALE_VARS[name]));
+    if (!wasA4) container.classList.add('a4-preview');
+    return () => {
+      PAGE_SCALE_NAMES.forEach((name, i) => { if (was[i]) container.style.setProperty(name, was[i]); else container.style.removeProperty(name); });
+      if (!wasA4) container.classList.remove('a4-preview');
+      // Le défilement reste là où il était : l'ancrage du défilement du moteur a pu le déplacer pendant que la feuille changeait de hauteur.
+      if (container.scrollTop !== scrollTop) container.scrollTop = scrollTop;
+      if (container.scrollLeft !== scrollLeft) container.scrollLeft = scrollLeft;
+    };
+  }
+  function pageScale(currentEditor) {
+    const tiptapEl = currentEditor && currentEditor.view ? currentEditor.view.dom : null;
+    const container = tiptapEl && tiptapEl.closest ? tiptapEl.closest('#editor-container') : null;
+    let opened = false;
+    let restore = null;
+    return {
+      measure(read) {
+        if (!opened && container && tiptapEl.getClientRects().length) { opened = true; restore = openPageScale(container); }
+        return read();
+      },
+      // Rend true quand la page a vraiment changé d'échelle le temps de la mesure : ce que l'écran affiche (la pagination) est alors à refaire à son échelle.
+      close() {
+        const changed = !!restore;
+        if (restore) restore();
+        restore = null;
+        opened = false;
+        return changed;
+      },
+    };
+  }
+  // Le cas courant d'une mesure unique : `fn` s'exécute sur la page à l'échelle 1, qui se referme avant le retour (même si `fn` lève).
+  function atPageScale(currentEditor, fn) {
+    const scale = pageScale(currentEditor);
+    try { return scale.measure(fn); } finally { scale.close(); }
   }
 
   function layoutZoom(el) {
@@ -41,8 +110,55 @@ const EditorCore = (function () {
     // (redimensionner, déplacer, aligner, passer en calque). Repli sur 1 : feuille non réduite (grand panneau, Aperçu A4 décoché). La Lecture
     // (js/reader-mode.js) mesure de même sa feuille `.reader-content`.
     const sheet = el && el.closest ? el.closest('.v2-page-sheet, .reader-content') : null;
-    const z = sheet ? parseFloat(getComputedStyle(sheet).zoom) : NaN;
-    return (isFinite(z) && z > 0) ? z : 1;
+    const zoom = sheet ? parseFloat(getComputedStyle(sheet).zoom) : NaN;
+    return (isFinite(zoom) && zoom > 0) ? zoom : 1;
+  }
+
+  // Le zoom que le moteur applique vraiment au texte et aux marges de la page, que la feuille doit lui avoir donné (`zoom` de .v2-page-sheet, lu par layoutZoom). Chez une personne,
+  // sous Firefox (capture du 21/10), le contenu se dessinait au carré du zoom de la feuille (63 % quand la feuille est à 79 %) : le texte et la marge de gauche plus petits que
+  // ceux de la page, et chaque réserve posée sous le dernier bloc d'une page, en pixels du contenu, trop courte du rapport : la copie d'une diapositive tombait au bas de la page
+  // d'avant. Aucun moteur d'ici (Chromium, Firefox 136, Gecko 158) ne le fait ; la mesure, elle, le dit : la largeur dessinée de `.tiptap` sur sa largeur de mise en page. Quand
+  // elle s'écarte du zoom de la feuille, `--pp-content-fix` (sur le conteneur ; css/editor-v2.css en fait le `zoom` de `.tiptap`) prend le rapport qui manque, jusqu'à ce que
+  // le contenu soit au zoom de la feuille. Sans écart, la variable n'existe pas et rien ne change.
+  // Deux seuils : le rapport se corrige dès 0,3 % d'écart (l'arrondi de `offsetWidth` en laisse moins de 0,2 %), et une correction qui laisse 1,5 % d'écart est retirée.
+  // Le rapport se corrige comme si le zoom dessiné suivait `--pp-content-fix` à la puissance un (le double zoom de la feuille). Si la première correction ne suffit pas, c'est
+  // que le moteur le combine autrement : la puissance se tire alors des deux dernières mesures, et la passe suivante vise juste (sinon une correction trop forte, puis trop faible,
+  // finissait retirée et le contenu restait à la mauvaise échelle).
+  const CONTENT_ZOOM_SETTLE = 0.003;
+  const CONTENT_ZOOM_REJECT = 0.015;
+  function contentZoom(tiptapEl) {
+    const layoutWidth = tiptapEl.offsetWidth;
+    const drawnWidth = tiptapEl.getBoundingClientRect().width;
+    return (layoutWidth >= 300 && drawnWidth > 0) ? drawnWidth / layoutWidth : null;
+  }
+  function adjustContentZoom(container, tiptapEl) {
+    const sheet = tiptapEl.parentElement;
+    if (!sheet || !sheet.classList.contains('v2-page-sheet')) return;
+    const wanted = layoutZoom(tiptapEl);
+    const offBy = (got, limit) => got !== null && Math.abs(got / wanted - 1) >= limit;
+    let fix = parseFloat(container.style.getPropertyValue('--pp-content-fix')) || 1;
+    let previous = null;
+    for (let k = 0; k < 3; k++) {
+      const got = contentZoom(tiptapEl);
+      if (!offBy(got, CONTENT_ZOOM_SETTLE)) return;
+      let power = 1;
+      if (previous && Math.abs(fix / previous.fix - 1) > 0.01) {
+        const measured = Math.log(got / previous.got) / Math.log(fix / previous.fix);
+        if (measured > 0.3 && measured < 3) power = measured;
+      }
+      const next = Math.round(fix * Math.pow(wanted / got, 1 / power) * 10000) / 10000;
+      if (!(next > 0.1 && next < 10)) break;
+      previous = { fix, got };
+      fix = next;
+      container.style.setProperty('--pp-content-fix', String(fix));
+    }
+    if (offBy(contentZoom(tiptapEl), CONTENT_ZOOM_REJECT)) container.style.removeProperty('--pp-content-fix');
+  }
+  // Rend true si `--pp-content-fix` a changé : la pagination, mesurée avec l'ancien rapport, est alors à refaire.
+  function settleContentZoom(container, tiptapEl) {
+    const before = container.style.getPropertyValue('--pp-content-fix');
+    adjustContentZoom(container, tiptapEl);
+    return container.style.getPropertyValue('--pp-content-fix') !== before;
   }
 
   function createStepSheets(anchor, className) {
@@ -51,7 +167,7 @@ const EditorCore = (function () {
     // style de tout le document (86 ms par page pour un tableau de 1 000 lignes : un calcul quadratique en nombre de pages) alors qu'une feuille
     // ajoutée n'invalide que ce qu'elle vise (8 ms). Chaque règle va donc dans sa feuille <style>, posée à la suite de `anchor` et des précédentes :
     // même ordre, même cascade que dans la feuille unique, que l'appelant remplit d'un coup à la fin du calcul avant `clear()`. `className` est repris
-    // par chaque feuille posée.
+    // par chaque feuille posée. `add` rend la feuille posée : un calcul qui pose plusieurs règles d'un coup peut en retirer une partie.
     const sheets = [];
     return {
       add(rule) {
@@ -60,6 +176,7 @@ const EditorCore = (function () {
         sheet.textContent = rule;
         (sheets.length ? sheets[sheets.length - 1] : anchor).after(sheet);
         sheets.push(sheet);
+        return sheet;
       },
       clear() {
         sheets.forEach(sheet => sheet.remove());
@@ -68,12 +185,65 @@ const EditorCore = (function () {
     };
   }
 
+  // L'écart toléré entre le haut d'un bloc qui ouvre une page et le haut du corps de cette page (pixels de mise en page) : les arrondis du moteur (1/64 de pixel écran) en
+  // restent loin.
+  const RESERVE_TOLERANCE_PX = 0.5;
+  function opensPageAt(topRel, bodyTopRel) { return Math.abs(topRel - bodyTopRel) < RESERVE_TOLERANCE_PX; }
+  function fitReserve(sheet, ruleFor, margin, topOf, bodyTopRel) {
+    // La réserve d'une coupure entre deux blocs (js/header-footer-preview.js, js/reader-mode.js) : `sheet` porte déjà la règle `ruleFor(margin)` (pixels de mise en page) sous le
+    // bloc qui finit la page, et `topOf()` lit le haut du bloc qui ouvre la page suivante, qui doit commencer au haut du corps de cette page (`bodyTopRel`, même repère). Il n'y
+    // est pas toujours (sous Firefox, chez une personne, la diapositive dupliquée commençait au bas de la page 1, au-dessus de la couture) : la règle se corrige alors de l'écart,
+    // puis, si le bloc n'a pas bougé d'autant, de ce que la dernière correction a vraiment fait (trois essais au plus). Une correction qui ne le rapproche pas (sa propre marge
+    // l'emporte) est retirée. Vrai si le bloc est au rendez-vous.
+    let off = topOf() - bodyTopRel;
+    let moves = 1;
+    for (let k = 0; k < 3 && !opensPageAt(off + bodyTopRel, bodyTopRel); k++) {
+      const tried = margin - off / moves;
+      if (tried < 0) break;
+      sheet.textContent = ruleFor(tried);
+      const after = topOf() - bodyTopRel;
+      const slope = (after - off) / (tried - margin);
+      if (!(slope > 0.1) || Math.abs(after) >= Math.abs(off)) { sheet.textContent = ruleFor(margin); break; }
+      margin = tried; off = after; moves = slope;
+    }
+    return opensPageAt(topOf(), bodyTopRel);
+  }
+
+  function nextInFlow(el) {
+    // Le bloc qui ouvre la page après `el`, la réserve d'une coupure posée sous lui (js/header-footer-preview.js, js/reader-mode.js) : son premier frère dans le flux. Un
+    // bloc en position absolue (un cadre posé sur sa diapositive) ne prend pas de place dans la page et n'en ouvre aucune.
+    let next = el.nextElementSibling;
+    while (next && /^(absolute|fixed)$/.test(getComputedStyle(next).position)) next = next.nextElementSibling;
+    return next;
+  }
+
+  function previousInFlow(el) {
+    // Le bloc qui précède `el` dans le flux : son premier frère d'avant qui prend de la place (ni en position absolue, ni caché : une feuille de style posée dans la page n'est pas un bloc).
+    let previous = el.previousElementSibling;
+    while (previous) {
+      const style = getComputedStyle(previous);
+      if (!/^(absolute|fixed)$/.test(style.position) && style.display !== 'none') break;
+      previous = previous.previousElementSibling;
+    }
+    return previous;
+  }
+
+  function gapAbove(el, root, zoom) {
+    // L'écart naturel (pixels de mise en page) entre le bord haut de `el`, un bloc de premier niveau de `root`, et ce qui le précède : le bord bas du bloc d'avant ou, pour le premier, le haut du
+    // contenu de `root` (sous son remplissage). C'est la marge d'un bloc que la hauteur d'aucun des deux ne porte - un tableau (6 px), une citation ou un bloc de code (4 px) : elle sort de la boîte
+    // de l'enveloppe du tableau (`overflow-x: visible` en Aperçu A4) et se confond avec celle du voisin. La pagination (js/header-footer-preview.js:computePageBreaks, js/reader-mode.js:
+    // computePageBreakOffsets) l'ajoute à la place que la page prend ; à lire avant qu'elle pose ses réserves, qui écartent les blocs.
+    const previous = previousInFlow(el);
+    const edge = previous ? previous.getBoundingClientRect().bottom : root.getBoundingClientRect().top + (parseFloat(getComputedStyle(root).paddingTop) || 0) * zoom;
+    return Math.max(0, (el.getBoundingClientRect().top - edge) / zoom);
+  }
+
   // Barre contextuelle flottante, positionnée par @floating-ui/dom et ancrée dans document.body (aucun contexte d'empilement d'un ancêtre ne la
   // gêne).
   function createFloatingPanel(className, innerHTML, onAction, onInput) {
     const el = document.createElement('div');
     el.className = className;
-    el.innerHTML = innerHTML;
+    Dom.setMarkup(el, innerHTML);
     // mousedown+preventDefault : évite de perdre le focus/la sélection ProseMirror avant que l'action ne s'exécute.
     let pressedBtn = null;
     el.addEventListener('mousedown', (event) => {
@@ -100,6 +270,9 @@ const EditorCore = (function () {
     document.body.appendChild(el);
     let stopAutoUpdate = null;
     let docked = false;
+    // Le calcul de position de la barre affichée, à refaire quand la barre de GFS bouge ou que le cadre change de taille (la zone est alors autre).
+    let relayout = null;
+    GfsBar.onChange(() => { if (relayout && !docked && el.classList.contains('visible')) relayout(); });
     function undock() {
       if (!docked) return;
       docked = false;
@@ -114,6 +287,8 @@ const EditorCore = (function () {
       // courante recouvrirait les cases voisines, et un appui dessus tomberait sur ses boutons (js/grid-editor.js, css/grid.css). Une barre fixée
       // reste visible : hide() n'y fait plus rien, c'est la bande qui se montre ou se cache.
       dock(slot) {
+        relayout = null;
+        ViewportFit.releaseBar(el);
         if (stopAutoUpdate) { stopAutoUpdate(); stopAutoUpdate = null; }
         if (el.parentElement !== slot) slot.appendChild(el);
         docked = true;
@@ -122,7 +297,8 @@ const EditorCore = (function () {
       undock,
       isDocked() { return docked; },
       // `options` (facultatif, valeur ou fonction relue à chaque calcul) : { flip, shift } passés tels quels aux intergiciels de floating-ui (la
-      // grille s'en sert pour que la barre ne recouvre pas ses bandeaux, js/grid-editor.js:floatingOptions) et { placement } (au-dessus par défaut :
+      // grille s'en sert pour que la barre ne recouvre pas ses bandeaux, js/grid-editor.js:floatingOptions), { offset } (l'écart avec l'ancre, 8 px par
+      // défaut : la barre d'un tableau de document laisse la place aux lettres de ses bandeaux) et { placement } (au-dessus par défaut :
       // le menu d'une barre fixée en haut de la page, comme celle de la case d'une grille, s'ouvre dessous plutôt que sur la barre d'outils). Sans
       // `options`, rien ne change.
       show(referenceEl, options) {
@@ -135,17 +311,25 @@ const EditorCore = (function () {
         if (opening) Layers.raise(el);
         const update = () => {
           const opts = (typeof options === 'function' ? options() : options) || {};
+          ViewportFit.releaseBar(el); // la taille entière, pour que floating-ui la mesure (le plafond que la barre de GFS a pu imposer est rendu)
           floatingUi.computePosition(referenceEl, el, {
             placement: opts.placement || 'top',
-            middleware: [floatingUi.offset(8), floatingUi.flip(opts.flip), floatingUi.shift(Object.assign({ padding: 8 }, opts.shift))],
-          }).then(({ x, y }) => { el.style.left = `${x}px`; el.style.top = `${y}px`; });
+            middleware: [floatingUi.offset(opts.offset == null ? 8 : opts.offset), floatingUi.flip(opts.flip), floatingUi.shift(Object.assign({ padding: 8 }, opts.shift))],
+          }).then(({ x, y }) => {
+            el.style.left = `${x}px`;
+            el.style.top = `${y}px`;
+            // La barre de GFS (js/gfs-bar.js) : la barre ou le menu qui en recouvre la zone glisse, ou se plafonne et défile sous une barre en bas, sans quitter son ancre.
+            ViewportFit.avoidBar(el, referenceEl.getBoundingClientRect());
+          });
         };
+        relayout = update;
         if (stopAutoUpdate) stopAutoUpdate();
         stopAutoUpdate = floatingUi.autoUpdate(referenceEl, el, update);
       },
       hide() {
         if (docked) return;
         el.classList.remove('visible');
+        relayout = null;
         if (stopAutoUpdate) { stopAutoUpdate(); stopAutoUpdate = null; }
       },
     };
@@ -154,13 +338,32 @@ const EditorCore = (function () {
   // Filet de sécurité : les barres contextuelles (tableau, image, variable) ne se ferment normalement que sur un vrai changement de sélection
   // ProseMirror ; un clic hors de `.tiptap` et hors de `.v2-floating-toolbar` les referme toutes, pour les cas sans évènement ProseMirror (ex. clic
   // sur "Mode lecture"). La pastille du zoom de la page (js/page-zoom.js) n'en fait pas partie : un appui dessus ne prend pas le focus et ne change ni la
-  // sélection ni le contexte, la barre de l'image ou du tableau reste ouverte et suit la feuille qui change d'échelle.
+  // sélection ni le contexte, la barre de l'image ou du tableau reste ouverte et suit la feuille qui change d'échelle. Le menu qu'une de ces barres a
+  // ouvert (les bordures du tableau, setOpenDropdownPanel avec son bouton) n'en fait pas partie non plus, ni les bandeaux d'un tableau de document
+  // (`.pp-doc-strips`, js/grid-editor.js) : un appui sur une lettre ou un numéro garde le focus de l'éditeur et choisit une colonne ou une ligne du
+  // tableau dont la barre est ouverte.
+  // `ownerEl` (facultatif) : le champ texte à bulles (js/field-editor.js) dont `panel` est la barre ; sans lui, c'est une barre de l'éditeur du
+  // document. Un clic dans l'un laisse ouvertes les barres de CET éditeur et referme celles des autres : le curseur d'un champ ne bouge pas quand on
+  // clique dans le document, et inversement.
   const floatingContextPanels = [];
-  function registerFloatingPanel(panel) { floatingContextPanels.push(panel); }
-  function hideFloatingContextToolbars() { floatingContextPanels.forEach(p => p.hide()); }
+  function registerFloatingPanel(panel, ownerEl) { floatingContextPanels.push({ panel, ownerEl: ownerEl || null }); }
+  function hideFloatingContextToolbars() { floatingContextPanels.forEach(entry => entry.panel.hide()); }
+  // Un appui dans le menu qu'une barre flottante a ouvert fait partie de cette barre : choisir la couleur d'un trait ou cocher le quadrillage ne la referme pas, sinon son bouton
+  // disparaît et le menu, resté ouvert, perd son ancre et saute dans un coin. Il est jugé à la phase de capture, avant l'action de la ligne : quand elle referme le menu (un
+  // réglage de bordures, « Mettre à jour depuis le modèle », « Détacher »), le menu n'est plus ouvert pour la suite de l'évènement et l'appui passerait pour un appui hors de la
+  // barre, qui disparaîtrait alors que le curseur est toujours dans le tableau.
+  let pressInBarMenu = false;
   document.addEventListener('mousedown', (event) => {
-    if (event.target.closest('.tiptap') || event.target.closest('.v2-floating-toolbar') || event.target.closest('.pp-page-zoom')) return;
-    hideFloatingContextToolbars();
+    pressInBarMenu = !!(openDropdownPanel && openDropdownButton && openDropdownButton.closest('.v2-floating-toolbar') && openDropdownPanel.el.contains(event.target));
+  }, true);
+  document.addEventListener('mousedown', (event) => {
+    const target = event.target;
+    if (target.closest('.v2-floating-toolbar') || target.closest('.pp-page-zoom') || target.closest('.pp-doc-strips')) return;
+    if (pressInBarMenu) return;
+    const inDocument = !!target.closest('.tiptap');
+    floatingContextPanels.forEach(({ panel, ownerEl }) => {
+      if (!(ownerEl ? ownerEl.contains(target) : inDocument)) panel.hide();
+    });
   });
 
   // Un seul menu déroulant à la fois (couleur/police/taille), fermé au clic ailleurs.
@@ -199,6 +402,8 @@ const EditorCore = (function () {
     btn.setAttribute('aria-expanded', 'false');
     btn.addEventListener('mousedown', (event) => {
       event.preventDefault();
+      // Un bouton grisé qui dit pourquoi (js/lock-reasons.js) reçoit la souris : son appui n'ouvre rien, son clic écrit la raison dans le coin d'état.
+      if (btn.closest('[data-pp-lock-blocks]')) return;
       captureSelection();
       if (openDropdownPanel === panel) { closeDropdownPanel(); return; }
       closeDropdownPanel();
@@ -209,6 +414,10 @@ const EditorCore = (function () {
     });
   }
   function groupOf(target) { return target.closest && target.closest('.v2-hover-group'); }
+  // Classe d'un groupe dont le menu vient d'être refermé par un clic de souris sur son bouton (plus bas) : css/editor-v2.css le garde fermé, souris dessus.
+  const CLOSED_BY_CLICK = 'v2-hover-closed';
+  // Posée avec la précédente quand la souris n'était PAS sur le groupe à la fermeture (Échap, un choix au clavier) : la fermeture ne vaut que pour le clavier, la prochaine entrée de la souris rouvre le menu.
+  const CLOSED_AWAY = 'v2-hover-closed-away';
   // Une vraie entrée ou sortie du groupe : ignore un simple passage entre deux de ses descendants (relatedTarget encore ou déjà dans le groupe).
   function realCrossing(event, group) { return !event.relatedTarget || !group.contains(event.relatedTarget); }
   function positionFlyout(group, opening) {
@@ -220,26 +429,67 @@ const EditorCore = (function () {
     // en display:none (cf. le commentaire CSS de .v2-hover-flyout), ce qui rend inutile une correction proactive (redimensionnement, bascule email) :
     // un flyout en display:none se mesure à zéro.
     // La correction horizontale (left) s'applique à tous les flyouts : un left ne change que leur position, jamais le clipping de leur contenu. Le
-    // max-height et le scrollTop ne touchent que .v2-hover-flyout-scrollable (#v2-heading-flyout) : un max-height sur un flyout resté en
+    // max-height et le scrollTop ne touchent que .v2-hover-flyout-scrollable (#v2-heading-flyout) et, chez GFS, un menu que sa barre posée en bas
+    // empêcherait de tenir (.v2-hover-flyout-capped, qui défile alors aussi) : un max-height sur un flyout resté en
     // overflow:visible ne ferait que rétrécir sa boîte, son contenu continuerait de déborder par-dessus, hors de la boîte. scrollTop est remis à 0 à
     // chaque ouverture : sans cela, le défilement interne mémorisé à la fermeture rouvrirait le menu sur une portion qui cache « Normal » et « Titre
-    // 1 » (comportement de Chromium, déjà rencontré avec TemplateTreeSelect).
+    // 1 » (comportement de Chromium, déjà rencontré avec TemplateTreeSelect). Il n'est remis à 0 qu'à l'ouverture, jamais pendant que le menu est
+    // ouvert : dans un panneau de 400 px les boutons de numérotation sont sous le pli, la personne fait défiler le menu puis clique, et le focus que
+    // son appui donne au bouton (focusin, plus bas) rappelle cette fonction, menu déjà ouvert ; remonté à ce moment-là, le menu éloignait le bouton
+    // avant le relâchement et le clic était perdu.
     const flyout = group.querySelector(':scope > .v2-hover-flyout');
     if (!flyout) return;
     // À l'ouverture seulement (js/layers.js) : le menu passe au-dessus de l'existant, barre flottante de tableau ou autre menu. Le navigateur renvoie
     // un `mouseover` au groupe déjà ouvert dès que l'icône de son bouton est redessinée sous une souris au repos (l'alignement, à chaque frappe) : il
     // ne doit pas repasser devant la liste # ouverte après lui.
     if (opening) Layers.raise(flyout);
+    const scrollable = flyout.classList.contains('v2-hover-flyout-scrollable');
+    // Lu avant de vider max-height : la mise en page forcée plus bas ramène scrollTop à 0 dès que la boîte, sans max-height, n'a plus rien à défiler.
+    const keptScroll = flyout.scrollTop;
+    // Le recalage part de zéro à chaque appel (ouverture, focus d'une ligne, barre de GFS qui change menu ouvert) : ce que le passage d'avant a posé est
+    // rendu avant de mesurer.
     flyout.style.left = '';
+    group.style.removeProperty('--v2-flyout-gap');
+    flyout.classList.remove('v2-hover-flyout-capped');
+    if (!scrollable) flyout.style.maxHeight = '';
     const overflowRight = flyout.getBoundingClientRect().right - (window.innerWidth - 8);
     if (overflowRight > 0) flyout.style.left = (-overflowRight) + 'px';
-    if (!flyout.classList.contains('v2-hover-flyout-scrollable')) return;
+    // La barre de GFS (js/gfs-bar.js, consigne GFS 025) passe par-dessus le cadre : le menu ne s'ouvre pas sous elle. Tout se lit de sa zone, aucun chiffre ici.
+    // À sa droite ou à sa gauche, le menu glisse de côté sans quitter le dessous de son bouton (le pont de survol déborde de 8 px de chaque côté du groupe :
+    // au-delà, le pointeur n'irait plus du bouton au menu sans perdre le survol) ; sous une barre en haut, il s'ouvre plus bas du même écart, que le pont
+    // reprend aussi ; au-dessus d'une barre en bas, il défile dans la place qui reste, comme le menu « Titre ». Sans barre, ou hors de sa zone : rien de tout cela.
+    const groupRect = group.getBoundingClientRect();
+    let rect = flyout.getBoundingClientRect();
+    let room = GfsBar.limits(rect);
+    // Deux passes au plus : la mise en page arrondit au 64e de pixel, un reste de cet ordre se rattrape à la seconde.
+    for (let pass = 0; pass < 2; pass += 1) {
+      let slide = 0;
+      if (rect.left < room.left) slide = Math.ceil(Math.min(room.left - rect.left, groupRect.right + 8 - rect.left));
+      else if (rect.right > room.right) slide = -Math.ceil(Math.min(rect.right - room.right, rect.right - groupRect.left + 8));
+      if (!slide) break;
+      flyout.style.left = ((parseFloat(flyout.style.left) || 0) + slide) + 'px';
+      rect = flyout.getBoundingClientRect();
+      room = GfsBar.limits(rect);
+    }
+    const gap = parseFloat(getComputedStyle(group).getPropertyValue('--v2-flyout-gap')) || 0;
+    let dropped = 0;
+    if (room.top > 0 && rect.top < room.top) {
+      dropped = Math.ceil(room.top - rect.top);
+      group.style.setProperty('--v2-flyout-gap', (gap + dropped) + 'px');
+      rect = flyout.getBoundingClientRect();
+    }
+    // Le menu qui sortirait du cadre ou entrerait dans la zone d'une barre en bas défile : ce que la barre en haut fait passer à la ligne d'en dessous (le vide de la barre
+    // d'outils) ouvre ses menus plus bas. Sans barre, les menus restent ce qu'ils étaient.
+    const cappedByBar = !scrollable && GfsBar.edge() !== null && rect.bottom > Math.min(window.innerHeight, room.bottom - 4);
+    if (!scrollable && !cappedByBar) return;
+    if (cappedByBar) flyout.classList.add('v2-hover-flyout-capped');
     flyout.style.maxHeight = '';
     // -10 : max-height cible la boîte de contenu du flyout (bordure 1px + padding 4px de chaque côté,
-    // css/editor-v2.css), pas border-box - même piège que positionPopup().
-    const available = window.innerHeight - group.getBoundingClientRect().bottom - 12 - 10;
+    // css/editor-v2.css), pas border-box - même piège que positionPopup(). Le bas : 12 px avant celui du cadre, 4 px avant la zone de la barre ; `dropped`, l'écart
+    // dont la barre en haut a descendu le menu, est pris sur sa hauteur.
+    const available = Math.min(window.innerHeight - 12, room.bottom - 4 - gap) - groupRect.bottom - 10 - dropped;
     flyout.style.maxHeight = Math.max(60, available) + 'px';
-    flyout.scrollTop = 0;
+    flyout.scrollTop = opening ? 0 : keptScroll;
   }
   function setGroupExpanded(group, expanded) {
     // Un bouton qui ouvre un `.v2-hover-flyout` au survol (css/editor-v2.css, `.v2-hover-group:hover .v2-hover-flyout`) afficherait aussi sa propre
@@ -257,12 +507,18 @@ const EditorCore = (function () {
     // serait pas vérifiable.
     const trigger = group.querySelector(':scope > button');
     if (!trigger) return;
-    if (expanded) { trigger.setAttribute('aria-haspopup', 'true'); positionFlyout(group, trigger.getAttribute('aria-expanded') !== 'true'); }
-    trigger.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+    // Un menu refermé par un clic de souris le reste, souris dessus : un mouseover venu d'ailleurs (l'icône du bouton redessinée sous une souris au repos)
+    // ne le rouvre pas, et aria-expanded dit ce que la personne voit.
+    // Un groupe grisé qui dit pourquoi (js/lock-reasons.js) reçoit la souris, mais son menu ne s'ouvre pas (css/toolbar-v2.css) : aria-expanded reste « false ».
+    const open = expanded && !group.classList.contains(CLOSED_BY_CLICK) && !group.closest('[data-pp-lock-blocks]');
+    if (open) { trigger.setAttribute('aria-haspopup', 'true'); positionFlyout(group, trigger.getAttribute('aria-expanded') !== 'true'); }
+    trigger.setAttribute('aria-expanded', open ? 'true' : 'false');
   }
   document.addEventListener('mouseover', (event) => {
     const group = groupOf(event.target);
-    if (group && realCrossing(event, group)) setGroupExpanded(group, true);
+    if (!group || !realCrossing(event, group)) return;
+    if (group.classList.contains(CLOSED_AWAY)) group.classList.remove(CLOSED_BY_CLICK, CLOSED_AWAY);
+    setGroupExpanded(group, true);
   });
   document.addEventListener('mouseout', (event) => {
     const group = groupOf(event.target);
@@ -270,12 +526,21 @@ const EditorCore = (function () {
   });
   document.addEventListener('focusin', (event) => {
     const group = groupOf(event.target);
-    if (group) setGroupExpanded(group, true);
+    if (!group) return;
+    group.classList.remove(CLOSED_BY_CLICK, CLOSED_AWAY); // le clavier retrouve toujours son menu
+    setGroupExpanded(group, true);
   });
   document.addEventListener('focusout', (event) => {
     const group = groupOf(event.target);
     if (group && realCrossing(event, group)) setGroupExpanded(group, false);
   });
+  // La barre de GFS qui change pendant qu'un menu est ouvert (au clavier, le focus le garde ouvert ; à la souris, la personne a quitté le cadre pour l'atteindre) :
+  // il se recale sur la nouvelle zone, sans toucher au défilement de son contenu. Une fois tout de suite, une fois à l'image suivante : la barre d'outils peut encore
+  // y déplacer le bouton du menu (js/toolbar-gap.js, retour à la ligne), et le menu suit son bouton.
+  function repositionOpenFlyouts() {
+    document.querySelectorAll('.v2-hover-group > button[aria-expanded="true"]').forEach(trigger => positionFlyout(trigger.parentElement, false));
+  }
+  GfsBar.onChange(() => { repositionOpenFlyouts(); requestAnimationFrame(repositionOpenFlyouts); });
   function menuTriggerOf(target) {
     // Un clic de souris sur le bouton d'un menu au survol ne lui donne pas le focus : le menu s'ouvre et se referme avec le survol, le focus est pour
     // le clavier. Sinon le bouton cliqué le garde, son menu avec lui (:focus-within, css/editor-v2.css), et le curseur quitte le texte en cours : rien
@@ -288,12 +553,45 @@ const EditorCore = (function () {
     const trigger = group && group.querySelector(':scope > button');
     return trigger && trigger.contains(target) ? trigger : null;
   }
+  // Le champ de saisie, autre que l'éditeur du document, qui a le focus : un <input>, un <textarea> ou un <select> de la page, ou un champ texte à
+  // bulles (js/field-editor.js, un éditeur lui aussi, mais dont la saisie se valide à la perte du focus comme celle d'un <input>). Un clic sur un menu
+  // ou sur une ligne de menu le lui retire (ici, js/main.js:wireSaveMenu et js/orientation-toggle.js:wireRow).
+  function isFormFieldFocus(active) {
+    if (!active || active === document.body) return false;
+    if (active.closest('.pp-field-editor')) return true;
+    return !active.closest('.ProseMirror') && active.matches('input, textarea, select');
+  }
   document.addEventListener('mousedown', (event) => { if (menuTriggerOf(event.target)) event.preventDefault(); });
   document.addEventListener('click', (event) => {
     if (!menuTriggerOf(event.target)) return;
     const active = document.activeElement;
-    if (active && active !== document.body && !active.closest('.ProseMirror') && active.matches('input, textarea, select')) active.blur();
+    if (isFormFieldFocus(active)) active.blur();
   }, true);
+  // Un groupe marqué `data-close-on-click` (Enregistrer, « + », « Mode lecture », « Type d'export ») referme son menu au clic de la souris sur son bouton et le
+  // garde fermé, souris encore dessus, jusqu'à ce qu'elle sorte du groupe : le clic est le geste, et le menu resté ouvert sous la souris recouvrait ce qu'on vise
+  // juste après (« À » et la fin d'« Objet » d'un email, à 700×400, pour Enregistrer), où le clic suivant tombait sur une de ses lignes (« Historique des
+  // versions… »). Une sortie puis un retour de la souris le rouvrent comme avant. Ni le clavier (Entrée et Espace : `detail` à 0, et le focus rend toujours son
+  // menu au groupe, plus haut) ni le doigt (le survol y colle : le menu y reste atteignable) ne sont touchés. Marque par groupe, pas pour tous : les autres menus
+  // (« Exporter », « Titre », l'alignement, les listes) gardent leur comportement.
+  document.addEventListener('click', (event) => {
+    if (!event.detail || event.pointerType === 'touch' || event.pointerType === 'pen') return;
+    const trigger = menuTriggerOf(event.target);
+    const group = trigger && groupOf(trigger);
+    if (!group || !group.hasAttribute('data-close-on-click')) return;
+    closeHoverMenu(group, true);
+  });
+  // Referme le menu d'un groupe au survol et le garde fermé, souris encore dessus, jusqu'à ce qu'elle sorte du groupe : le geste de la souris est fait (un clic sur le bouton d'un groupe marqué
+  // `data-close-on-click`, ou le choix d'une ligne du menu « Objets », js/objects-menu.js), le menu resté ouvert recouvrirait ce qu'on vise ensuite. Le clavier lui rend toujours son menu (`focusin`).
+  // Fermé au clavier (Échap sur le menu « Objets », une ligne choisie par Entrée) la souris étant ailleurs, il n'y a pas de sortie à attendre : sans cela le premier survol qui suivrait ne
+  // l'ouvrirait pas (`mouseleave` ne vient qu'après être entré) ; c'est la prochaine entrée de la souris qui rouvre le menu (plus haut, `mouseover`).
+  // `mouseIsOver` : la souris est sur le groupe (le clic ci-dessus vient d'elle) ; absent, il se lit sur le groupe (`:hover`), le choix d'une ligne de « Objets » pouvant venir du clavier.
+  function closeHoverMenu(group, mouseIsOver) {
+    if (group.classList.contains(CLOSED_BY_CLICK)) return;
+    group.classList.add(CLOSED_BY_CLICK);
+    if (mouseIsOver === undefined ? group.matches(':hover') : mouseIsOver) group.addEventListener('mouseleave', () => group.classList.remove(CLOSED_BY_CLICK), { once: true });
+    else group.classList.add(CLOSED_AWAY);
+    setGroupExpanded(group, false);
+  }
   function setColorBar(id, color) {
     const el = document.getElementById(id);
     if (el) el.style.background = color || 'transparent';
@@ -483,8 +781,8 @@ const EditorCore = (function () {
 
   return {
     setEditor, getEditor, focusEditor, setFloatingUi, setNodeSelectionClass, getTextSelectionClass, setTextSelectionClass,
-    patchNodeAndReselect, editorContentWidthPx, layoutZoom, createStepSheets, createFloatingPanel,
-    registerFloatingPanel, hideFloatingContextToolbars,
+    patchNodeAndReselect, editorContentWidthPx, pageScale, atPageScale, layoutZoom, contentZoom, settleContentZoom, createStepSheets, nextInFlow, gapAbove, opensPageAt, fitReserve, createFloatingPanel,
+    registerFloatingPanel, hideFloatingContextToolbars, isFormFieldFocus, closeHoverMenu,
     getOpenDropdownPanel, setOpenDropdownPanel, closeDropdownPanel, wireDropdownButton,
     setColorBar, setColorIcon, createSelectionPreserver, isCellSelection, runOnSelectedCells, isInsideNode,
     toggleList, isQuoteActive, quoteSelectedCells, canShiftListsInSelectedCells, shiftListsInSelectedCells,

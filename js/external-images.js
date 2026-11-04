@@ -24,6 +24,7 @@
 //   ExternalImages.blockedSiteOf(src) -> le même hôte tant que la personne n'a pas affiché ce site, sinon '' (l'image peut charger)
 //   ExternalImages.block(html, { zoom }) / blockIn(élément inerte, { zoom }) -> le HTML à afficher : les images des sites pas encore affichés y sont remplacées par leur cadre, celles dont le site
 //   vient d'être affiché y retrouvent leur adresse ; la chaîne telle quelle quand il n'y a rien à changer
+//   ExternalImages.unblockIn(élément) -> rend leur adresse aux images encore bloquées de cet élément, sans afficher leur site (l'impression par le navigateur)
 //   ExternalImages.allow(site) -> affiche les images de ce site (la page, puis les abonnés) ; ExternalImages.onReveal(rappel(site))
 //   ExternalImages.isAllowed(site)
 // Le HTML est lu dans un document inerte (DOMParser) : un innerHTML sur un nœud de la page, même détaché, fait déjà charger ses images au navigateur.
@@ -135,7 +136,6 @@ const ExternalImages = (function () {
   // --- Blocage jusqu'au clic « Afficher » ---
   const BLOCKED_SRC = 'data-blocked-src';
   const BLOCKED_SITE = 'data-blocked-site';
-  const BLOCKED_ZOOM = 'data-blocked-zoom';   // le facteur de la feuille avec lequel le cadre a été dessiné (redessiné tel quel au changement de langue)
   const BLOCKED_ATTRS = ['alt', 'title'];   // ce que le cadre remplace, rangé dans data-blocked-<nom> pour être rendu à l'image affichée
 
   const isAllowed = site => allowedSites.has(site);
@@ -151,8 +151,8 @@ const ExternalImages = (function () {
   function sheetZoom() {
     for (const id of ['editor-container', 'reader-container']) {
       const container = document.getElementById(id);
-      const z = container ? parseFloat(container.style.getPropertyValue('--pp-fit-zoom')) : NaN;
-      if (isFinite(z) && z > 0) return Math.round(z * 100) / 100;
+      const zoom = container ? parseFloat(container.style.getPropertyValue('--pp-fit-zoom')) : NaN;
+      if (isFinite(zoom) && zoom > 0) return Math.round(zoom * 100) / 100;
     }
     return 1;
   }
@@ -188,7 +188,6 @@ const ExternalImages = (function () {
     if (!site) return false;
     img.setAttribute(BLOCKED_SRC, src);
     img.setAttribute(BLOCKED_SITE, site);
-    img.setAttribute(BLOCKED_ZOOM, String(zoom));
     BLOCKED_ATTRS.forEach(name => { if (img.hasAttribute(name)) img.setAttribute('data-blocked-' + name, img.getAttribute(name)); });
     img.setAttribute('src', frameSrc(site, zoom));
     img.setAttribute('alt', altOf(site));
@@ -206,7 +205,7 @@ const ExternalImages = (function () {
       if (kept === null) img.removeAttribute(name); else img.setAttribute(name, kept);
       img.removeAttribute('data-blocked-' + name);
     });
-    ['role', 'tabindex', BLOCKED_SRC, BLOCKED_SITE, BLOCKED_ZOOM].forEach(name => img.removeAttribute(name));
+    ['role', 'tabindex', BLOCKED_SRC, BLOCKED_SITE].forEach(name => img.removeAttribute(name));
   }
 
   // Le HTML d'un document ou d'une zone qui va s'afficher, en règle avec ce que la personne a affiché : les images des sites pas encore affichés y sont
@@ -216,8 +215,7 @@ const ExternalImages = (function () {
   // `options.zoom` : le facteur de la feuille où le HTML va s'afficher (1 hors d'une feuille réduite : la galerie) ; par défaut, celui de la page.
   function block(html, options) {
     if (!html || !/<img\b/i.test(html)) return html;
-    const host = document.createElement('template');
-    host.innerHTML = html;
+    const host = Dom.inertTemplate(html);
     return blockIn(host.content, options) ? host.innerHTML : html;
   }
   // La même mise en règle sur un fragment ou un élément déjà lu dans un document inerte (le <template> de PageLayout.resolvePageNumberBadges) ; vrai si
@@ -233,6 +231,15 @@ const ExternalImages = (function () {
         if (blockImage(img, zoom)) changed = true;
       }
     });
+    return changed;
+  }
+
+  // Rend leur adresse aux images encore bloquées d'un élément, sans afficher leur site pour la session : l'impression par le navigateur (js/print-export.js)
+  // dessine le document dans son conteneur caché, derrière la fenêtre de confirmExport (la personne a accepté ces sites pour cette impression), et ce
+  // conteneur n'a pas de bouton « Afficher ». La Lecture et l'éditeur gardent leurs cadres. Vrai si une image a changé.
+  function unblockIn(root) {
+    let changed = false;
+    root.querySelectorAll('img[' + BLOCKED_SRC + ']').forEach(img => { unblockImage(img); changed = true; });
     return changed;
   }
 
@@ -286,16 +293,8 @@ const ExternalImages = (function () {
       if (record.type === 'attributes') visit(record.target); else record.addedNodes.forEach(visit);
     })).observe(document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ['src'] });
     document.querySelectorAll('img').forEach(markImage);
-    // L'infobulle est écrite dans la langue du moment : un changement de langue la réécrit, comme le cadre d'une image encore bloquée.
-    I18n.onChange(() => {
-      document.querySelectorAll('img[' + SITE_ATTR + ']').forEach(img => { img.title = siteTip(img.getAttribute(SITE_ATTR)); });
-      document.querySelectorAll('img[' + BLOCKED_SRC + ']').forEach(img => {
-        const site = img.getAttribute(BLOCKED_SITE);
-        img.setAttribute('src', frameSrc(site, parseFloat(img.getAttribute(BLOCKED_ZOOM)) || 1)); img.setAttribute('alt', altOf(site)); img.setAttribute('title', hintOf(site));
-      });
-    });
   }
   watchDisplay();
 
-  return { beginRun, endRun, confirmExport, isCancel, siteOf, blockedSiteOf, block, blockIn, allow, isAllowed, onReveal, hintOf };
+  return { beginRun, endRun, confirmExport, isCancel, siteOf, blockedSiteOf, block, blockIn, unblockIn, allow, isAllowed, onReveal, hintOf };
 })();

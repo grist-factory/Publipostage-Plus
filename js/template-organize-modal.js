@@ -9,6 +9,9 @@
 // personne (TemplatePreferences.setFolderCollapsed) et lu par js/template-tree-select.js à chaque ouverture. Cette fenêtre garde ses dossiers dépliés
 // (il faut tout voir pour ranger) : l'interrupteur ne règle que la liste déroulante. Celui d'un dossier en attente reste local (pendingCollapsed)
 // jusqu'au premier modèle rangé.
+// Chaque ligne de modèle porte aussi l'étoile du modèle par défaut du document (TemplateTreeSelect.defaultMarks, la même brique que la liste déroulante) :
+// ce réglage-là n'est pas personnel, c'est celui de tout le document, et la légende au bas de la fenêtre le dit à côté du rangement personnel.
+// Les gestes de rangement (épingle, dossier, dossier replié par défaut) s'écrivent par js/template-arrangement.js, qui les pose aussi dans l'historique d'Annuler / Rétablir.
 const TemplateOrganizeModal = (function () {
   const { el, button } = Dom;
   let modal, searchInput, list, newFolderBtn;
@@ -64,7 +67,7 @@ const TemplateOrganizeModal = (function () {
 
   async function dropOnFolder(id, path) {
     try {
-      await TemplatePreferences.setFolder(id, path);
+      await TemplateArrangement.moveTo(id, path);
       await applyPendingFolderState(path);
       if (pendingFolder === path) pendingFolder = null;
       redraw();
@@ -81,7 +84,7 @@ const TemplateOrganizeModal = (function () {
     const value = await Dialogs.prompt({ title: I18n.t('dialog.moveFolder.title'), message: hint, value: currentFolder || '', confirmLabel: I18n.t('common.move') });
     if (value === null) return;  // Annulé : rien à écrire (une chaîne vide, elle, vide le dossier).
     try {
-      await TemplatePreferences.setFolder(id, value);
+      await TemplateArrangement.moveTo(id, value);
       await applyPendingFolderState(TemplatePreferences.normalizeFolderPath(value));
       redraw();
     } catch (e) {
@@ -92,7 +95,7 @@ const TemplateOrganizeModal = (function () {
   async function togglePin(id, pinned) {
     try {
       // setPinned() ne lève pas pour une identification indisponible (repli anonyme, js/template-preferences.js).
-      await TemplatePreferences.setPinned(id, !pinned);
+      await TemplateArrangement.pin(id, !pinned);
       redraw();
     } catch (e) {
       console.error('[template-organize-modal] échec épinglage', e);
@@ -102,7 +105,7 @@ const TemplateOrganizeModal = (function () {
   // Bascule « déplié / replié » d'un dossier réel. Le nouvel état est lu au clic (deux clics rapides doivent revenir à l'état de départ) et
   // l'interface suit tout de suite ; si Grist refuse l'écriture, retour au dernier état confirmé et redessin.
   async function toggleFolderDefault(path) {
-    const pending = TemplatePreferences.setFolderCollapsed(path, !TemplatePreferences.isFolderCollapsed(path));
+    const pending = TemplateArrangement.foldByDefault(path, !TemplatePreferences.isFolderCollapsed(path));
     redraw();
     try {
       await pending;
@@ -138,8 +141,8 @@ const TemplateOrganizeModal = (function () {
     });
   }
 
-  // folderLabel : seulement pour les lignes épinglées (à plat en tête, donc sans indentation qui indique leur dossier).
-  function makeLeafRow(node, depth, folderLabel) {
+  // folderLabel : seulement pour les lignes épinglées (à plat en tête, donc sans indentation qui indique leur dossier). inPinned : la ligne est dans la section « Épinglés ».
+  function makeLeafRow(node, depth, folderLabel, inPinned) {
     const row = TemplateTreeSelect.rowShell('leaf', depth, node.typeModele, node.nom);
     row.dataset.templateId = String(node.id);
 
@@ -160,7 +163,9 @@ const TemplateOrganizeModal = (function () {
     pinBtn.addEventListener('click', () => togglePin(node.id, pinned));
     const moveBtn = button('tom-move-btn', I18n.t('organize.modal.moveButton'));
     moveBtn.addEventListener('click', () => moveTemplate(node.id, TemplatePreferences.getFolder(node.id) || ''));
-    row.append(pinBtn, moveBtn);
+    // L'étoile du modèle par défaut est, elle, commune à toutes les personnes du document : la légende du bas de la fenêtre le dit. Posée par la même brique
+    // que celle de la liste déroulante ; la liste de cette fenêtre se redessine une fois le ★ écrit (celle de la barre le fait seule).
+    row.append(...TemplateTreeSelect.defaultMarks(node, { afterToggle: redraw, focusScope: inPinned ? 'pinned' : 'all' }), pinBtn, moveBtn);
 
     // Repli sans souris ni tactile tant qu'un dossier « en attente » existe (le glisser-déposer n'a pas d'équivalent clavier) : un bouton sur chaque
     // modèle.
@@ -234,8 +239,8 @@ const TemplateOrganizeModal = (function () {
 
   function renderList() {
     list.innerHTML = '';
-    const term = searchTerm.trim().toLowerCase();
-    const templates = Templates.getCached().filter((t) => !term || String(t.nom ?? '').toLowerCase().includes(term));
+    const matchesName = SearchSelect.nameMatcher(searchTerm);
+    const templates = Templates.getCached().filter((t) => matchesName(String(t.nom ?? '')));
 
     if (!templates.length) {
       list.appendChild(el('div', 'tom-empty', I18n.t('organize.modal.noMatch')));
@@ -247,7 +252,7 @@ const TemplateOrganizeModal = (function () {
     // Le dossier en attente est devenu réel (un modèle y a été rangé) : il apparaît à sa vraie place dans view.tree.
     if (pendingFolder && findFolderInTree(view.tree, pendingFolder)) pendingFolder = null;
 
-    TemplateTreeSelect.appendSections(list, view, (p) => makeLeafRow(p, 0, p.dossier), (n) => makeNode(n, 0));
+    TemplateTreeSelect.appendSections(list, view, (p) => makeLeafRow(p, 0, p.dossier, true), (n) => makeNode(n, 0));
     if (pendingFolder) list.appendChild(makePendingFolderRow(pendingFolder));
   }
 
@@ -273,6 +278,11 @@ const TemplateOrganizeModal = (function () {
     setPendingFolder(null);
   }
 
+  // Le rangement vient de changer sans passer par la fenêtre (Ctrl + Z, Ctrl + Y : js/template-arrangement.js) : la liste se redessine si la fenêtre est ouverte.
+  function refresh() {
+    if (modal && modal.style.display !== 'none') render();
+  }
+
   // Branché une seule fois à l'init (js/main.js), comme MacroEditor.wire(). ModalBase.adopt (js/main.js:wirePageModals) gère Échap, le piège de focus
   // et sa restauration.
   function wire() {
@@ -288,5 +298,5 @@ const TemplateOrganizeModal = (function () {
     searchInput.addEventListener('input', () => { searchTerm = searchInput.value || ''; render(); });
   }
 
-  return { wire, open, close };
+  return { wire, open, close, refresh };
 })();

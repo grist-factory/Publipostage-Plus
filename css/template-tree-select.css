@@ -35,9 +35,22 @@
 .tts-icon-macro { -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='1.8' stroke-linejoin='round'%3E%3Crect x='2' y='6' width='14' height='16' rx='1.5'/%3E%3Cpath d='M7 2h11a1.5 1.5 0 0 1 1.5 1.5V18'/%3E%3C/svg%3E"); mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='1.8' stroke-linejoin='round'%3E%3Crect x='2' y='6' width='14' height='16' rx='1.5'/%3E%3Cpath d='M7 2h11a1.5 1.5 0 0 1 1.5 1.5V18'/%3E%3C/svg%3E"); }
 /* Grille : un tableau de cases (js/grid-editor.js, planning/feature-mode-grille-excel.md). */
 .tts-icon-grille { -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='1.8' stroke-linejoin='round'%3E%3Crect x='3' y='4' width='18' height='16' rx='1.5'/%3E%3Cpath d='M3 9.3h18M3 14.6h18M9 4v16M15 4v16'/%3E%3C/svg%3E"); mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='1.8' stroke-linejoin='round'%3E%3Crect x='3' y='4' width='18' height='16' rx='1.5'/%3E%3Cpath d='M3 9.3h18M3 14.6h18M9 4v16M15 4v16'/%3E%3C/svg%3E"); }
+/* Présentation : un écran de diapositives (js/slides-entry.js), le dessin des maquettes du 12/10. */
+.tts-icon-presentation { -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='1.8' stroke-linejoin='round'%3E%3Crect x='3' y='4' width='18' height='12' rx='1.5'/%3E%3Cpath d='M12 16v4M8 20h8'/%3E%3C/svg%3E"); mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='1.8' stroke-linejoin='round'%3E%3Crect x='3' y='4' width='18' height='12' rx='1.5'/%3E%3Cpath d='M12 16v4M8 20h8'/%3E%3C/svg%3E"); }
 .tts-icon-folder { -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='1.8' stroke-linejoin='round'%3E%3Cpath d='M3 6a1 1 0 0 1 1-1h5l2 2h9a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1Z'/%3E%3C/svg%3E"); mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='1.8' stroke-linejoin='round'%3E%3Cpath d='M3 6a1 1 0 0 1 1-1h5l2 2h9a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1Z'/%3E%3C/svg%3E"); }
 /* Bouton « Organiser » de l'en-tête (.tts-organize-btn) : icône de réglages, distincte du dossier pour ne pas passer pour un dossier de plus. */
 .tts-icon-organize { -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='1.8' stroke-linecap='round'%3E%3Cline x1='4' y1='7' x2='20' y2='7'/%3E%3Ccircle cx='9' cy='7' r='2'/%3E%3Cline x1='4' y1='17' x2='20' y2='17'/%3E%3Ccircle cx='15' cy='17' r='2'/%3E%3C/svg%3E"); mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='1.8' stroke-linecap='round'%3E%3Cline x1='4' y1='7' x2='20' y2='7'/%3E%3Ccircle cx='9' cy='7' r='2'/%3E%3Cline x1='4' y1='17' x2='20' y2='17'/%3E%3Ccircle cx='15' cy='17' r='2'/%3E%3C/svg%3E"); }
+
+/* Couleur par sorte de modèle (demande du 21/10 : « coloré l'icône comme dans GFS ») : dans la liste déroulante seulement - l'icône du déclencheur et celle de chaque ligne -, les trois
+   sortes que l'explorateur de Grist Factory Suite colore prennent sa teinte (document bleu, grille verte, présentation orange : jetons --t-doc, --t-grid et --t-slides de css/style.css, 3:1 au
+   moins sur le fond de la liste, d'une ligne survolée et d'une ligne choisie, en clair et en sombre). L'e-mail, le macro-modèle et les dossiers gardent la couleur du texte. Exception voulue à « un
+   seul éditeur, monochrome » (charte, §1) : la couleur s'ajoute à la forme de l'icône, qui dit toujours la sorte, jamais l'inverse. Un modèle grisé (.is-unavailable : extension éteinte, type
+   inconnu) n'a aucune couleur, comme dans GFS ; le déclencheur le dit par la même classe, posée sur son icône (syncTriggerLabel). « Organiser mes modèles », qui réutilise ces lignes, reste
+   monochrome : seule la liste déroulante a la demande. */
+.tts-trigger .tts-icon-document, .tts-popup .tts-icon-document { color: var(--t-doc); }
+.tts-trigger .tts-icon-grille, .tts-popup .tts-icon-grille { color: var(--t-grid); }
+.tts-trigger .tts-icon-presentation, .tts-popup .tts-icon-presentation { color: var(--t-slides); }
+.tts-trigger .tts-icon.is-unavailable, .tts-popup .tts-row.is-unavailable .tts-icon { color: inherit; }
 
 .tts-caret { display: inline-block; width: 10px; height: 10px; flex: none; background-color: currentColor; -webkit-mask-size: contain; mask-size: contain; -webkit-mask-repeat: no-repeat; mask-repeat: no-repeat; -webkit-mask-position: center; -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2.5'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E"); mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2.5'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E"); }
 
@@ -58,10 +71,11 @@
 .tts-popup.is-open { display: block; }
 
 /* En-tête du panneau : reste en haut quand la liste défile (sticky), titre à gauche et « Organiser mes modèles » à droite. Les marges négatives lui
-   font couvrir le padding de 4 px du panneau, pour que les lignes qui défilent ne se voient pas au-dessus. */
-.tts-head { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: -4px -4px 2px; padding: 4px 6px 4px 12px; background: var(--surface); border-bottom: 1px solid var(--border); border-radius: 6px 6px 0 0; }
+   font couvrir le padding de 4 px du panneau, pour que les lignes qui défilent ne se voient pas au-dessus. `top: -4px` : collé, il se pose au bord
+   du panneau et non 4 px plus bas, dans le padding, où « ÉPINGLÉS » et le trait du modèle épinglé se voyaient passer au-dessus de lui (audit du 04/11). */
+.tts-head { position: sticky; top: -4px; z-index: 1; display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: -4px -4px 2px; padding: 4px 6px 4px 12px; background: var(--surface); border-bottom: 1px solid var(--border); border-radius: var(--radius-md, 6px) var(--radius-md, 6px) 0 0; }
 .tts-head-title { font-size: 11px; font-weight: 600; color: var(--text-faint); white-space: nowrap; }
-.tts-organize-btn { display: inline-flex; align-items: center; gap: 5px; height: 24px; padding: 0 8px; border: none; border-radius: var(--radius-sm); background: transparent; color: var(--text-muted); font-family: var(--font-ui); font-size: 12px; font-weight: 500; cursor: pointer; }
+.tts-organize-btn { display: inline-flex; align-items: center; gap: 5px; height: 24px; padding: 0 8px; border: none; border-radius: var(--radius-btn, var(--radius-sm)); background: transparent; color: var(--text-muted); font-family: var(--font-ui); font-size: 12px; font-weight: 500; cursor: pointer; }
 .tts-organize-btn .tts-icon { width: 13px; height: 13px; }
 /* @media (hover: hover) - même piège que .tts-trigger:hover ci-dessus (fond collé après un tap). */
 @media (hover: hover) and (pointer: fine) {
@@ -80,6 +94,16 @@
 .tts-row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .tts-row[aria-selected="true"] { background: var(--accent-soft); color: var(--accent-ink); }
 .tts-row-label { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Un modèle d'un type que le widget ne sait pas ouvrir (js/templates.js, isOpenableType ; js/template-tree-select.js, rowShell) : la ligne reste dans la liste, grisée, jamais choisie, avec sa
+   raison sous son nom - même habillage que .ss-option.is-unavailable (css/search-select.css). Le texte garde --text-muted (le jeton tient 4,5:1 sur le fond d'une ligne, clair et sombre) : le
+   grisé vient de cette couleur, de l'icône atténuée et du curseur, pas d'une transparence qui ferait passer le texte sous le seuil. La raison prend sa propre ligne (order, flex-basis), après
+   l'étoile et la punaise ; son retrait de 20 px la cale sous le nom (icône de 14 px + espace de 6 px). */
+.tts-row.is-unavailable { flex-wrap: wrap; color: var(--text-muted); cursor: not-allowed; }
+.tts-row.is-unavailable .tts-icon { opacity: .6; }
+.tts-row-reason { order: 10; flex: 0 0 100%; box-sizing: border-box; padding-left: 20px; font-size: 11.5px; line-height: 1.35; color: var(--text-muted); white-space: normal; }
+@media (hover: hover) and (pointer: fine) {
+  .tts-row.is-unavailable:hover { background: transparent; }
+}
 
 .tts-group.is-collapsed { display: none; }
 
@@ -101,8 +125,8 @@
 .tts-row-folder[aria-expanded="true"] .tts-folder-caret { transform: rotate(90deg); }
 
 /* Épingle (favori personnel, section « Épinglés ») : punaise en contour, volontairement pas l'étoile, réservée au « modèle par défaut »
-   (#btn-set-default-template de css/toolbar-v2.css et ★ du libellé) : une icône = une fonction. */
-.tts-pin-btn { display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; padding: 0; flex: none; border: none; background: transparent; border-radius: var(--radius-sm); color: var(--text-faint); opacity: 0; }
+   (#btn-set-default-template de css/toolbar-v2.css et .tts-star-btn plus bas) : une icône = une fonction. */
+.tts-pin-btn { display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; padding: 0; flex: none; border: none; background: transparent; border-radius: var(--radius-btn, var(--radius-sm)); color: var(--text-faint); opacity: 0; }
 .tts-row:hover .tts-pin-btn, .tts-row:focus-within .tts-pin-btn, .tts-pin-btn.is-pinned { opacity: 1; }
 /* @media (hover: hover) - même piège que .tts-trigger:hover ci-dessus (fond collé après un tap). */
 @media (hover: hover) and (pointer: fine) {
@@ -110,3 +134,28 @@
 }
 .tts-pin-btn.is-pinned { color: var(--accent); }
 .tts-pin-btn::before { content: ""; display: inline-block; width: 16px; height: 16px; background-color: currentColor; -webkit-mask-size: contain; mask-size: contain; -webkit-mask-repeat: no-repeat; mask-repeat: no-repeat; -webkit-mask-position: center; mask-position: center; -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='1.8' stroke-linejoin='round' stroke-linecap='round'%3E%3Cpath d='M7 3h10M9 3v6l-3 4v1.5h12V13l-3-4V3M12 14.5V21'/%3E%3C/svg%3E"); mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='1.8' stroke-linejoin='round' stroke-linecap='round'%3E%3Cpath d='M7 3h10M9 3v6l-3 4v1.5h12V13l-3-4V3M12 14.5V21'/%3E%3C/svg%3E"); }
+
+/* Étoile d'une ligne de modèle (js/template-tree-select.js, defaultMarks ; aussi dans « Organiser mes modèles ») : le modèle par défaut du document, celui qui
+   s'ouvre au démarrage du widget, pour toutes les personnes. Même tracé que #btn-set-default-template de la barre (css/toolbar-v2.css), en contour comme toutes
+   les icônes : l'état se lit à la couleur (accent, sur le même fond teinté que le bouton de la barre), pas à un remplissage, et la ligne qui la porte écrit
+   « au démarrage » (.tts-default-note). .tts-star-glyph : le même tracé, seul, pour la légende d'« Organiser mes modèles ». Comme l'épingle,
+   visible au survol et au focus de la ligne ; sur la ligne du modèle par défaut, toujours ; sans survol possible (écran tactile), sur toutes les lignes.
+   Grisée, jamais retirée, pour un email, un macro-modèle et en lecture seule. */
+.tts-star-btn { display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; padding: 0; flex: none; border: none; background: transparent; border-radius: var(--radius-btn, var(--radius-sm)); color: var(--text-faint); cursor: pointer; opacity: 0; }
+.tts-row:hover .tts-star-btn, .tts-row:focus-within .tts-star-btn, .tts-star-btn.is-default { opacity: 1; }
+.tts-row:hover .tts-star-btn.is-disabled, .tts-row:focus-within .tts-star-btn.is-disabled, .tts-star-btn.is-default.is-disabled { opacity: .45; }
+@media not (hover: hover) {
+  .tts-star-btn { opacity: 1; }
+  .tts-star-btn.is-disabled { opacity: .45; }
+}
+/* @media (hover: hover) - même piège que .tts-trigger:hover ci-dessus (fond collé après un tap). */
+@media (hover: hover) and (pointer: fine) {
+  .tts-star-btn:hover:not(.is-disabled) { background: var(--surface-sunken); }
+}
+.tts-star-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.tts-star-btn.is-default { color: var(--accent); background: var(--accent-soft); }
+.tts-star-btn.is-disabled { cursor: default; }
+.tts-star-btn::before, .tts-star-glyph { content: ""; display: inline-block; width: 16px; height: 16px; background-color: currentColor; -webkit-mask-size: contain; mask-size: contain; -webkit-mask-repeat: no-repeat; mask-repeat: no-repeat; -webkit-mask-position: center; mask-position: center; -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='1.8' stroke-linejoin='round'%3E%3Cpath d='M12 3.5l2.4 5.6 6.1.6-4.6 4 1.4 6-5.3-3.2-5.3 3.2 1.4-6-4.6-4 6.1-.6Z'/%3E%3C/svg%3E"); mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='1.8' stroke-linejoin='round'%3E%3Cpath d='M12 3.5l2.4 5.6 6.1.6-4.6 4 1.4 6-5.3-3.2-5.3 3.2 1.4-6-4.6-4 6.1-.6Z'/%3E%3C/svg%3E"); }
+/* « au démarrage » : à côté de l'étoile de la ligne du modèle par défaut, en petit et en texte secondaire (le jeton --text-faint tient 4,5:1 sur le fond d'une
+   ligne choisie comme sur celui de la liste). */
+.tts-default-note { flex: none; font-size: 11px; color: var(--text-faint); white-space: nowrap; }

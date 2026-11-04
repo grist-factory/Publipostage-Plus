@@ -1,10 +1,15 @@
 // Fenêtre « Autres attributs » d'une bulle #Variable : depuis une variable dont la ligne est déterminée dans une autre table (ex.
 // #Annuaire.NomPrenom, trouvée via Dossiers.Responsable), insère d'autres colonnes de la même ligne (ex. Annuaire.Telephone) juste après elle,
 // séparées par une espace. Les bulles insérées sont des #Variable ordinaires de cette table : elles passent par la même règle de liaison (une par
-// table et par document, Publipostage_LiensTables), donc désignent la même ligne, en lecture comme à l'export. Proposée pour :
+// table liée et par table de la page, Publipostage_LiensTables), donc désignent la même ligne, en lecture comme à l'export. Proposée pour :
 //  - une variable d'une autre table (liée à son insertion ; sinon la fenêtre de choix de la clé s'ouvre d'abord, comme à l'insertion) ;
 //  - une colonne Référence de la table de la page (ex. #Dossiers.Responsable) : la table référencée est liée par cette colonne si elle ne l'est pas
-//    encore.
+//    encore. Quand la page a plusieurs colonnes Référence vers cette même table (ex. Demandeur et Valideur vers l'Annuaire, deux personnes dans la
+//    même ligne), la fenêtre suit la colonne cliquée et pose des bulles en chemin (#Dossiers.Valideur.Email) : aucun lien n'est créé ni changé ;
+//  - une colonne Liste de références de la table de la page (ex. #Dossiers.Destinataires, des fiches de l'annuaire) : la fenêtre montre les colonnes
+//    de la table de la liste, avec leur valeur sur chacune de ses lignes à la suite, et pose des bulles en chemin (#Dossiers.Destinataires.Email) qui
+//    écrivent cette colonne pour toutes les lignes de la liste, séparées par une virgule. Aucun lien n'est créé : un lien ne suit qu'une ligne. Le réglage
+//    « Liste » de la bulle (js/variable-list.js : séparateur, première, dernière) passe de la colonne au chemin par « Remplacer ».
 // Grisée dans la barre flottante ailleurs (js/floating-toolbars.js:linkedAttrsAvailable, même règle que targetFor ci-dessous).
 //
 // Descente de référence en référence : une colonne Référence de la liste a une flèche qui ouvre les colonnes de la table qu'elle désigne, et sur une
@@ -16,13 +21,27 @@
 // Quand la variable d'origine a une condition d'affichage, chaque bulle insérée la reprend par défaut, en copie : « Reprendre la condition
 // d'affichage », décochée, les insère sans. « Remplacer », à côté d'« Insérer », met les attributs cochés à la place de la bulle au lieu de les
 // ajouter après elle : c'est la même bulle dont la colonne change, ses réglages restent (EditorCore.patchNodeAndReselect, setNodeMarkup).
+//
+// Une pastille « @ » (js/mention.js) a la même fenêtre, ouverte par le bouton de sa barre flottante (js/floating-toolbars.js:createMentionToolbar) : les colonnes de SA fiche - la
+// ligne n° `row` de sa table, quelle que soit la ligne que la page affiche -, chacune avec le texte que la pastille écrirait. « Remplacer » change la colonne que la pastille lit
+// (c'est la même pastille : sa mise en forme reste, son nom devient celui de la nouvelle colonne), « Insérer » en cite d'autres à la suite, séparées par une espace. Ni lien de
+// table, ni condition, ni flèche vers une autre table : une pastille désigne une ligne précise. Une colonne vide pour cette fiche, ou une pièce jointe, se montre mais ne se coche pas.
+//
+// Choisir UNE colonne (`pickColumn`) : la même fenêtre, ouverte depuis le champ d'une colonne de règle de condition (js/condition-fields.js : le bouton à droite de
+// la zone de recherche de la liste, Ctrl+Entrée, ou un clic sur la colonne choisie, qui s'y montre comme une variable du document), pour choisir la colonne de la
+// règle en voyant leur valeur sur la ligne sélectionnée et en descendant de Référence en Référence comme ici. Elle part de la table de la colonne - celle de la page,
+// ou une autre table liée, comme pour la bulle d'une variable de cette table -, sans bulle d'origine : une seule colonne se sélectionne (une case ronde), « Choisir »
+// la rend à celui qui a ouvert la fenêtre, qui la pose comme la liste l'aurait posée ; ni insertion, ni « Remplacer », ni condition reprise, ni lien créé.
 const VariableLinkedAttrs = (function () {
   const { el, button } = Dom;
   let win = null; // la fenêtre de js/modal-base.js, créée à la première ouverture
   let refs = null;
-  // { editor, pos, node, base, refColumn, minHops, hops, picks } pendant que la fenêtre est ouverte. `base` : table dont partent les chemins ;
+  // { editor, pos, node, base, refColumn, minHops, hops, picks, pick, mention } pendant que la fenêtre est ouverte. `base` : table dont partent les chemins ;
   // `hops` : colonnes Référence suivies depuis elle jusqu'au niveau affiché (vide : les colonnes de `base` elle-même) ; `picks` : cases cochées,
-  // { hops, col }, dans l'ordre du choix.
+  // { hops, col }, dans l'ordre du choix. `pick` : { resolve, result } quand la fenêtre sert à choisir une colonne (pickColumn) - `editor`, `pos` et
+  // `node` sont alors null et `picks` ne garde qu'une colonne -, null pour « Autres attributs » d'une bulle. `mention` : { row, labels } quand la fenêtre est ouverte sur une
+  // pastille « @ » - `node` est la pastille, `row` la ligne de sa fiche (dans `base`, sa table), `labels` la colonne → texte que la pastille écrirait, posée quand la table est lue
+  // (null avant, et si elle ne se lit pas ou que la fiche n'existe plus : aucune case ne se coche alors) -, null sinon. `noteText` : ce que disent les valeurs, sous la liste.
   let state = null;
   let opening = false; // vrai pendant la fenêtre de choix de la clé qui peut précéder celle-ci
   let valuesGeneration = 0;
@@ -33,35 +52,46 @@ const VariableLinkedAttrs = (function () {
   // D'où la fenêtre part, ou null si elle n'a pas de sens ici : { base, hops, refColumn, minHops }.
   //  - variable d'une autre table que celle de la page : sa table, liée par sa règle ; sur une colonne Référence (éventuellement au bout d'un
   //    chemin), le niveau de la ligne qu'elle désigne - « l'élément le plus bas » -, d'où l'on peut remonter à celui de la table de la variable ;
-  //  - colonne Référence de la page (ex. #Dossiers.Responsable) : la table référencée, liée par cette colonne (`refColumn`) ;
+  //  - colonne Référence de la page (ex. #Dossiers.Responsable) : la table référencée, liée par cette colonne (`refColumn`). Sauf si la page a
+  //    plusieurs Références vers cette même table (ex. Demandeur et Valideur vers l'Annuaire, deux personnes dans la même ligne) : un lien, un seul
+  //    par table, n'en suivrait qu'une. La fenêtre part alors de la colonne cliquée, comme pour une bulle déjà en chemin (ci-dessous), sans créer de
+  //    lien : #Dossiers.Valideur.Email lit la personne de Valideur, #Dossiers.Demandeur.Email celle de Demandeur ;
   //  - bulle de la table de la page déjà en chemin (ex. #Projet.Accompagnateur.Email dans un widget sur Projet) : ses niveaux, sans remonter aux
-  //    colonnes ordinaires de la page (`minHops` 1), qui ne sont pas des attributs d'une autre ligne.
-  // Null pour une colonne ordinaire de la page, une liste de références (plusieurs lignes) ou une référence vers la page elle-même.
+  //    colonnes ordinaires de la page (`minHops` 1), qui ne sont pas des attributs d'une autre ligne ;
+  //  - colonne Liste de références de la page (ex. #Dossiers.Destinataires) : la fenêtre part de la colonne cliquée, comme avec plusieurs Références vers
+  //    une même table, sans lien (un lien ne suit qu'une ligne) ; ses colonnes se lisent sur toutes les lignes de la liste. Une liste de références vers
+  //    la page elle-même se lit de la même façon.
+  // Null pour une colonne ordinaire de la page ou une référence simple vers la page elle-même.
   function targetFor(attrs) {
     if (!attrs.table || !attrs.column) return null;
     const currentTableId = GristAPI.getCurrentTableId();
     const parts = String(attrs.column).split('.');
     const end = GristAPI.resolveColumnPath(attrs.table, attrs.column);
     const ref = end && GristAPI.referenceOf(end.type);
-    const endIsRef = !!ref && !ref.list;
     const onPage = attrs.table === currentTableId;
     let found = null;
     if (!onPage || parts.length > 1) {
-      found = { base: attrs.table, hops: endIsRef ? parts : parts.slice(0, -1), refColumn: null, minHops: onPage ? 1 : 0 };
-    } else if (endIsRef && ref.table !== currentTableId) {
-      found = { base: ref.table, hops: [], refColumn: attrs.column, minHops: 0 };
+      found = { base: attrs.table, hops: ref ? parts : parts.slice(0, -1), refColumn: null, minHops: onPage ? 1 : 0 };
+    } else if (ref && ref.list) {
+      found = { base: currentTableId, hops: [attrs.column], refColumn: null, minHops: 1 };
+    } else if (ref && ref.table !== currentTableId) {
+      found = Variables.pageReferencesTo(ref.table) > 1
+        ? { base: currentTableId, hops: [attrs.column], refColumn: null, minHops: 1 }
+        : { base: ref.table, hops: [], refColumn: attrs.column, minHops: 0 };
     }
     return found && GristAPI.tableAtEndOf(found.base, found.hops) ? found : null;
   }
   const isAvailable = attrs => !!targetFor(attrs);
 
   // Une règle de liaison doit exister pour que les bulles insérées trouvent la ligne. Colonne Référence de la page sans règle : règle créée d'office
-  // (identifiant de ligne = cette colonne, celle que la fenêtre de choix de la clé proposerait d'elle-même). Autre table sans règle : la fenêtre de
-  // choix de la clé, comme à l'insertion. Faux si l'utilisateur annule.
+  // pour la table de la page (identifiant de ligne = cette colonne, celle que la fenêtre de choix de la clé proposerait d'elle-même). Autre table sans
+  // règle : la fenêtre de choix de la clé, comme à l'insertion. Faux si l'utilisateur annule. La règle posée d'office est un pas de l'historique d'Annuler
+  // (js/link-rule-history.js), comme celle que la fenêtre enregistre.
   async function ensureLink(target, refColumn) {
-    if (GristAPI.getLinkRule(target) || !GristAPI.getCurrentTableId()) return true;
+    const currentTableId = GristAPI.getCurrentTableId();
+    if (!currentTableId || GristAPI.getLinkRule(target)) return true;
     if (refColumn) {
-      try { await GristAPI.saveLinkRule(target, { mode: 'match', colonneCible: 'id', colonneSource: refColumn }); }
+      try { await LinkRuleHistory.track(target, () => GristAPI.saveLinkRule(target, { mode: 'match', colonneCible: 'id', colonneSource: refColumn, tableSource: currentTableId })); }
       catch (e) {
         if (GristAPI.isTablesDeclined(e)) return false; // la personne refuse de créer la table des règles : comme une annulation
         throw e;
@@ -110,33 +140,74 @@ const VariableLinkedAttrs = (function () {
       event.preventDefault();
       goTo(state.hops.concat(descend.closest('.var-linked-row').dataset.col));
     });
+    // Choisir une colonne : un double-clic sur sa ligne la choisit d'un coup, comme un clic dans une liste (le premier clic l'a sélectionnée).
+    list.addEventListener('dblclick', event => {
+      if (!state || !state.pick || (event.target.closest && event.target.closest('.var-linked-descend'))) return;
+      const row = event.target.closest && event.target.closest('.var-linked-row');
+      const box = row && row.querySelector('input');
+      if (!box || box.disabled) return;
+      box.checked = true;
+      onPickChange({ target: box });
+      confirmPick();
+    });
     cancelBtn.addEventListener('click', close);
-    replaceBtn.addEventListener('click', replace);
-    insertBtn.addEventListener('click', insert);
+    replaceBtn.addEventListener('click', () => (state && state.mention ? replaceMention() : replace()));
+    insertBtn.addEventListener('click', () => (state && state.pick ? confirmPick() : insert()));
   }
 
-  // Cases cochées : gardées dans `state.picks` (et non lues dans la liste) pour survivre à un changement de niveau.
+  // Cases cochées : gardées dans `state.picks` (et non lues dans la liste) pour survivre à un changement de niveau. Pour le choix d'une colonne, une seule
+  // reste : celle qu'on vient de sélectionner (la case ronde décoche l'autre dans la liste affichée, `picks` doit suivre aussi celle d'un autre niveau).
   const pickIndex = (hops, col) => state.picks.findIndex(p => p.col === col && sameHops(p.hops, hops));
   function onPickChange(event) {
     const box = event.target;
-    if (!state || !box || box.type !== 'checkbox') return;
+    if (!state || !box || (box.type !== 'checkbox' && box.type !== 'radio')) return;
+    if (state.pick) {
+      if (box.checked) state.picks = [{ hops: state.hops.slice(), col: box.value }];
+      syncActionButtons();
+      return;
+    }
     const index = pickIndex(state.hops, box.value);
     if (box.checked && index === -1) state.picks.push({ hops: state.hops.slice(), col: box.value });
     else if (!box.checked && index !== -1) state.picks.splice(index, 1);
     syncActionButtons();
   }
-  // « Insérer » dit combien d'attributs il pose ; lui et « Remplacer » restent grisés tant que rien n'est coché.
+  // « Insérer » dit combien d'attributs il pose ; lui et « Remplacer » restent grisés tant que rien n'est coché. Pour le choix d'une colonne, « Choisir » reste
+  // grisé tant qu'aucune n'est sélectionnée, et la ligne sous la liste dit laquelle l'est.
   function syncActionButtons() {
     const count = state ? state.picks.length : 0;
+    if (state && state.pick) {
+      refs.insertBtn.textContent = I18n.t('varLinked.pick');
+      refs.insertBtn.disabled = count === 0;
+      renderNote();
+      return;
+    }
     refs.insertBtn.textContent = I18n.t('varLinked.insert', { count });
     refs.insertBtn.disabled = count === 0;
     refs.replaceBtn.disabled = count === 0;
   }
+  // La colonne choisie, dite comme le fil d'Ariane : « Accompagnateur › Email » (espaces insécables : la ligne ne se coupe pas au milieu du chemin).
+  const pickedText = pick => pick.hops.concat(pick.col).join('\u00a0›\u00a0');
+  // La ligne sous la liste : ce que disent les valeurs (`state.noteText`), puis ce que fait le bouton - « Insérer » ajoute les attributs cochés... ; pour le choix
+  // d'une colonne, la colonne choisie ou comment la choisir. `state.noteBare` : sans cette seconde phrase (le calcul des valeurs est en cours).
+  function renderNote() {
+    if (!state) return;
+    const [picked] = state.picks;
+    const tail = state.noteBare ? '' : state.pick ? I18n.t(picked ? 'varLinked.pickChosen' : 'varLinked.pickHint', picked ? { column: pickedText(picked) } : undefined)
+      : I18n.t(state.mention ? 'varLinked.noteInsertMention' : 'varLinked.noteInsert');
+    refs.note.textContent = (state.noteText + ' ' + tail).trim();
+  }
+  function setNote(text, bare) {
+    state.noteText = text;
+    state.noteBare = !!bare;
+    renderNote();
+  }
+  // Le filtre cherche comme toutes les listes de colonnes (js/search-select.js:nameMatcher) : des mots dans n'importe quel ordre, dans les noms de la
+  // colonne (table, identifiant, libellé Grist) et dans la valeur affichée en face.
   function applyFilter() {
-    const q = refs.filter.value.trim().toLowerCase();
+    const matches = SearchSelect.nameMatcher(refs.filter.value);
     let visible = 0;
     refs.list.querySelectorAll('.var-linked-row').forEach(row => {
-      row.hidden = !!q && row.dataset.search.indexOf(q) === -1;
+      row.hidden = !matches(row.dataset.search, row.dataset.value || '');
       if (!row.hidden) visible += 1;
     });
     const noMatch = refs.list.querySelector('.var-linked-empty[data-role="no-match"]');
@@ -147,29 +218,29 @@ const VariableLinkedAttrs = (function () {
   // bulles).
   const levelTable = () => GristAPI.tableAtEndOf(state.base, state.hops) || state.base;
   const pathText = () => Variables.triggerChar() + [state.base].concat(state.hops).join('.');
-  // Table désignée par la colonne Référence `col` de `table` (celle qu'ouvre la flèche de sa ligne), null si ce n'est pas une Référence simple.
-  function referencedTable(table, col) {
-    const ref = GristAPI.referenceOf(GristAPI.getColumnType(table, col));
-    return ref && !ref.list && GristAPI.getTables().indexOf(ref.table) !== -1 ? ref.table : null;
-  }
+  // Le chemin affiché traverse-t-il une liste de références ? Alors il désigne plusieurs lignes, et les valeurs de la fenêtre sont celles de toutes.
+  const crossesList = () => !!Variables.crossedListTable(state.base, state.hops);
 
   // Une colonne du niveau affiché : sa case, son nom, sa valeur (posée par loadValues) et, pour une Référence, la flèche qui descend dans sa table.
-  // `isCurrent` : la colonne de la bulle d'origine, montrée mais pas cochable.
+  // `isCurrent` : la colonne de la bulle d'origine, montrée mais pas cochable. Sur une pastille, la case reste grisée tant que la table de sa fiche n'est pas lue
+  // (loadMentionValues la dégrise si le texte de la fiche dans cette colonne s'écrit) et la colonne n'a pas de flèche : une pastille désigne une ligne, pas un chemin.
   function columnRow(table, col, isCurrent) {
     const row = el('div', isCurrent ? 'var-linked-row is-current' : 'var-linked-row');
     row.dataset.col = col;
-    row.dataset.search = col.toLowerCase();
+    row.dataset.search = Variables.columnSearchText(table, col);
     const box = el('input');
-    box.type = 'checkbox';
+    box.type = state.pick ? 'radio' : 'checkbox';
+    if (state.pick) box.name = 'var-linked-pick';
     box.value = col;
-    box.disabled = isCurrent;
+    box.disabled = isCurrent || !!state.mention;
     box.checked = !isCurrent && pickIndex(state.hops, col) !== -1;
     const name = el('span', 'var-linked-col', col);
-    if (isCurrent) name.append(' ', el('small', null, I18n.t('varLinked.thisVariable')));
+    if (isCurrent) name.append(' ', el('small', null, I18n.t(state.mention ? 'varLinked.thisMention' : 'varLinked.thisVariable')));
     const pick = el('label', 'var-linked-pick');
     pick.append(box, name, el('span', 'var-linked-value'));
     row.appendChild(pick);
-    const target = referencedTable(table, col);
+    // La table que désigne une Référence simple (celle qu'ouvre la flèche de sa ligne) : la même destination que la flèche des listes de colonnes.
+    const target = state.mention ? null : Variables.referencedTable(table, col);
     if (target) {
       const label = I18n.t('varLinked.descend', { table: target, column: col });
       const descend = button('var-linked-descend', '›');
@@ -184,10 +255,11 @@ const VariableLinkedAttrs = (function () {
     const { node, base, hops } = state;
     const table = levelTable();
     const cols = GristAPI.getVisibleColumns(table);
-    const own = String(node.attrs.column).split('.');
-    const currentCol = node.attrs.table === base && sameHops(own.slice(0, -1), hops) ? own[own.length - 1] : null;
+    // La colonne de la bulle d'origine, montrée mais pas cochable ; le choix d'une colonne n'a pas de bulle d'origine : toutes se sélectionnent.
+    const own = node ? String(node.attrs.column).split('.') : [];
+    const currentCol = node && node.attrs.table === base && sameHops(own.slice(0, -1), hops) ? own[own.length - 1] : null;
     list.replaceChildren();
-    if (!cols.some(c => c !== currentCol)) list.appendChild(el('div', 'var-linked-empty', I18n.t('varLinked.empty', { table })));
+    if (!cols.some(c => c !== currentCol)) list.appendChild(el('div', 'var-linked-empty', I18n.t(state.pick ? 'varLinked.pickEmpty' : 'varLinked.empty', { table })));
     cols.forEach(col => list.appendChild(columnRow(table, col, col === currentCol)));
     const noMatch = el('div', 'var-linked-empty', I18n.t('varLinked.noFilterMatch'));
     noMatch.dataset.role = 'no-match';
@@ -238,15 +310,15 @@ const VariableLinkedAttrs = (function () {
   // Valeurs de la ligne du niveau affiché pour la ligne sélectionnée dans Grist - même recherche que la résolution des bulles
   // (Variables.resolveRows : règle de liaison puis références du chemin), donc ce que les attributs afficheront en lecture.
   async function loadValues() {
+    if (state.mention) { loadMentionValues(); return; }
     const gen = ++valuesGeneration;
-    const { note, list } = refs;
+    const { list } = refs;
     const { base, hops } = state;
     const table = levelTable();
     const currentTableId = GristAPI.getCurrentTableId();
     const record = GristAPI.getCurrentRecord();
-    const insertHint = I18n.t('varLinked.noteInsert');
-    if (!record || !currentTableId) { note.textContent = I18n.t('varLinked.noteNoRecord') + ' ' + insertHint; return; }
-    note.textContent = I18n.t('varCond.debug.computing');
+    if (!record || !currentTableId) { setNote(I18n.t('varLinked.noteNoRecord')); return; }
+    setNote(I18n.t('varCond.debug.computing'), true);
     let rows = [];
     try {
       const found = await Variables.resolveRows(base, hops, currentTableId, record);
@@ -255,39 +327,74 @@ const VariableLinkedAttrs = (function () {
     if (gen !== valuesGeneration || !state) return;
     if (!rows.length) {
       const missing = hops.length ? I18n.t('varLinked.noteNoPathRow', { path: pathText(), id: record.id }) : I18n.t('varLinked.noteNoLinkedRow', { table, id: record.id });
-      note.textContent = missing + ' ' + insertHint;
+      setNote(missing);
       return;
     }
     list.querySelectorAll('.var-linked-row').forEach(row => {
       const text = displayValue(table, rows, row.dataset.col);
       row.querySelector('.var-linked-value').textContent = text;
       row.title = text;
-      row.dataset.search = (row.dataset.col + ' ' + text).toLowerCase();
+      row.dataset.value = text;
     });
     applyFilter();
-    note.textContent = I18n.t('varLinked.noteRow', { id: record.id }) + ' ' + insertHint;
+    setNote(I18n.t('varLinked.noteRow', { id: record.id }));
+  }
+
+  // Sur une pastille : les valeurs de SA ligne (Mention.valuesOf), jamais celles de la ligne que la page affiche - ce que la pastille écrirait dans chaque colonne. Une colonne dont le
+  // texte est vide pour cette fiche, ou une pièce jointe, se montre mais reste grisée, sa raison en info-bulle ; la colonne de la pastille aussi (c'est déjà elle). Les cases sont
+  // grisées tant que la table n'est pas lue, et le restent si elle ne se lit pas ou que la fiche n'existe plus : rien ne se pose sans le texte qu'écrira la pastille.
+  async function loadMentionValues() {
+    const gen = ++valuesGeneration;
+    const { list } = refs;
+    const { base, mention } = state;
+    setNote(I18n.t('varCond.debug.computing'), true);
+    let found = null;
+    try { found = await Mention.valuesOf(base, mention.row); } catch (e) { console.warn('[VariableLinkedAttrs] fiche illisible', e); }
+    if (gen !== valuesGeneration || !state) return;
+    if (!found || found.gone) {
+      list.querySelectorAll('.var-linked-row').forEach(row => row.classList.add('is-unavailable'));
+      setNote(I18n.t(found ? 'varLinked.noteMentionGone' : 'varLinked.noteMentionUnreadable', { table: base }));
+      return;
+    }
+    mention.labels = found.labels;
+    list.querySelectorAll('.var-linked-row').forEach(row => {
+      const col = row.dataset.col;
+      const attachment = GristAPI.getColumnType(base, col) === 'Attachments';
+      const text = attachment ? I18n.t('varLinked.attachmentValue') : (found.labels.get(col) || '');
+      const isCurrent = row.classList.contains('is-current');
+      const reason = attachment ? 'varLinked.mentionAttachment' : (text === '' && !isCurrent ? 'varLinked.mentionEmpty' : '');
+      row.querySelector('.var-linked-value').textContent = text;
+      row.title = reason ? I18n.t(reason) : text;
+      row.dataset.value = text;
+      row.classList.toggle('is-unavailable', !!reason);
+      if (!isCurrent) row.querySelector('input').disabled = !!reason;
+    });
+    applyFilter();
+    setNote(I18n.t('varLinked.noteMentionRow'));
   }
 
   function subtitleText() {
     const { node, base, hops, refColumn } = state;
-    if (hops.length) return I18n.t('varLinked.subtitlePath', { table: levelTable(), path: pathText() });
+    if (state.mention) return I18n.t('varLinked.subtitleMention', { badge: Mention.chipText(node.attrs), id: state.mention.row, table: base });
+    if (hops.length) return I18n.t(crossesList() ? 'varLinked.subtitleList' : 'varLinked.subtitlePath', { table: levelTable(), path: pathText() });
     const currentTableId = GristAPI.getCurrentTableId();
     const badge = VariableModal.badgeText(node);
     const rule = GristAPI.getLinkRule(base);
     if (!rule || !currentTableId) return I18n.t('varLinked.subtitlePlain', { badge });
     if (rule.mode === 'singleton') return I18n.t('varLinked.subtitleSingleton', { badge, table: base });
     const via = Variables.describeLinkVia(base, rule, currentTableId);
-    // Colonne Référence déjà couverte par une autre règle pour la même table (une seule par document) : les bulles insérées suivront cette règle-là,
-    // le dire plutôt que d'annoncer « même ligne que » à tort.
-    if (refColumn && !(rule.colonneCible === 'id' && rule.colonneSource === refColumn)) return I18n.t('varLinked.subtitleOtherLink', { table: base, via, badge });
+    // Colonne Référence déjà couverte par une autre règle pour la même table et la même page : les bulles insérées suivront cette règle-là, le dire
+    // plutôt que d'annoncer « même ligne que » à tort.
+    if (refColumn && !(rule.colonneCible === 'id' && rule.colonneSource === refColumn)) return I18n.t('varLinked.subtitleOtherLink', { table: base, page: currentTableId, via, badge });
     return I18n.t('varLinked.subtitleVia', { badge, via });
   }
 
-  // Affiche le niveau `state.hops` : titre, fil d'Ariane, colonnes puis valeurs.
+  // Affiche le niveau `state.hops` : titre, fil d'Ariane, colonnes puis valeurs. Le choix d'une colonne n'a pas de sous-titre (il dirait comment les attributs
+  // s'insèrent) : le fil d'Ariane dit où l'on est, la ligne sous la liste ce qu'on a choisi.
   function renderLevel() {
     const { title, subtitle, filter } = refs;
-    title.textContent = I18n.t('varLinked.title', { table: levelTable() });
-    subtitle.textContent = subtitleText();
+    title.textContent = I18n.t(state.pick ? 'varLinked.pickTitle' : 'varLinked.title', { table: levelTable() });
+    subtitle.textContent = state.pick ? '' : subtitleText();
     filter.value = '';
     renderPath();
     renderList();
@@ -329,7 +436,7 @@ const VariableLinkedAttrs = (function () {
   // La bulle d'origine, toujours à sa position (la fenêtre garde celle de son ouverture) ; sinon - déplacée ou supprimée pendant le choix - la
   // fenêtre le dit et se ferme : rien n'est alors inséré ni remplacé.
   function originalBadge() {
-    const node = VariableModal.nodeAtOrigin(state, 'varLinked.insertLost', 'VariableLinkedAttrs');
+    const node = VariableModal.nodeAtOrigin(state, state.mention ? 'varLinked.insertLostMention' : 'varLinked.insertLost', 'VariableLinkedAttrs');
     if (!node) close();
     return node;
   }
@@ -349,12 +456,22 @@ const VariableLinkedAttrs = (function () {
     });
   }
 
+  // Contenu à poser pour ces colonnes de la fiche d'une pastille : une espace avant chaque pastille, qui cite la même ligne que `node` avec le texte lu par la fenêtre
+  // (`state.mention.labels`), le même que celui que `Mention.resolve` donnera.
+  function mentionContent(picks, node) {
+    const { table, row } = node.attrs;
+    const { labels } = state.mention;
+    return picks.flatMap(p => (labels && labels.get(p.col)
+      ? [{ type: 'text', text: ' ' }, { type: 'mention', attrs: { table, row, column: p.col, label: labels.get(p.col) } }]
+      : []));
+  }
+
   function insert() {
     if (!state || !state.picks.length) return;
     const { editor, pos } = state;
     const node = originalBadge();
     if (!node) return;
-    const content = badgesContent(orderedPicks(), node);
+    const content = state.mention ? mentionContent(orderedPicks(), node) : badgesContent(orderedPicks(), node);
     const insertAt = pos + node.nodeSize;
     close({ keepFocus: true });
     editor.chain().focus().insertContentAt(insertAt, content).run();
@@ -363,8 +480,9 @@ const VariableLinkedAttrs = (function () {
   // « Remplacer » : la bulle d'origine prend la colonne du premier attribut coché, les autres cochés suivent, séparés par une espace, comme à
   // l'insertion. Elle reste la même bulle : ses autres réglages restent (mise en forme du texte, boucle, condition, format), sauf ce qui ne vaut que
   // pour l'ancienne colonne - le format d'un autre genre (une date sur un texte donnerait n'importe quoi), la boucle d'une autre table, la condition
-  // si « Reprendre la condition d'affichage » est décochée. Une seule transaction : un seul Annuler rend l'ancienne bulle. La bulle reste
-  // sélectionnée, sa barre revient avec les réglages de sa nouvelle colonne.
+  // si « Reprendre la condition d'affichage » est décochée. Le réglage « Liste » (js/variable-list.js : le séparateur, la première, la dernière) reste
+  // tant que la bulle écrit une liste : l'email de chaque ligne d'une équipe garde le point-virgule réglé sur la colonne Liste de références. Une
+  // seule transaction : un seul Annuler rend l'ancienne bulle. La bulle reste sélectionnée, sa barre revient avec les réglages de sa nouvelle colonne.
   function replace() {
     if (!state || !state.picks.length) return;
     const { editor, pos } = state;
@@ -372,9 +490,13 @@ const VariableLinkedAttrs = (function () {
     if (!node) return;
     const [first, ...others] = orderedPicks();
     const attrs = Object.assign({}, node.attrs, pickAttrs(first));
-    if (!refs.inheritRow.hidden && !refs.inheritBox.checked) attrs.condition = null;
+    // Sans condition, le sinon (js/variable-otherwise.js) n'a plus rien à remplacer.
+    if (!refs.inheritRow.hidden && !refs.inheritBox.checked) { attrs.condition = null; attrs.otherwise = null; attrs.otherwiseText = null; }
     const oldKind = VariableFormat.columnKind(GristAPI.getColumnType(node.attrs.table, node.attrs.column));
-    if (!oldKind || oldKind !== VariableFormat.columnKind(GristAPI.getColumnType(attrs.table, attrs.column))) attrs.format = null;
+    if (!oldKind || oldKind !== VariableFormat.columnKind(GristAPI.getColumnType(attrs.table, attrs.column))) {
+      const list = node.attrs.format && node.attrs.format.list;
+      attrs.format = list && Variables.writesList(attrs.table, attrs.column) ? { list } : null;
+    }
     if (attrs.table !== node.attrs.table) attrs.loop = null;
     const after = pos + node.nodeSize;
     const content = badgesContent(others, node);
@@ -385,18 +507,79 @@ const VariableLinkedAttrs = (function () {
     editor.view.focus();
   }
 
+  // « Remplacer » sur une pastille : la première colonne cochée devient la colonne qu'elle lit, avec son texte pour nom ; les autres suivent, séparées par une espace, comme à
+  // l'insertion. C'est la même pastille : sa mise en forme (gras, couleur…) reste, la fiche aussi. Une seule transaction, donc un seul Annuler rend l'ancienne ; la pastille reste
+  // sélectionnée, sa barre revient.
+  function replaceMention() {
+    if (!state || !state.picks.length) return;
+    const { editor, pos } = state;
+    const node = originalBadge();
+    if (!node) return;
+    const picks = orderedPicks();
+    const first = state.mention.labels && state.mention.labels.get(picks[0].col);
+    if (!first) return;
+    const attrs = Object.assign({}, node.attrs, { column: picks[0].col, label: first });
+    const after = pos + node.nodeSize;
+    const content = mentionContent(picks.slice(1), node);
+    close({ keepFocus: true });
+    const chain = editor.chain().command(({ tr }) => { tr.setNodeMarkup(pos, undefined, attrs); return true; });
+    if (content.length) chain.insertContentAt(after, content);
+    chain.setNodeSelection(pos).run();
+    editor.view.focus();
+  }
+
   function close(opts) {
     if (!win) return;
     const editor = state && state.editor;
+    const choosing = state && state.pick;
     win.hide();
     state = null;
     valuesGeneration += 1;
     if (editor && !(opts && opts.keepFocus)) editor.view.focus();
+    // Le choix d'une colonne : celui qui attend la reçoit une fois la fenêtre fermée, ou null (Annuler, Échap) ; le focus lui revient, pas à l'éditeur.
+    if (choosing) choosing.resolve(choosing.result);
   }
 
-  // `pos` : position de la bulle, capturée au clic sur l'icône de la barre flottante.
-  async function open(editor, pos) {
+  // « Choisir » : la colonne sélectionnée part à celui qui a ouvert la fenêtre pour choisir une colonne, avec les Références suivies pour l'atteindre.
+  function confirmPick() {
+    if (!state || !state.pick || !state.picks.length) return;
+    const [picked] = state.picks;
+    state.pick.result = { base: state.base, hops: picked.hops.slice(), column: picked.col };
+    close();
+  }
+
+  // La fenêtre ouverte sur la bulle ou la pastille `node` à `pos` : `from` dit d'où part la liste ({ base, refColumn, minHops, hops }, cf. targetFor ; la table de la fiche et rien
+  // d'autre pour une pastille), `mention` : { row } pour une pastille.
+  function showFor(editor, pos, node, from, mention) {
+    ensureModal();
+    state = {
+      editor, pos, node, base: from.base, refColumn: from.refColumn, minHops: from.minHops, hops: from.hops.slice(), picks: [], pick: null,
+      mention: mention ? { row: mention.row, labels: null } : null, noteText: '', noteBare: false,
+    };
+    const { filter, cancelBtn, replaceBtn, subtitle, inheritRow } = refs;
+    filter.placeholder = I18n.t('varLinked.filter');
+    filter.setAttribute('aria-label', I18n.t('varLinked.filter'));
+    cancelBtn.textContent = I18n.t('common.cancel');
+    // Les éléments que le choix d'une colonne (pickColumn) cache ou change : remis comme pour une bulle.
+    subtitle.hidden = false;
+    replaceBtn.hidden = false;
+    replaceBtn.textContent = I18n.t('varLinked.replace');
+    replaceBtn.title = I18n.t('varLinked.replaceTitle', { badge: mention ? Mention.chipText(node.attrs) : VariableModal.badgeText(node) });
+    if (mention) inheritRow.hidden = true; // une pastille n'a pas de condition d'affichage
+    else renderInheritOption();
+    renderLevel();
+    win.show(filter);
+  }
+
+  // `pos` : position de la bulle ou de la pastille « @ », capturée au clic sur l'icône de sa barre flottante.
+  async function openAt(editor, pos) {
     const node = editor && editor.state.doc.nodeAt(pos);
+    if (node && node.type.name === 'mention') {
+      if (opening || state || !Mention.columnsStatus(node.attrs).enabled) return;
+      EditorCore.hideFloatingContextToolbars();
+      showFor(editor, pos, node, { base: node.attrs.table, refColumn: null, minHops: 0, hops: [] }, { row: node.attrs.row });
+      return;
+    }
     if (!node || node.type.name !== 'varBadge' || opening || state) return;
     const t = targetFor(node.attrs);
     if (!t) return;
@@ -407,18 +590,53 @@ const VariableLinkedAttrs = (function () {
     catch (e) { console.error('[VariableLinkedAttrs] échec de la liaison de « ' + t.base + ' »', e); }
     finally { opening = false; }
     if (!linked) { editor.view.focus(); return; }
-    ensureModal();
-    state = { editor, pos, node, base: t.base, refColumn: t.refColumn, minHops: t.minHops, hops: t.hops.slice(), picks: [] };
-    const { filter, cancelBtn, replaceBtn } = refs;
-    filter.placeholder = I18n.t('varLinked.filter');
-    filter.setAttribute('aria-label', I18n.t('varLinked.filter'));
-    cancelBtn.textContent = I18n.t('common.cancel');
-    replaceBtn.textContent = I18n.t('varLinked.replace');
-    replaceBtn.title = I18n.t('varLinked.replaceTitle', { badge: VariableModal.badgeText(node) });
-    renderInheritOption();
-    renderLevel();
-    win.show(filter);
+    showFor(editor, pos, node, t, null);
   }
 
-  return { open, close, isOpen, isAvailable };
+  // Le niveau de la liste où est la colonne déjà choisie : elle est sélectionnée d'avance, et amenée dans la partie visible de la liste.
+  function revealPick() {
+    const { list } = refs;
+    const box = list.querySelector('.var-linked-row input:checked');
+    const line = box && box.closest('.var-linked-row');
+    if (!line || line.hidden) return;
+    const shift = line.getBoundingClientRect().top - list.getBoundingClientRect().top;
+    list.scrollTop = Math.max(0, list.scrollTop + shift - Math.round((list.clientHeight - line.offsetHeight) / 2));
+  }
+
+  // Choisir UNE colonne d'une table ou, de Référence en Référence, d'une table qu'elle désigne : ce que fait le champ d'une colonne de règle de condition
+  // (js/condition-fields.js) quand on y ouvre la fenêtre des attributs. `request` : { base (la table d'où partent les chemins : celle de la page par défaut, ou la
+  // table liée de la colonne déjà choisie), hops (les colonnes Référence déjà suivies depuis elle : le niveau où la fenêtre s'ouvre), column (la colonne déjà
+  // choisie à ce niveau, sélectionnée d'avance), query (ce qui était tapé dans la liste, repris dans le filtre) }. Rend { base, hops, column } - la table de départ,
+  // les Références suivies puis la colonne choisie - ou null quand la fenêtre se ferme sans choix. Une table inconnue (colonne disparue) ne dit rien : la fenêtre
+  // s'ouvre sur la table de la page. Rien n'est posé ici : ni bulle, ni lien de table ; celui qui a demandé pose le choix.
+  function pickColumn(request) {
+    const page = GristAPI.getCurrentTableId();
+    if (!page || opening || state) return Promise.resolve(null);
+    const known = !(request && request.base) || GristAPI.getTables().indexOf(request.base) !== -1;
+    const asked = known ? (request || {}) : { query: request.query };
+    const base = asked.base || page;
+    const hops = GristAPI.tableAtEndOf(base, asked.hops || []) ? (asked.hops || []).slice() : [];
+    const column = asked.column && GristAPI.getVisibleColumns(GristAPI.tableAtEndOf(base, hops)).indexOf(asked.column) !== -1 ? asked.column : '';
+    return new Promise(resolve => {
+      ensureModal();
+      state = {
+        editor: null, pos: null, node: null, base, refColumn: null, minHops: 0, hops, picks: column ? [{ hops: hops.slice(), col: column }] : [],
+        pick: { resolve, result: null }, mention: null, noteText: '', noteBare: false,
+      };
+      const { filter, cancelBtn, replaceBtn, subtitle, inheritRow } = refs;
+      filter.placeholder = I18n.t('varLinked.filter');
+      filter.setAttribute('aria-label', I18n.t('varLinked.filter'));
+      cancelBtn.textContent = I18n.t('common.cancel');
+      subtitle.hidden = true;
+      inheritRow.hidden = true;
+      replaceBtn.hidden = true;
+      renderLevel();
+      filter.value = asked.query || '';
+      applyFilter();
+      win.show(filter);
+      revealPick();
+    });
+  }
+
+  return { openAt, pickColumn, close, isOpen, isAvailable };
 })();
