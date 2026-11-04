@@ -1,0 +1,761 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8"><title>Publipostage+ · Grist Factory</title><meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="Publipostage+ : un widget Grist pour écrire des courriers, contrats et e-mails types, les remplir avec les lignes d'une table et les exporter en PDF, Word ou Excel. / A Grist widget to write template letters, contracts and e-mails, fill them with a table's rows and export them as PDF, Word or Excel.">
+<link rel="icon" type="image/jpeg" href="img/grist-factory-logo.jpg">
+<!-- Politique de sécurité du contenu (contrôle du 04/10, AUDIT_CODE.md §3.2) : même si du HTML piégé échappait au filtre (js/html-sanitize.js), le navigateur refuse tout script en ligne, tout
+     gestionnaire d'événement, toute adresse javascript:, tout script d'une autre adresse que celles-ci (l'adresse entière quand la bibliothèque est figée), tout cadre, objet, formulaire et toute
+     balise de base. Les trois scripts en ligne de cette page y sont cités par leur empreinte : en modifier un (la carte d'importation comprise) change son empreinte, et dev-tests/verify-code-hygiene.mjs
+     (groupe codeHygiene) dit laquelle écrire. esm.sh est ouvert en entier : le chemin de ses modules change à chaque nouvelle version de leur fabrication. 'unsafe-eval' reste, faute de mieux : le fichier
+     que Grist sert (docs.getgrist.com/grist-plugin-api.js) est un bundle de développement dont chaque module s'évalue par eval(), et sans lui l'objet grist n'existe pas (dev-tests/verify-csp.mjs charge
+     le vrai fichier). Styles, polices, images et connexions ne sont pas limités : le widget lit des images et des pièces jointes de n'importe quel site. Aucune feuille de style ni police ne vient
+     pourtant d'un autre site : l'interface prend la police du système (--font-ui de css/style.css), et codeHygiene comme cspLoad refusent qu'une autre apparaisse. -->
+<meta http-equiv="Content-Security-Policy" content="
+  script-src 'self' 'unsafe-eval' https://esm.sh https://docs.getgrist.com/grist-plugin-api.js
+    https://cdnjs.cloudflare.com/ajax/libs/pdfmake/0.2.7/pdfmake.min.js https://cdnjs.cloudflare.com/ajax/libs/pdfmake/0.2.7/vfs_fonts.min.js
+    https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js
+    https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js
+    https://cdn.jsdelivr.net/npm/docx@9.7.1/dist/index.iife.js
+    'sha256-oL7hcWNReCnK8lxGRlbj0IXTGZm4dxBoOerWyA01uig=' 'sha256-QiCHlcX781nb04G2fDoZHC2TVBI4ztYMrMBu6LN+Vsk=' 'sha256-dr2nJ9qlSEpVpFpN01rgQ3bZHAcSZWrebqvX0xSlX7I=';
+  object-src 'none'; base-uri 'none'; frame-src 'none'; form-action 'none'">
+<!-- Enregistrement automatique coupé (pp_autosave_enabled = 'false', cf. js/main.js:isAutosaveEnabled) : le bouton Enregistrer est noir et blanc dès le PREMIER affichage, pas bleu le temps que
+     les scripts finissent de se charger puis en fondu vers le noir. La classe est posée ICI, sur <html>, avant les feuilles de style et le corps : un script placé après le bouton attend que les
+     feuilles de style soient chargées, et une image bleue passait parfois avant lui. js/main.js:syncSaveButtonLook garde ensuite cette classe et celle du bouton à jour (css/style.css). -->
+<script>try { if (localStorage.getItem('pp_autosave_enabled') === 'false') document.documentElement.classList.add('pp-autosave-off'); } catch (e) { /* stockage indisponible : bouton bleu, comme enregistrement automatique allumé */ }</script>
+<script src="https://docs.getgrist.com/grist-plugin-api.js"></script>
+<!-- pdfmake/vfs_fonts/jszip + js/pdf-fonts(-extra).js : chargés à la
+     demande au premier export PDF (cf. js/pdf-export.js:ensurePdfLibsLoaded),
+     pas ici - ~3-5 Mo au total (pdf-fonts-extra.js seul ~1.6 Mo), payés sur
+     CHAQUE ouverture du widget avant ce changement, y compris quand
+     l'utilisateur n'exporte jamais de PDF (signalé par l'utilisateur : 1-2s
+     d'attente à l'ouverture). -->
+<!-- Import map : necessaire pour charger TipTap/ProseMirror sans bundler
+     local (absent de l'environnement de dev) - fixe explicitement UNE SEULE
+     instance de chaque paquet prosemirror-* partage entre @tiptap/core et
+     les extensions, sans quoi ProseMirror leve "Adding different instances
+     of a keyed plugin". Inclut aussi les sous-chemins @tiptap/pm/* : le
+     bundle esm.sh de @tiptap/core importe ProseMirror via des URLs absolues
+     (ex. /@tiptap/pm@3.31.3/es2022/model.mjs), jamais via un specificateur nu -
+     sans ces entrees, ces sous-chemins echappent totalement a l'import map et
+     chargent une AUTRE instance de prosemirror-model, provoquant un crash
+     silencieux de la touche Entree (RangeError "multiple versions of
+     prosemirror-model", cf. commit qui a corrige cette regression).
+     Un script classique (pas type="module") peut resoudre ces specifiers nus
+     via import() dynamique - cf. commentaire en tete de js/editor.js. -->
+<script type="importmap">
+{
+  "imports": {
+    "prosemirror-model": "https://esm.sh/*prosemirror-model@1.25.11",
+    "orderedmap": "https://esm.sh/*orderedmap@2.1.1",
+    "prosemirror-state": "https://esm.sh/*prosemirror-state@1.4.4",
+    "prosemirror-transform": "https://esm.sh/*prosemirror-transform@1.12.0",
+    "prosemirror-view": "https://esm.sh/*prosemirror-view@1.42.3",
+    "rope-sequence": "https://esm.sh/*rope-sequence@1.3.4",
+    "prosemirror-history": "https://esm.sh/*prosemirror-history@1.5.0",
+    "prosemirror-keymap": "https://esm.sh/*prosemirror-keymap@1.2.3",
+    "w3c-keyname": "https://esm.sh/*w3c-keyname@2.2.8",
+    "prosemirror-commands": "https://esm.sh/*prosemirror-commands@1.7.1",
+    "prosemirror-schema-list": "https://esm.sh/*prosemirror-schema-list@1.5.1",
+    "prosemirror-tables": "https://esm.sh/*prosemirror-tables@1.8.5",
+    "prosemirror-gapcursor": "https://esm.sh/*prosemirror-gapcursor@1.4.1",
+    "prosemirror-dropcursor": "https://esm.sh/*prosemirror-dropcursor@1.8.2",
+    "prosemirror-inputrules": "https://esm.sh/*prosemirror-inputrules@1.5.1",
+    "prosemirror-changeset": "https://esm.sh/*prosemirror-changeset@2.4.1",
+    "@tiptap/core": "https://esm.sh/@tiptap/core@3.31.3",
+    "@tiptap/pm": "https://esm.sh/@tiptap/pm@3.31.3",
+    "https://esm.sh/@tiptap/pm@3.31.3/es2022/model.mjs": "https://esm.sh/*prosemirror-model@1.25.11",
+    "https://esm.sh/@tiptap/pm@3.31.3/es2022/state.mjs": "https://esm.sh/*prosemirror-state@1.4.4",
+    "https://esm.sh/@tiptap/pm@3.31.3/es2022/view.mjs": "https://esm.sh/*prosemirror-view@1.42.3",
+    "https://esm.sh/@tiptap/pm@3.31.3/es2022/transform.mjs": "https://esm.sh/*prosemirror-transform@1.12.0",
+    "https://esm.sh/@tiptap/pm@3.31.3/es2022/keymap.mjs": "https://esm.sh/*prosemirror-keymap@1.2.3",
+    "https://esm.sh/@tiptap/pm@3.31.3/es2022/commands.mjs": "https://esm.sh/*prosemirror-commands@1.7.1",
+    "https://esm.sh/@tiptap/pm@3.31.3/es2022/schema-list.mjs": "https://esm.sh/*prosemirror-schema-list@1.5.1",
+    "https://esm.sh/@tiptap/pm@3.31.3/es2022/tables.mjs": "https://esm.sh/*prosemirror-tables@1.8.5",
+    "https://esm.sh/@tiptap/pm@3.31.3/es2022/gapcursor.mjs": "https://esm.sh/*prosemirror-gapcursor@1.4.1",
+    "https://esm.sh/@tiptap/pm@3.31.3/es2022/dropcursor.mjs": "https://esm.sh/*prosemirror-dropcursor@1.8.2",
+    "https://esm.sh/@tiptap/pm@3.31.3/es2022/inputrules.mjs": "https://esm.sh/*prosemirror-inputrules@1.5.1",
+    "https://esm.sh/@tiptap/pm@3.31.3/es2022/history.mjs": "https://esm.sh/*prosemirror-history@1.5.0",
+    "https://esm.sh/@tiptap/pm@3.31.3/es2022/changeset.mjs": "https://esm.sh/*prosemirror-changeset@2.4.1",
+    "@tiptap/starter-kit": "https://esm.sh/@tiptap/starter-kit@3.31.3",
+    "@tiptap/extension-document": "https://esm.sh/@tiptap/extension-document@3.31.3",
+    "@tiptap/extension-underline": "https://esm.sh/@tiptap/extension-underline@3.31.3",
+    "@tiptap/extension-text-align": "https://esm.sh/@tiptap/extension-text-align@3.31.3",
+    "@tiptap/extension-text-style": "https://esm.sh/@tiptap/extension-text-style@3.31.3",
+    "@tiptap/extension-font-family": "https://esm.sh/@tiptap/extension-font-family@3.31.3",
+    "@tiptap/extension-table": "https://esm.sh/@tiptap/extension-table@3.31.3",
+    "@tiptap/extension-table-row": "https://esm.sh/@tiptap/extension-table-row@3.31.3",
+    "@tiptap/extension-table-cell": "https://esm.sh/@tiptap/extension-table-cell@3.31.3",
+    "@tiptap/extension-table-header": "https://esm.sh/@tiptap/extension-table-header@3.31.3",
+    "@tiptap/extension-task-list": "https://esm.sh/@tiptap/extension-task-list@3.31.3",
+    "@tiptap/extension-task-item": "https://esm.sh/@tiptap/extension-task-item@3.31.3",
+    "@tiptap/extension-placeholder": "https://esm.sh/@tiptap/extension-placeholder@3.31.3",
+    "@tiptap/suggestion": "https://esm.sh/@tiptap/suggestion@3.31.3",
+    "@floating-ui/dom": "https://esm.sh/@floating-ui/dom@1.6.12",
+    "@handlewithcare/prosemirror-suggest-changes": "https://esm.sh/@handlewithcare/prosemirror-suggest-changes@0.1.8",
+    "https://esm.sh/prosemirror-state@^1.0.0?target=es2022": "https://esm.sh/*prosemirror-state@1.4.4",
+    "https://esm.sh/prosemirror-transform@^1.0.0?target=es2022": "https://esm.sh/*prosemirror-transform@1.12.0",
+    "https://esm.sh/prosemirror-view@^1.0.0?target=es2022": "https://esm.sh/*prosemirror-view@1.42.3"
+  }
+}
+</script>
+<link rel="stylesheet" href="css/roboto-fonts.css?v=0.69">
+<link rel="stylesheet" href="css/style.css?v=0.89">
+<link rel="stylesheet" href="css/reader-guide.css?v=0.4">
+<link rel="stylesheet" href="css/editor-v2.css?v=0.99">
+<link rel="stylesheet" href="css/toolbar-v2.css?v=0.56">
+<link rel="stylesheet" href="css/grid.css?v=0.7">
+<link rel="stylesheet" href="css/template-tree-select.css?v=0.18">
+<link rel="stylesheet" href="css/template-organize-modal.css?v=0.8">
+<link rel="stylesheet" href="css/track-changes.css?v=0.11">
+<link rel="stylesheet" href="css/modal-base.css?v=0.8">
+<link rel="stylesheet" href="css/variable-actions.css?v=0.18">
+<link rel="stylesheet" href="css/variable-list.css?v=0.3">
+<link rel="stylesheet" href="css/conditional-text.css?v=0.3">
+<link rel="stylesheet" href="css/conditional-checkbox.css?v=0.2">
+<link rel="stylesheet" href="css/conditional-value.css?v=0.2">
+<link rel="stylesheet" href="css/link-dialog.css?v=0.2">
+<link rel="stylesheet" href="css/find-replace.css?v=0.2">
+<link rel="stylesheet" href="css/variable-calc.css?v=0.4">
+<link rel="stylesheet" href="css/callout.css?v=0.2">
+<link rel="stylesheet" href="css/caption.css?v=0.3">
+<link rel="stylesheet" href="css/qr-code.css?v=0.3">
+<link rel="stylesheet" href="css/search-select.css?v=0.7">
+<link rel="stylesheet" href="css/access-rights.css?v=0.8">
+<link rel="stylesheet" href="css/row-template.css?v=0.3">
+<link rel="stylesheet" href="css/text-expansion.css?v=0.3">
+<link rel="stylesheet" href="css/shortcuts.css?v=0.2">
+<link rel="stylesheet" href="css/watermark.css?v=0.2">
+<link rel="stylesheet" href="css/page-size.css?v=0.3">
+<link rel="stylesheet" href="css/clean-reading.css?v=0.2">
+<link rel="stylesheet" href="css/format-painter.css?v=0.2">
+<link rel="stylesheet" href="css/sheet-assembly.css?v=0.2">
+<link rel="stylesheet" href="css/external-images.css?v=0.3">
+<link rel="stylesheet" href="css/first-contact.css?v=0.1">
+<link rel="stylesheet" href="css/page-zoom.css?v=0.2">
+</head>
+<body>
+<div id="app">
+  <div id="toolbar-top" role="banner">
+    <div class="bar-row">
+      <div class="title-cluster" id="v2-title-cluster">
+        <select id="template-select" class="template-select" aria-label="Modèle" data-i18n-aria="template.select"><option value="" data-i18n="template.newOption">— Nouveau modèle —</option></select>
+        <input id="template-name" type="text" class="title-cluster-input" placeholder="Nom du modèle" data-i18n-placeholder="template.namePlaceholder" aria-label="Nom du modèle" data-i18n-aria="template.namePlaceholder" hidden>
+        <button id="btn-rename-template" type="button" class="rename-btn" aria-label="Renommer le modèle" data-tip="Renommer" data-i18n-aria="template.rename.aria" data-i18n-tip="template.rename.tip"></button>
+        <button id="btn-set-default-template" type="button" class="rename-btn" aria-label="Définir ce modèle comme modèle par défaut à l'ouverture" data-tip="Modèle par défaut" data-i18n-aria="template.setDefault.aria" data-i18n-tip="template.setDefault.tip"></button>
+      </div>
+      <div class="action-cluster">
+        <span class="v2-hover-group" id="v2-new-template-group">
+          <button id="btn-new" aria-label="Nouveau modèle" data-i18n-aria="toolbar.new"></button>
+          <span class="v2-hover-flyout v2-hover-flyout-v" id="v2-new-template-flyout">
+            <span class="v2-hover-flyout-label" data-i18n="toolbar.new">Nouveau modèle</span>
+            <span class="v2-hover-row" id="v2-btn-new-document" data-i18n="toolbar.newDocument">Nouveau document</span>
+            <span class="v2-hover-row" id="v2-btn-new-email" data-i18n="toolbar.newEmail">Nouvel email</span>
+            <span class="v2-hover-row" id="v2-btn-new-macro" data-i18n="toolbar.newMacro">Nouveau macro-modèle</span>
+            <span class="v2-hover-row" id="v2-btn-new-grid" data-i18n="toolbar.newGrid">Nouvelle grille</span>
+            <span class="v2-hover-row" id="v2-btn-import-xlsx" data-i18n="toolbar.importXlsx">Importer un Excel…</span>
+            <span class="v2-hover-hsep"></span>
+            <span class="v2-hover-row" id="v2-btn-new-from-template" data-i18n="toolbar.newFromTemplate">Créer à partir d'un modèle…</span>
+          </span>
+        </span>
+        <span class="v2-hover-group" id="v2-save-group">
+          <button id="btn-save" aria-label="Enregistrer" data-i18n-aria="toolbar.save"></button>
+          <span class="v2-hover-flyout v2-hover-flyout-v" id="v2-save-flyout" role="menu" aria-label="Enregistrer" data-i18n-aria="toolbar.save">
+            <span class="v2-hover-flyout-label" id="v2-save-flyout-label" data-i18n="toolbar.save">Enregistrer</span>
+            <span class="v2-hover-row" id="v2-btn-save-as" role="menuitem" tabindex="0" data-i18n="toolbar.saveAsRow">Enregistrer sous…</span>
+            <span class="v2-hover-hsep"></span>
+            <span class="v2-hover-row v2-hover-row-check" id="v2-btn-autosave" role="menuitemcheckbox" aria-checked="true" tabindex="0" aria-label="Enregistrement automatique — enregistre le modèle toutes les ~2,5 secondes pendant que vous éditez. Désactiver si vous préférez enregistrer vous-même." data-i18n="toolbar.autosave.row" data-i18n-aria="toolbar.autosave.aria">Enregistrement automatique</span>
+          </span>
+        </span>
+        <button id="btn-delete" aria-label="Supprimer" data-tip="Supprimer" data-i18n-aria="toolbar.delete" data-i18n-tip="toolbar.delete"></button>
+        <button id="btn-link-rules" aria-label="Tables liées (correspondance pour #Variable d'une autre table)" data-tip="Tables liées (correspondance #Variable)" data-i18n-aria="toolbar.linkRules.aria" data-i18n-tip="toolbar.linkRules.tip"></button>
+      </div>
+      <span class="bar-sep"></span>
+      <div class="mode-toggle">
+        <button id="btn-mode-edit" class="active" aria-label="Mode édition" data-tip="Mode édition" data-i18n-aria="toolbar.modeEdit" data-i18n-tip="toolbar.modeEdit"></button>
+        <!-- Mode lecture : un clic affiche la Lecture, comme avant ; son menu au survol ajoute « Lecture épurée » (js/clean-reading.js). Comme Enregistrer et Exporter, le bouton n'a pas de data-tip : l'info-bulle se retirerait dès l'ouverture du menu, le titre du menu dit le bouton et sa touche (js/shortcuts.js). -->
+        <span class="v2-hover-group" id="v2-read-group">
+          <button id="btn-mode-read" aria-label="Mode lecture" data-i18n-aria="toolbar.modeRead"></button>
+          <span class="v2-hover-flyout v2-hover-flyout-v" id="v2-read-flyout" role="menu" aria-label="Mode lecture" data-i18n-aria="toolbar.modeRead">
+            <span class="v2-hover-flyout-label" data-i18n="toolbar.modeRead">Mode lecture</span>
+            <span class="v2-hover-row" id="v2-btn-clean-reading" role="menuitem" tabindex="0" data-i18n="toolbar.cleanReading">Lecture épurée</span>
+          </span>
+        </span>
+      </div>
+      <!-- Les textes de cette case suivent le format de la page (« Aperçu A5 »...) : js/orientation-toggle.js les réécrit à chaque chargement de modèle, changement de format et de langue. -->
+      <label class="a4-toggle" id="v2-a4-toggle" data-tip="Aperçu A4" aria-label="Aperçu A4 — limite la largeur de l'éditeur à celle du contenu d'une page A4, pour que le texte se répartisse comme dans le PDF.">
+        <input type="checkbox" id="v2-toggle-a4-preview" checked><span class="a4-toggle-icon" aria-hidden="true"></span>
+      </label>
+      <!-- Page : un clic sur le bouton tourne la page (portrait / paysage) ; son menu au survol donne le sens et le format (A3 à A6, ou « Format libre… » qui ouvre la fenêtre en centimètres). Les lignes du menu sont écrites par js/orientation-toggle.js. Comme Qualité PDF et Exporter, le bouton n'a pas de data-tip : l'info-bulle se retirerait dès l'ouverture du menu (css/toolbar-v2.css), la page est dite par le menu et par l'aria-label. -->
+      <span class="v2-hover-group" id="v2-page-group">
+        <button type="button" id="btn-page-orientation" aria-label="Orientation de la page (pas disponible pour ce modèle)" data-orientation="portrait" aria-pressed="false" disabled></button>
+        <span class="v2-hover-flyout v2-hover-flyout-v" id="v2-page-flyout" role="menu" aria-label="Page" data-i18n-aria="toolbar.page.label"></span>
+      </span>
+      <span class="bar-sep"></span>
+      <span class="v2-hover-group" id="v2-quality-group">
+        <button type="button" id="v2-btn-quality" aria-label="Qualité d'export PDF" data-i18n-aria="toolbar.quality.aria"></button>
+        <select id="v2-pdf-quality" aria-label="Qualité d'export PDF" data-i18n-aria="toolbar.quality.aria" hidden>
+          <option value="native" selected data-i18n="quality.native">Vectoriel (par défaut)</option>
+          <option value="browser-print" disabled data-i18n="quality.browserPrint">Impr. navigateur (bientôt)</option>
+          <option value="low" disabled data-i18n="quality.low">Basse qualité (bientôt)</option>
+          <option value="ultra" disabled data-i18n="quality.ultra">Ultra HD (bientôt)</option>
+        </select>
+        <span class="v2-hover-flyout v2-hover-flyout-v" id="v2-quality-flyout">
+          <span class="v2-hover-flyout-label" data-i18n="toolbar.quality.tip">Qualité PDF</span>
+          <span class="v2-hover-row" data-quality="native" data-i18n="quality.native">Vectoriel (par défaut)</span>
+          <span class="v2-hover-row v2-hover-row-disabled" data-quality="browser-print" data-i18n="quality.browserPrint">Impr. navigateur (bientôt)</span>
+          <span class="v2-hover-row v2-hover-row-disabled" data-quality="low" data-i18n="quality.low">Basse qualité (bientôt)</span>
+          <span class="v2-hover-row v2-hover-row-disabled" data-quality="ultra" data-i18n="quality.ultra">Ultra HD (bientôt)</span>
+          <span class="v2-hover-hsep"></span>
+          <span class="v2-hover-row" id="v2-btn-export-docx" data-i18n="toolbar.exportDocx">Exporter en DOCX (bêta)…</span>
+          <span class="v2-hover-row" id="v2-btn-export-docx-batch" data-i18n="toolbar.exportDocxBatch">Exporter toutes les lignes en DOCX (ZIP)…</span>
+          <span class="v2-hover-row v2-hover-row-disabled" id="v2-btn-export-xlsx" aria-disabled="true" data-i18n="toolbar.exportXlsx">Exporter en Excel…</span>
+          <span class="v2-hover-row v2-hover-row-disabled" id="v2-btn-export-xlsx-batch" aria-disabled="true" data-i18n="toolbar.exportXlsxBatch">Exporter toutes les valeurs de la table en Excel (ZIP)…</span>
+          <span class="v2-hover-row v2-hover-row-disabled" id="v2-btn-export-xlsx-single" aria-disabled="true" data-i18n="toolbar.exportXlsxSingle">Exporter toutes les valeurs de la table dans un seul classeur…</span>
+        </span>
+      </span>
+      <span class="v2-hover-group" id="v2-export-pdf-group">
+        <button id="btn-export-pdf" aria-label="Exporter en PDF" data-i18n-aria="toolbar.exportPdf"></button>
+        <span class="v2-hover-flyout v2-hover-flyout-v" id="v2-export-pdf-flyout">
+          <span class="v2-hover-flyout-label" data-i18n="toolbar.exportPdf">Exporter en PDF</span>
+          <span class="v2-hover-row" id="v2-btn-export-pdf-batch" data-i18n="toolbar.exportPdfBatch">Exporter toutes les lignes (ZIP)…</span>
+          <span class="v2-hover-row" id="v2-btn-export-pdf-merged" data-i18n="toolbar.exportPdfMerged">Exporter toutes les lignes en un seul PDF…</span>
+          <span class="v2-hover-row" id="v2-btn-export-pdf-sheets" data-i18n="toolbar.exportPdfSheets">Assemblage avant impression…</span>
+        </span>
+      </span>
+      <span class="v2-pdf-filename-cluster" id="v2-pdf-filename-cluster">
+        <button type="button" id="btn-toggle-pdf-filename" aria-label="Nom de fichier PDF personnalisé" data-tip="Nom du fichier PDF" data-i18n-aria="toolbar.pdfFilename.aria" data-i18n-tip="toolbar.pdfFilename.tip"></button>
+        <input id="pdf-filename-template" type="text" placeholder="Nom de fichier PDF (variables #… autorisées)" data-i18n-placeholder="toolbar.pdfFilename.placeholder" aria-label="Nom de fichier PDF (variables #… autorisées)" data-i18n-aria="toolbar.pdfFilename.placeholder" hidden>
+      </span>
+      <span id="v2-email-char-counter" class="v2-email-char-counter" hidden></span>
+      <button type="button" id="btn-create-email" aria-label="Créer l'email" data-i18n="email.createButton" data-i18n-aria="email.createButton" hidden>Créer l'email</button>
+      <span id="status-msg"></span>
+      <button type="button" id="v2-btn-settings" data-tip="Réglages" aria-label="Réglages" data-i18n-tip="settings.tooltip" data-i18n-aria="settings.tooltip"></button>
+      <img id="v2-brand-logo" src="img/grist-factory-logo.jpg?v=1" alt="Grist Factory" width="20" height="20">
+    </div>
+    <div id="v2-email-fields-row" hidden>
+      <span class="v2-email-field-label" id="v2-email-subject-label" data-i18n="email.subject.label">Objet</span>
+      <input type="text" id="v2-email-subject" class="v2-email-field-input v2-email-field-subject" aria-labelledby="v2-email-subject-label" data-i18n-placeholder="email.subject.placeholder" placeholder="Objet de l'email (#Variable autorisée)">
+      <span class="v2-email-field-label" id="v2-email-to-label" data-i18n="email.to.label">À</span>
+      <input type="text" id="v2-email-to" class="v2-email-field-input" aria-labelledby="v2-email-to-label" data-i18n-placeholder="email.to.placeholder" placeholder="Destinataires (#Variable ou adresses séparées par des virgules)">
+      <span class="v2-email-field-label" id="v2-email-cc-label" data-i18n="email.cc.label">Cc</span>
+      <input type="text" id="v2-email-cc" class="v2-email-field-input" aria-labelledby="v2-email-cc-label" data-i18n-placeholder="email.cc.placeholder" placeholder="Copie">
+      <button type="button" id="v2-btn-toggle-cci" class="v2-email-cci-toggle" data-i18n="email.cci.show">+ Cci</button>
+      <input type="text" id="v2-email-cci" class="v2-email-field-input" data-i18n-placeholder="email.cci.placeholder" placeholder="Copie cachée" aria-label="Copie cachée" data-i18n-aria="email.cci.placeholder" hidden>
+    </div>
+    <div id="v2-toolbar">
+      <span class="v2-hover-group" id="v2-heading-group">
+        <button type="button" class="v2-format-chip" id="v2-heading-chip" aria-label="Titre et numérotation des titres — la numérotation ne s'applique qu'aux titres du flux principal" data-i18n-aria="heading.aria">
+          <span class="v2-format-chip-val" id="v2-heading-chip-val">Normal</span>
+          <span class="v2-format-chip-caret"></span>
+        </button>
+        <select id="v2-header-select" aria-label="Titre" data-i18n-aria="heading.tip" hidden>
+          <option value="p" data-i18n="heading.normal">Normal</option>
+          <option value="1" data-i18n="heading.level1">Titre 1</option><option value="2" data-i18n="heading.level2">Titre 2</option><option value="3" data-i18n="heading.level3">Titre 3</option>
+          <option value="4" data-i18n="heading.level4">Titre 4</option><option value="5" data-i18n="heading.level5">Titre 5</option><option value="6" data-i18n="heading.level6">Titre 6</option>
+        </select>
+        <select id="v2-heading-numbering-select" aria-label="Numérotation des titres" data-i18n-aria="numbering.label" hidden>
+          <option value="none" data-i18n="numbering.none">Aucune</option>
+          <option value="numeric">1), 2), 3)…</option>
+          <option value="alpha">a), b), c)…</option>
+          <option value="roman">I), II), III)…</option>
+        </select>
+        <span class="v2-hover-flyout v2-hover-flyout-v v2-hover-flyout-scrollable" id="v2-heading-flyout">
+          <span class="v2-hover-flyout-label" data-i18n="heading.tip">Titre</span>
+          <span class="v2-hover-row" data-level="p" data-i18n="heading.normal">Normal</span>
+          <span class="v2-hover-row" data-level="1" data-i18n="heading.level1">Titre 1</span>
+          <span class="v2-hover-row" data-level="2" data-i18n="heading.level2">Titre 2</span>
+          <span class="v2-hover-row" data-level="3" data-i18n="heading.level3">Titre 3</span>
+          <span class="v2-hover-row" data-level="4" data-i18n="heading.level4">Titre 4</span>
+          <span class="v2-hover-row" data-level="5" data-i18n="heading.level5">Titre 5</span>
+          <span class="v2-hover-row" data-level="6" data-i18n="heading.level6">Titre 6</span>
+          <span class="v2-hover-hsep"></span>
+          <span class="v2-numbering-block">
+            <span class="v2-numbering-label" data-i18n="numbering.label">Numérotation des titres</span>
+            <span class="v2-segmented" id="v2-numbering-seg">
+              <button type="button" class="v2-segmented-btn" data-num="none" data-i18n="numbering.none">Aucune</button>
+              <button type="button" class="v2-segmented-btn" data-num="numeric">1.</button>
+              <button type="button" class="v2-segmented-btn" data-num="alpha">a.</button>
+              <button type="button" class="v2-segmented-btn" data-num="roman">I.</button>
+            </span>
+          </span>
+        </span>
+      </span>
+      <span class="v2-sep"></span>
+      <button id="v2-btn-bold" data-tip="Gras" aria-label="Gras" data-i18n-tip="fmt.bold" data-i18n-aria="fmt.bold"></button>
+      <button id="v2-btn-italic" data-tip="Italique" aria-label="Italique" data-i18n-tip="fmt.italic" data-i18n-aria="fmt.italic"></button>
+      <button id="v2-btn-underline" data-tip="Souligné" aria-label="Souligné" data-i18n-tip="fmt.underline" data-i18n-aria="fmt.underline"></button>
+      <button id="v2-btn-strike" data-tip="Barré" aria-label="Barré" data-i18n-tip="fmt.strike" data-i18n-aria="fmt.strike"></button>
+      <span class="v2-sep"></span>
+      <span class="v2-hover-group" id="v2-align-group">
+        <button id="v2-btn-align-main" aria-label="Alignement (survoler pour les options)" data-i18n-aria="align.main.aria"></button>
+        <span class="v2-hover-flyout v2-hover-flyout-v">
+          <span class="v2-hover-flyout-label" data-i18n="align.main.tip">Alignement</span>
+          <span class="v2-hover-icon-row">
+            <button id="v2-btn-align-left" data-tip="Aligner à gauche" aria-label="Aligner à gauche" data-i18n-tip="align.left" data-i18n-aria="align.left"></button>
+            <button id="v2-btn-align-center" data-tip="Centrer" aria-label="Centrer" data-i18n-tip="align.center" data-i18n-aria="align.center"></button>
+            <button id="v2-btn-align-right" data-tip="Aligner à droite" aria-label="Aligner à droite" data-i18n-tip="align.right" data-i18n-aria="align.right"></button>
+            <button id="v2-btn-align-justify" data-tip="Justifier" aria-label="Justifier" data-i18n-tip="align.justify" data-i18n-aria="align.justify"></button>
+          </span>
+          <span class="v2-hover-hsep"></span>
+          <span class="v2-hover-row v2-hover-row-check" id="v2-btn-keep-next" role="menuitemcheckbox" aria-checked="false" tabindex="0" aria-label="Garder avec le suivant : le paragraphe reste sur la même page que le bloc qui le suit" data-i18n="keepNext.row" data-i18n-aria="keepNext.aria">Garder avec le suivant</span>
+        </span>
+      </span>
+      <span class="v2-sep"></span>
+      <span class="v2-hover-group">
+        <button id="v2-btn-bullet" aria-label="Liste (survoler pour les styles)" data-i18n-aria="list.main.aria"></button>
+        <span class="v2-hover-flyout v2-hover-flyout-v" id="v2-list-flyout">
+          <span class="v2-hover-flyout-label" data-i18n="list.main.tip">Liste</span>
+          <span class="v2-hover-icon-row">
+            <button id="v2-btn-bullet-disc" data-tip="Puce disque" aria-label="Puce disque" data-i18n-tip="list.bulletDisc" data-i18n-aria="list.bulletDisc"></button>
+            <button id="v2-btn-bullet-circle" data-tip="Puce cercle" aria-label="Puce cercle" data-i18n-tip="list.bulletCircle" data-i18n-aria="list.bulletCircle"></button>
+            <button id="v2-btn-bullet-square" data-tip="Puce carrée" aria-label="Puce carrée" data-i18n-tip="list.bulletSquare" data-i18n-aria="list.bulletSquare"></button>
+          </span>
+          <span class="v2-hover-hsep"></span>
+          <span class="v2-hover-icon-row">
+            <button id="v2-btn-ordered-numeric" data-tip="1. 2. 3." aria-label="Liste numérotée : 1. 2. 3." data-i18n-tip="list.orderedNumeric.tip" data-i18n-aria="list.orderedNumeric.aria"></button>
+            <button id="v2-btn-ordered-alpha" data-tip="a. b. c." aria-label="Liste numérotée : a. b. c." data-i18n-tip="list.orderedAlpha.tip" data-i18n-aria="list.orderedAlpha.aria"></button>
+            <button id="v2-btn-ordered-roman" data-tip="i. ii. iii." aria-label="Liste numérotée : chiffres romains" data-i18n-tip="list.orderedRoman.tip" data-i18n-aria="list.orderedRoman.aria"></button>
+          </span>
+          <span class="v2-hover-hsep"></span>
+          <span class="v2-hover-icon-row">
+            <button id="v2-btn-checklist-accent-strike" data-tip="Case à cocher (accent, texte barré)" aria-label="Liste à cases à cocher, style accent avec texte barré une fois cochée" data-i18n-tip="list.checklistAccentStrike.tip" data-i18n-aria="list.checklistAccentStrike.aria"></button>
+            <button id="v2-btn-checklist-classic" data-tip="Case à cocher (classique)" aria-label="Liste à cases à cocher, style classique" data-i18n-tip="list.checklistClassic.tip" data-i18n-aria="list.checklistClassic.aria"></button>
+            <button id="v2-btn-checklist-accent-plain" data-tip="Case à cocher (accent, texte normal)" aria-label="Liste à cases à cocher, style accent sans texte barré" data-i18n-tip="list.checklistAccentPlain.tip" data-i18n-aria="list.checklistAccentPlain.aria"></button>
+          </span>
+        </span>
+      </span>
+      <button id="v2-btn-outdent" class="v2-btn-discreet" data-tip="Diminuer le retrait" aria-label="Diminuer le retrait" data-i18n-tip="indent.decrease" data-i18n-aria="indent.decrease"></button>
+      <button id="v2-btn-indent" class="v2-btn-discreet" data-tip="Augmenter le retrait" aria-label="Augmenter le retrait" data-i18n-tip="indent.increase" data-i18n-aria="indent.increase"></button>
+      <span class="v2-sep"></span>
+      <span class="v2-stepper" id="v2-size-stepper" data-tip="Taille de police" data-i18n-tip="font.sizeTip">
+        <button type="button" id="v2-size-minus" aria-label="Diminuer la taille" data-i18n-aria="font.sizeDecrease">–</button>
+        <button type="button" class="v2-stepper-val" id="v2-size-chip-val">10.5pt</button>
+        <button type="button" id="v2-size-plus" aria-label="Augmenter la taille" data-i18n-aria="font.sizeIncrease">+</button>
+      </span>
+      <button type="button" class="v2-format-chip" id="v2-font-chip" data-tip="Police" aria-label="Police" data-i18n-tip="font.family" data-i18n-aria="font.family">
+        <span class="v2-format-chip-val" id="v2-font-chip-val">Roboto</span>
+        <span class="v2-format-chip-caret" id="v2-font-chip-caret"></span>
+      </button>
+      <span class="v2-sep"></span>
+      <span class="v2-color-split" id="v2-text-color-split">
+        <button type="button" id="v2-btn-text-color" data-tip="Couleur de police" aria-label="Appliquer la dernière couleur de police" data-i18n-tip="color.text.tip" data-i18n-aria="color.text.aria">
+          <span class="v2-color-split-icon" id="v2-text-color-icon">A</span>
+        </button>
+        <button type="button" id="v2-btn-text-color-caret" data-tip="Choisir une couleur" aria-label="Choisir une couleur de police" data-i18n-tip="color.textCaret.tip" data-i18n-aria="color.textCaret.aria">
+          <span class="v2-color-split-caret" id="v2-color-text-caret"></span>
+        </button>
+      </span>
+      <span class="v2-color-split" id="v2-highlight-split">
+        <button type="button" id="v2-btn-highlight" data-tip="Surligner" aria-label="Appliquer le dernier surlignage" data-i18n-tip="color.highlight.tip" data-i18n-aria="color.highlight.aria">
+          <span class="v2-color-split-icon" id="v2-highlight-icon"></span>
+        </button>
+        <button type="button" id="v2-btn-highlight-caret" data-tip="Choisir un surlignage" aria-label="Choisir un surlignage" data-i18n-tip="color.highlightCaret" data-i18n-aria="color.highlightCaret">
+          <span class="v2-color-split-caret" id="v2-color-highlight-caret"></span>
+        </button>
+      </span>
+      <button type="button" id="v2-btn-format-painter" data-tip="Reproduire la mise en forme" aria-label="Reproduire la mise en forme : copie celle du texte sélectionné, puis la pose sur le texte qu'on sélectionne ensuite (double-clic : plusieurs fois, Échap pour arrêter)" aria-pressed="false" data-i18n-tip="fmt.painter.tip" data-i18n-aria="fmt.painter.aria"></button>
+      <span class="v2-sep"></span>
+      <button id="v2-btn-table" data-tip="Insérer un tableau" aria-label="Insérer un tableau" data-i18n-tip="insert.table" data-i18n-aria="insert.table"></button>
+      <span class="v2-sep"></span>
+      <button id="v2-btn-two-columns" data-tip="Insérer 2 colonnes" aria-label="Insérer 2 colonnes" data-i18n-tip="insert.twoColumns" data-i18n-aria="insert.twoColumns"></button>
+      <span class="v2-hover-group" id="v2-image-group">
+        <button id="v2-btn-image" aria-label="Insérer une image (URL)" data-i18n-aria="insert.image.aria"></button>
+        <span class="v2-hover-flyout v2-hover-flyout-v" id="v2-image-flyout">
+          <span class="v2-hover-flyout-label" data-i18n="insert.image.tip">Ajouter une image</span>
+          <span class="v2-hover-row" id="v2-btn-image-from-variable" data-i18n="insert.imageFromVariable">Image depuis une variable (colonne PJ)…</span>
+        </span>
+      </span>
+      <button id="v2-btn-page-break" data-tip="Saut de page" aria-label="Insérer un saut de page (forcé à l'export PDF)" data-i18n-tip="insert.pageBreak.tip" data-i18n-aria="insert.pageBreak.aria"></button>
+      <button id="v2-btn-toc" data-tip="Insérer un sommaire" aria-label="Insérer un sommaire (généré à partir des titres)" data-i18n-tip="insert.toc.tip" data-i18n-aria="insert.toc.aria"></button>
+      <button id="v2-btn-comment" data-tip="Commenter la sélection" aria-label="Ajouter un commentaire sur le texte sélectionné" data-i18n-tip="insert.comment.tip" data-i18n-aria="insert.comment.aria"></button>
+      <span class="v2-hover-group" id="v2-blocks-group">
+        <button type="button" id="v2-btn-link" aria-label="Insérer un lien (Ctrl+K)"></button>
+        <span class="v2-hover-flyout v2-hover-flyout-v" id="v2-blocks-flyout">
+          <span class="v2-hover-flyout-label" data-i18n="insert.blocks.tip">Lien et blocs de contenu</span>
+          <button type="button" class="v2-menu-row" id="v2-row-link"><span class="v2-menu-row-icon"></span><span data-i18n="insert.link.row">Lien…</span><span class="v2-menu-row-kbd" id="v2-row-link-kbd"></span></button>
+          <button type="button" class="v2-menu-row" id="v2-btn-citation" aria-label="Insérer une citation" data-i18n-aria="insert.citation.aria"><span class="v2-menu-row-icon"></span><span data-i18n="insert.citation.tip">Citation</span></button>
+          <button type="button" class="v2-menu-row" id="v2-btn-code-block" aria-label="Insérer un bloc de code" data-i18n-aria="insert.codeBlock.aria"><span class="v2-menu-row-icon"></span><span data-i18n="insert.codeBlock.tip">Bloc de code</span></button>
+          <button type="button" class="v2-menu-row" id="v2-btn-callout" aria-label="Insérer un encadré" data-i18n-aria="insert.callout.aria"><span class="v2-menu-row-icon"></span><span id="v2-btn-callout-label" data-i18n="insert.callout.row">Encadré…</span></button>
+          <button type="button" class="v2-menu-row" id="v2-btn-signature" aria-label="Insérer un bloc de signature" data-i18n-aria="insert.signature.aria"><span class="v2-menu-row-icon"></span><span data-i18n="insert.signature.tip">Bloc de signature</span></button>
+          <button type="button" class="v2-menu-row" id="v2-btn-qr" aria-label="Insérer un QR code" data-i18n-aria="insert.qr.aria"><span class="v2-menu-row-icon"></span><span id="v2-btn-qr-label" data-i18n="insert.qr.row">QR code…</span></button>
+        </span>
+      </span>
+      <button type="button" id="v2-btn-insert-variable" class="v2-btn-variable" data-tip="Insérer une variable" aria-label="Insérer une variable (#Variable ou puce)" data-i18n-tip="insert.variable.tip" data-i18n-aria="insert.variable.aria"></button>
+      <span class="v2-sep"></span>
+      <button id="v2-btn-undo" data-tip="Annuler" aria-label="Annuler" data-i18n-tip="history.undo" data-i18n-aria="history.undo"></button>
+      <button id="v2-btn-redo" data-tip="Rétablir" aria-label="Rétablir" data-i18n-tip="history.redo" data-i18n-aria="history.redo"></button>
+      <button id="v2-btn-find" data-tip="Rechercher / Remplacer" aria-label="Rechercher et remplacer dans le modèle" data-i18n-tip="find.tip" data-i18n-aria="find.button.aria"></button>
+      <span class="v2-sep"></span>
+      <button id="v2-btn-track-changes" data-tip="Suivi des modifications" aria-label="Activer ou désactiver le suivi des modifications" data-i18n-tip="trackChanges.toggle.tip" data-i18n-aria="trackChanges.toggle.aria"></button>
+      <button id="v2-btn-accept-all" data-tip="Tout accepter" aria-label="Accepter toutes les suggestions du document" data-i18n-tip="trackChanges.acceptAll.tip" data-i18n-aria="trackChanges.acceptAll.aria"></button>
+      <button id="v2-btn-reject-all" data-tip="Tout refuser" aria-label="Refuser toutes les suggestions du document" data-i18n-tip="trackChanges.rejectAll.tip" data-i18n-aria="trackChanges.rejectAll.aria"></button>
+    </div>
+  </div>
+  <div id="autosave-conflict-banner" class="autosave-conflict-banner" style="display:none;" role="alert">
+    <span data-i18n="autosave.conflict.message">Ce modèle a été modifié ailleurs pendant votre édition.</span>
+    <button type="button" id="autosave-conflict-reload" data-i18n="autosave.conflict.reload">Recharger la dernière version</button>
+  </div>
+  <!-- Bandeau « Revenir au macro-modèle » : une ligne fine entre la barre d'outils et le texte, montrée par js/main.js (syncMacroReturnBar) tant que le modèle à l'écran a été ouvert par le stylo du résumé d'un macro-modèle. -->
+  <div id="macro-return-bar" class="macro-return-bar" role="region" aria-label="Retour au macro-modèle" data-i18n-aria="macro.return.aria" hidden>
+    <span class="macro-return-text" id="macro-return-text"></span>
+    <button type="button" id="btn-macro-return" class="macro-return-btn" data-i18n="macro.return.button">Revenir au macro-modèle</button>
+  </div>
+  <div id="v2-cell-bar-dock" class="v2-cell-bar-dock" role="toolbar" aria-label="Barre de la case" data-i18n-aria="grid.cellBar"></div>
+  <div id="editor-container" role="main"></div>
+  <div id="macro-summary-container" role="main" style="display:none;">
+    <div class="macro-summary-box">
+      <p class="macro-summary-text" id="macro-summary-text"></p>
+      <ul class="macro-summary-parts" id="macro-summary-parts" aria-label="Modèles assemblés" data-i18n-aria="macro.summary.partsAria"></ul>
+      <button type="button" id="btn-edit-macro" data-i18n="macro.editButton">Modifier la composition</button>
+    </div>
+  </div>
+  <!-- Éditeur sans accès complet au document : la carte « Donnez l'accès complet à ce widget » (js/reader-guide.js : renderAccess) prend la place du document, montrée par js/main.js (syncEditorVisibilityForMode). -->
+  <div id="access-guide-container" role="main" style="display:none;"></div>
+  <div id="reader-container" role="main" style="display:none;"></div>
+  <!-- Sortie de la Lecture épurée (js/clean-reading.js) : caché sauf dans cet état, où il reste seul à l'écran avec le document. Hors de #toolbar-top, qui est masqué : l'info-bulle est le title posé par le script. -->
+  <button type="button" id="btn-exit-clean-reading" aria-label="Quitter la lecture épurée (Échap)" data-i18n-aria="cleanReading.exit"></button>
+  <div id="link-rules-modal" class="pp-modal pp-modal-page" style="display:none;" tabindex="-1"><div class="pp-modal-box modal-content link-rules-modal-content" data-size="sm" role="dialog" aria-modal="true" aria-labelledby="link-rules-title" tabindex="-1">
+    <div class="pp-modal-header"><h3 id="link-rules-title" data-i18n="linkRules.title">Tables liées (correspondance pour #Variable)</h3></div>
+    <div id="link-rules-list" class="pp-modal-body link-rules-list"></div>
+    <div class="pp-modal-actions modal-actions"><button id="link-rules-close" data-i18n="common.close">Fermer</button></div>
+  </div></div>
+  <div id="link-config-modal" class="pp-modal pp-modal-page" style="display:none;" tabindex="-1"><div class="pp-modal-box modal-content link-config-modal-content" data-size="sm" role="dialog" aria-modal="true" aria-labelledby="link-config-title" tabindex="-1">
+    <div class="pp-modal-header"><h3 id="link-config-title"></h3></div>
+    <div class="pp-modal-body">
+      <div id="link-config-match-fields" class="link-config-bridge" hidden>
+        <div class="link-config-bridge-col"><label id="link-config-table-source-name" for="link-config-col-source"></label><select id="link-config-col-source"></select></div>
+        <span class="link-config-eq">=</span>
+        <div class="link-config-bridge-col"><label id="link-config-table-cible-name" for="link-config-col-cible"></label><select id="link-config-col-cible"></select></div>
+      </div>
+      <div id="link-config-preview" class="link-config-preview" aria-live="polite"></div>
+      <button type="button" id="link-config-toggle-singleton" class="link-config-toggle-link" data-i18n="linkConfig.useSingleton">Utiliser plutôt toujours la même ligne</button>
+      <button type="button" id="link-config-toggle-match" class="link-config-toggle-link" data-i18n="linkConfig.changeMatch" hidden>Changer de correspondance</button>
+    </div>
+    <div class="pp-modal-actions modal-actions"><button id="link-config-cancel" data-i18n="common.cancel">Annuler</button><button id="link-config-confirm" class="link-config-btn-primary" data-i18n="common.confirm">Valider</button></div>
+  </div></div>
+  <div id="template-gallery-modal" class="pp-modal pp-modal-page" style="display:none;" tabindex="-1"><div class="pp-modal-box modal-content template-gallery-modal-content" data-size="lg" role="dialog" aria-modal="true" aria-labelledby="tpl-gallery-title" tabindex="-1">
+    <div class="pp-modal-header">
+      <h3 id="tpl-gallery-title" data-i18n="gallery.title">Créer à partir d'un modèle</h3>
+      <div class="tpl-gallery-filters">
+        <input type="search" id="tpl-gallery-search" placeholder="Rechercher un modèle…" data-i18n-placeholder="gallery.searchPlaceholder" aria-label="Rechercher un modèle…" data-i18n-aria="gallery.searchPlaceholder">
+        <div class="tpl-gallery-tags" id="tpl-gallery-tags"></div>
+      </div>
+    </div>
+    <div class="pp-modal-body tpl-gallery-grid" id="tpl-gallery-grid"></div>
+    <div class="pp-modal-actions modal-actions"><span class="tpl-gallery-note" data-i18n="gallery.legalNote">Ces modèles sont des exemples à adapter ; ils ne remplacent pas un conseil juridique.</span><button id="tpl-gallery-close" data-i18n="common.close">Fermer</button></div>
+  </div></div>
+  <div id="macro-editor-modal" class="pp-modal pp-modal-page" style="display:none;" tabindex="-1"><div class="pp-modal-box modal-content macro-editor-modal-content" data-size="md" role="dialog" aria-modal="true" aria-labelledby="macro-editor-title" tabindex="-1">
+    <div class="pp-modal-header"><h3 id="macro-editor-title" data-i18n="macro.modal.title">Macro-modèle</h3></div>
+    <div class="pp-modal-body">
+      <p class="macro-editor-intro" data-i18n="macro.modal.intro">Page de garde toujours incluse, puis des annexes choisies selon des règles évaluées sur la même ligne.</p>
+      <div class="macro-editor-field">
+        <label for="macro-editor-name" data-i18n="macro.modal.nameLabel">Nom du macro-modèle</label>
+        <input type="text" id="macro-editor-name" data-i18n-placeholder="macro.modal.namePlaceholder" placeholder="Nom du macro-modèle">
+      </div>
+      <div class="macro-editor-field">
+        <label for="macro-editor-cover" data-i18n="macro.modal.coverLabel">Page de garde</label>
+        <select id="macro-editor-cover"></select>
+      </div>
+      <div class="macro-editor-slots-header" data-i18n="macro.modal.annexesTitle">Annexes conditionnelles</div>
+      <div id="macro-editor-slots" class="macro-editor-slots"></div>
+      <button type="button" id="macro-editor-add-slot" class="macro-editor-add-slot" data-i18n="macro.modal.addSlot">+ Ajouter une annexe conditionnelle</button>
+    </div>
+    <div class="pp-modal-actions modal-actions">
+      <button id="macro-editor-cancel" data-i18n="common.cancel">Annuler</button>
+      <button id="macro-editor-save" class="link-config-btn-primary" data-i18n="common.save">Enregistrer</button>
+    </div>
+  </div></div>
+  <div id="template-organize-modal" class="pp-modal pp-modal-page" style="display:none;" tabindex="-1"><div class="pp-modal-box modal-content template-organize-modal-content" data-size="md" role="dialog" aria-modal="true" aria-labelledby="template-organize-title" tabindex="-1">
+    <div class="pp-modal-header">
+      <h3 id="template-organize-title" data-i18n="organize.modal.title">Organiser mes modèles</h3>
+      <p class="template-organize-intro" data-i18n="organize.modal.intro">Ce rangement est personnel : les autres personnes qui utilisent ce document ne le voient pas.</p>
+      <div class="template-organize-search">
+        <input type="search" id="template-organize-search" data-i18n-placeholder="organize.modal.searchPlaceholder" placeholder="Rechercher un modèle…" aria-label="Rechercher un modèle…" data-i18n-aria="organize.modal.searchPlaceholder">
+        <button id="template-organize-new-folder" class="tom-new-folder-btn" data-i18n="organize.modal.newFolderRoot">+ Nouveau dossier</button>
+      </div>
+    </div>
+    <div id="template-organize-list" class="pp-modal-body template-organize-list"></div>
+    <div class="pp-modal-actions modal-actions"><button id="template-organize-close" data-i18n="common.close">Fermer</button></div>
+  </div></div>
+  <div id="template-preview-modal" class="pp-modal pp-modal-page" style="display:none;" tabindex="-1"><div class="pp-modal-box modal-content template-preview-modal-content" data-size="lg" role="dialog" aria-modal="true" aria-labelledby="tpl-preview-name" tabindex="-1">
+    <div class="pp-modal-header tpl-preview-header">
+      <h3 id="tpl-preview-name"></h3>
+      <div class="tpl-preview-actions">
+        <button type="button" id="tpl-preview-use-empty" data-i18n="gallery.useTemplate">Utiliser ce modèle</button>
+        <button type="button" id="tpl-preview-use-data" data-i18n="gallery.useWithNewTable" hidden>Utiliser avec une nouvelle table de données</button>
+      </div>
+    </div>
+    <div class="pp-modal-body tpl-preview-body" id="tpl-preview-body"><div class="v2-page-sheet a4-preview"><div class="tiptap" id="tpl-preview-tiptap"></div></div></div>
+    <div class="pp-modal-actions modal-actions"><button id="tpl-preview-back" data-i18n="gallery.backToGallery">Retour à la galerie</button><button id="tpl-preview-close" data-i18n="common.close">Fermer</button></div>
+  </div></div>
+  <div id="settings-modal" class="pp-modal pp-modal-page" style="display:none;" tabindex="-1"><div class="pp-modal-box modal-content settings-modal-content" data-size="md" role="dialog" aria-modal="true" aria-labelledby="settings-title" tabindex="-1">
+    <div class="pp-modal-header">
+      <h3 id="settings-title" data-i18n="settings.title">Réglages</h3>
+      <div class="settings-tabs" id="settings-tabs">
+        <button type="button" class="settings-tab active" data-settings-tab="language" data-i18n="settings.tab.language">Langue</button>
+        <button type="button" class="settings-tab" data-settings-tab="theme" data-i18n="settings.tab.theme">Thème</button>
+        <button type="button" class="settings-tab" data-settings-tab="triggerKey" data-i18n="settings.tab.triggerKey">Déclencheur</button>
+        <button type="button" class="settings-tab" data-settings-tab="shortcuts" data-i18n="settings.tab.shortcuts">Raccourcis</button>
+        <button type="button" class="settings-tab" data-settings-tab="pageMargins" data-i18n="settings.tab.pageMargins">Marges</button>
+        <button type="button" class="settings-tab" data-settings-tab="rowTemplate" data-i18n="settings.tab.rowTemplate">Vue</button>
+        <button type="button" class="settings-tab" data-settings-tab="access" data-i18n="settings.tab.access">Accès</button>
+        <button type="button" class="settings-tab" data-settings-tab="credits" data-i18n="settings.tab.credits">Crédits</button>
+      </div>
+    </div>
+    <div class="pp-modal-body settings-body">
+      <div class="settings-panel" data-settings-panel="language">
+        <p class="settings-panel-intro" data-i18n="settings.language.intro">Langue de l'interface (textes, infobulles, messages).</p>
+        <div class="settings-radio-row">
+          <label><input type="radio" name="settings-lang" value="fr"><span data-i18n="settings.language.fr">Français</span></label>
+          <label><input type="radio" name="settings-lang" value="en"><span data-i18n="settings.language.en">Anglais</span></label>
+        </div>
+      </div>
+      <div class="settings-panel" data-settings-panel="theme" hidden>
+        <p class="settings-panel-intro" data-i18n="settings.theme.intro">Apparence de l'interface. La page du document reste blanche dans les deux thèmes : c'est elle qui part à l'impression.</p>
+        <div class="settings-radio-row">
+          <label><input type="radio" name="settings-theme" value="system"><span data-i18n="settings.theme.system">Système</span></label>
+          <label><input type="radio" name="settings-theme" value="light"><span data-i18n="settings.theme.light">Clair</span></label>
+          <label><input type="radio" name="settings-theme" value="dark"><span data-i18n="settings.theme.dark">Sombre</span></label>
+        </div>
+      </div>
+      <div class="settings-panel" data-settings-panel="triggerKey" hidden>
+        <p class="settings-panel-intro" id="settings-trigger-intro" data-i18n="settings.triggerKey.intro">Caractère qui ouvre le panneau #Variable/Puces en cours de frappe.</p>
+        <select id="settings-trigger-char" aria-labelledby="settings-trigger-intro">
+          <option value="#">#</option>
+          <option value="@">@</option>
+          <option value="!">!</option>
+          <option value="~">~</option>
+          <option value="%">%</option>
+        </select>
+        <p class="settings-trigger-reload-notice" id="settings-trigger-reload-notice" hidden>
+          <span data-i18n="settings.triggerKey.reloadNotice">Rechargez la page pour appliquer ce changement.</span>
+          <button type="button" id="settings-trigger-reload-btn" data-i18n="settings.triggerKey.reloadButton">Recharger maintenant</button>
+        </p>
+      </div>
+      <div class="settings-panel" data-settings-panel="shortcuts" hidden>
+        <div class="settings-switch" role="tablist" aria-label="Sections des raccourcis" data-i18n-aria="settings.switch.aria">
+          <button type="button" role="tab" class="settings-switch-btn active" id="settings-switch-keys" aria-selected="true" aria-controls="settings-keys-section" data-i18n="settings.switch.keys">Touches</button>
+          <button type="button" role="tab" class="settings-switch-btn" id="settings-switch-expansion" aria-selected="false" aria-controls="settings-expansion-section" tabindex="-1" data-i18n="settings.switch.expansion">Abréviations</button>
+        </div>
+        <section class="settings-section" id="settings-keys-section" role="tabpanel" aria-labelledby="settings-switch-keys">
+          <div class="settings-keys-head">
+            <h4 class="settings-section-title" id="settings-keys-title" data-i18n="settings.keys.title">Touches du clavier</h4>
+            <button type="button" id="settings-keys-reset-all" data-i18n="settings.keys.resetAll" disabled>Tout remettre par défaut</button>
+          </div>
+          <p class="settings-panel-intro" data-i18n="settings.keys.intro">Cliquez sur une touche, puis tapez la combinaison voulue. Échap annule, Retour arrière retire la touche.</p>
+          <div id="settings-keys-list"></div>
+          <p class="settings-access-hint" data-i18n="settings.keys.perBrowser">Les touches ne marchent que lorsque le curseur est dans le widget ; le navigateur garde pour lui Ctrl+N, Ctrl+T et Ctrl+W. Elles sont propres à ce navigateur, comme la langue et le thème.</p>
+        </section>
+        <section class="settings-section" id="settings-expansion-section" role="tabpanel" aria-labelledby="settings-switch-expansion" hidden>
+          <div class="settings-expansion-head">
+            <h4 class="settings-section-title" id="settings-expansion-title" data-i18n="settings.expansion.title">Abréviations</h4>
+            <div class="settings-expansion-char-row">
+              <label for="settings-expansion-char" data-i18n="settings.expansion.char">Caractère déclencheur</label>
+              <input type="text" id="settings-expansion-char" maxlength="1" autocomplete="off" spellcheck="false" aria-describedby="settings-expansion-char-status">
+            </div>
+          </div>
+          <p class="settings-expansion-error" id="settings-expansion-char-status" role="status" hidden></p>
+          <p class="settings-panel-intro" id="settings-expansion-intro"></p>
+          <form class="settings-expansion-form" id="settings-expansion-form" novalidate>
+            <label for="settings-expansion-abbr" data-i18n="settings.expansion.abbreviation">Abréviation</label>
+            <input type="text" id="settings-expansion-abbr" maxlength="30" autocomplete="off" spellcheck="false" placeholder="ub">
+            <label for="settings-expansion-text" data-i18n="settings.expansion.text">Texte à écrire</label>
+            <textarea id="settings-expansion-text" rows="2" maxlength="2000" placeholder="université de Bordeaux" data-i18n-placeholder="settings.expansion.textPlaceholder"></textarea>
+            <p class="settings-expansion-error" id="settings-expansion-status" role="status" hidden></p>
+            <div class="settings-expansion-actions">
+              <button type="submit" id="settings-expansion-submit" data-i18n="settings.expansion.add">Ajouter</button>
+              <button type="button" id="settings-expansion-cancel" data-i18n="common.cancel" hidden>Annuler</button>
+            </div>
+          </form>
+          <ul class="settings-expansion-list" id="settings-expansion-list"></ul>
+          <p class="settings-access-hint" id="settings-expansion-empty" data-i18n="settings.expansion.empty">Aucune abréviation pour l'instant.</p>
+          <p class="settings-access-hint" data-i18n="settings.expansion.perPerson">Chaque personne a les siennes, enregistrées dans le document (table Publipostage_Abreviations).</p>
+        </section>
+      </div>
+      <div class="settings-panel" data-settings-panel="pageMargins" hidden>
+        <p class="settings-panel-intro" data-i18n="settings.pageMargins.intro">Marges de page (mm) - propres à ce modèle, appliquées à l'aperçu et aux exports PDF/DOCX.</p>
+        <div class="settings-margins-grid">
+          <label><span data-i18n="settings.pageMargins.top">Haut</span><input type="number" id="settings-margin-top" min="0" max="277" step="0.5"></label>
+          <label><span data-i18n="settings.pageMargins.right">Droite</span><input type="number" id="settings-margin-right" min="0" max="190" step="0.5"></label>
+          <label><span data-i18n="settings.pageMargins.bottom">Bas</span><input type="number" id="settings-margin-bottom" min="0" max="277" step="0.5"></label>
+          <label><span data-i18n="settings.pageMargins.left">Gauche</span><input type="number" id="settings-margin-left" min="0" max="190" step="0.5"></label>
+        </div>
+      </div>
+      <div class="settings-panel settings-view-panel" data-settings-panel="rowTemplate" hidden>
+        <p class="settings-panel-intro" data-i18n="settings.view.intro">Réglages propres à cette vue. Pour les appliquer à tout le monde, enregistrez ensuite la vue dans Grist (bouton Enregistrer en haut du widget).</p>
+        <section class="settings-section settings-view-section" id="settings-rowtemplate-section">
+          <h4 class="settings-section-title" data-i18n="settings.rowTemplate.title">Modèle selon la ligne</h4>
+          <p class="settings-panel-intro" data-i18n="settings.rowTemplate.intro">Ouvre tout seul le bon modèle selon la ligne sélectionnée dans la table de la page, en édition comme en lecture. Les règles se lisent dans l'ordre : la première qui correspond choisit le modèle.</p>
+          <label class="settings-rowtemplate-enable"><input type="checkbox" id="settings-rowtemplate-enabled"><span data-i18n="settings.rowTemplate.enable">Choisir le modèle selon la ligne</span></label>
+          <div class="settings-rowtemplate-body" id="settings-rowtemplate-body">
+            <div class="macro-slot-card">
+              <div class="macro-slot-rules" id="settings-rowtemplate-rules"></div>
+              <button type="button" class="macro-rule-add" id="settings-rowtemplate-add" data-i18n="settings.rowTemplate.addRule">+ Ajouter une règle</button>
+              <div class="macro-slot-sep"></div>
+              <label class="macro-slot-default-label" for="settings-rowtemplate-otherwise" data-i18n="settings.rowTemplate.otherwise">Si aucune règle ne correspond</label>
+              <select class="macro-slot-default-select" id="settings-rowtemplate-otherwise"></select>
+            </div>
+          </div>
+          <p class="settings-access-locked" id="settings-rowtemplate-locked" data-i18n="settings.rowTemplate.locked" hidden>Vous êtes en lecture seule : ce réglage est verrouillé.</p>
+          <p class="settings-access-hint" data-i18n="settings.rowTemplate.exportHint">Quand ce réglage est coché, un export en lot rend chaque ligne avec le modèle que les règles lui désignent.</p>
+        </section>
+        <section class="settings-section settings-view-section" id="settings-viewtemplate-section">
+          <h4 class="settings-section-title" data-i18n="settings.viewTemplate.title">Modèle par défaut de cette vue</h4>
+          <p class="settings-panel-intro" data-i18n="settings.viewTemplate.intro">Le modèle qui s'ouvre chaque fois que l'on arrive dans cette vue. Sans choix, c'est le modèle par défaut du document (★) qui s'ouvre.</p>
+          <p class="settings-viewtemplate-status" id="settings-viewtemplate-status" role="status"></p>
+          <div class="settings-viewtemplate-actions">
+            <button type="button" id="settings-viewtemplate-set" data-i18n="settings.viewTemplate.use">Utiliser le modèle ouvert pour cette vue</button>
+            <button type="button" id="settings-viewtemplate-clear" data-i18n="settings.viewTemplate.clear">Retirer</button>
+          </div>
+          <p class="settings-access-locked" id="settings-viewtemplate-locked" data-i18n="settings.viewTemplate.locked" hidden>Vous êtes en lecture seule : ce réglage est verrouillé.</p>
+        </section>
+      </div>
+      <div class="settings-panel" data-settings-panel="access" hidden>
+        <p class="settings-panel-intro" data-i18n="settings.access.intro">Droits par personne, lus dans une table du document : une ligne par personne, repérée par son email Grist, et une case à cocher par droit.</p>
+        <div class="settings-access-grid">
+          <label for="settings-access-table" data-i18n="settings.access.table">Table des droits</label><select id="settings-access-table"></select>
+          <label for="settings-access-email" data-i18n="settings.access.email">Colonne email</label><select id="settings-access-email"></select>
+          <label for="settings-access-readonly" data-i18n="settings.access.readOnly">Lecture seule</label><select id="settings-access-readonly"></select>
+          <label for="settings-access-export" data-i18n="settings.access.export">Export autorisé</label><select id="settings-access-export"></select>
+          <label for="settings-access-comments" data-i18n="settings.access.comments">Commentaires autorisés</label><select id="settings-access-comments"></select>
+        </div>
+        <!-- Lecture épurée d'emblée (js/access-rights.js, js/clean-reading.js) : décochée au départ, grisée tant qu'aucune colonne « Lecture seule » n'est choisie. -->
+        <label class="settings-access-clean" for="settings-access-clean-reading"><input type="checkbox" id="settings-access-clean-reading" disabled><span data-i18n="settings.access.cleanReading">Ouvrir les personnes en lecture seule sur la Lecture épurée</span></label>
+        <p class="settings-access-hint" data-i18n="settings.access.cleanReadingHint">Elles ouvrent sur le document seul, sans la barre d'outils ; le bouton rond du coin haut droit ou Échap leur rend la barre (Commenter, Exporter selon leurs droits). Choisissez d'abord la colonne « Lecture seule ».</p>
+        <p class="settings-access-status" id="settings-access-status" role="status" hidden></p>
+        <p class="settings-access-locked" id="settings-access-locked" data-i18n="settings.access.locked" hidden>Vous êtes en lecture seule : ce réglage est verrouillé.</p>
+        <p class="settings-access-hint" data-i18n="settings.access.saveHint">Pour l'appliquer à tout le monde, enregistrez ensuite la vue dans Grist (bouton Enregistrer en haut du widget). Une personne absente de la table garde tous les droits.</p>
+        <p class="settings-access-hint" data-i18n="settings.access.protectHint">Simple verrou d'interface : seules les règles d'accès de Grist protègent vraiment les modèles et les données.</p>
+      </div>
+      <div class="settings-panel" data-settings-panel="credits" hidden>
+        <dl class="settings-credits-list">
+          <dt data-i18n="settings.credits.version">Version</dt><dd id="settings-credits-version"></dd>
+          <dt data-i18n="settings.credits.author">Auteur</dt><dd id="settings-credits-author">Grist Factory</dd>
+          <dt data-i18n="settings.credits.website">Site</dt><dd id="settings-credits-website"><a href="https://grist-factory.fr" id="settings-credits-website-link" target="_blank" rel="noopener noreferrer">grist-factory.fr</a></dd>
+          <dt data-i18n="settings.credits.license">Licence</dt><dd id="settings-credits-license"><a href="https://github.com/grist-factory/Publipostage-Plus/blob/main/LICENSE" id="settings-credits-license-link" target="_blank" rel="noopener noreferrer">GNU GPL v3.0</a></dd>
+          <dt data-i18n="settings.credits.bio">Bio</dt><dd id="settings-credits-bio" data-i18n="settings.credits.bioText">Grist Factory conçoit des widgets libres pour Grist. Publipostage+ en est un : rédiger contrats, factures et courriers à partir de vos données, sans écrire une ligne de code.</dd>
+        </dl>
+      </div>
+    </div>
+    <div class="pp-modal-actions modal-actions"><button id="settings-close" data-i18n="common.close">Fermer</button></div>
+  </div></div>
+</div>
+<script src="js/dom.js?v=0.2"></script>
+<script src="js/image-io.js?v=0.1"></script>
+<script src="js/version.js?v=0.1"></script>
+<script src="js/html-sanitize.js?v=0.6"></script>
+<script src="js/page-tree.js?v=0.5"></script>
+<script src="js/grist-api.js?v=0.101"></script>
+<script src="js/templates.js?v=0.92"></script>
+<script src="js/table-consent.js?v=0.1"></script>
+<script>
+  // Démarrage anticipé (mesure d'ouverture du 2026-10-02) : Grist et la lecture des modèles ne dépendent d'aucun des scripts qui suivent, ils partent ici pendant que ceux-ci
+  // arrivent et s'exécutent. js/main.js reprend ces promesses (window.__earlyStart) ; sans elles (échec ici), il les lance lui-même.
+  try {
+    const gristInit = GristAPI.init();
+    const templatesLoaded = Templates.loadAll();
+    gristInit.catch(() => {}); // l'échec se lit à l'attente, dans js/main.js
+    templatesLoaded.catch(() => {});
+    window.__earlyStart = { grist: gristInit, templates: templatesLoaded };
+  } catch (e) { console.error('[boot] démarrage anticipé impossible', e); }
+</script>
+<script src="js/reader-mode.js?v=0.131"></script>
+<script src="js/reader-guide.js?v=0.6"></script>
+<script src="js/i18n.js?v=0.125"></script>
+<script src="js/shortcuts.js?v=0.10"></script>
+<script src="js/page-layout.js?v=0.13"></script>
+<script src="js/page-layer.js?v=0.4"></script>
+<script src="js/table-page-cut.js?v=0.5"></script>
+<script src="js/heading-numbering.js?v=0.6"></script>
+<script src="js/variable-format.js?v=0.18"></script>
+<script src="js/formula.js?v=0.3"></script>
+<script src="js/layers.js?v=0.4"></script>
+<script src="js/viewport-fit.js?v=0.6"></script>
+<script src="js/search-select.js?v=0.12"></script>
+<script src="js/variables.js?v=0.60"></script>
+<script src="js/icons.js?v=0.41"></script>
+<script src="js/editor-core.js?v=0.20"></script>
+<script src="js/header-footer-preview.js?v=1.26"></script>
+<script src="js/editor-nodes.js?v=1.25"></script>
+<script src="js/floating-toolbars.js?v=0.43"></script>
+<script src="js/main-toolbar.js?v=1.14"></script>
+<script src="js/format-painter.js?v=0.3"></script>
+<script src="js/comments.js?v=0.16"></script>
+<script src="js/track-changes-core.js?v=0.1"></script>
+<script src="js/track-changes-selection.js?v=0.1"></script>
+<script src="js/track-changes-resolve.js?v=0.1"></script>
+<script src="js/track-changes-reading.js?v=0.1"></script>
+<script src="js/track-changes-commands.js?v=0.1"></script>
+<script src="js/track-changes.js?v=0.18"></script>
+<script src="js/table-borders.js?v=0.2"></script>
+<script src="js/grid-table.js?v=0.6"></script>
+<script src="js/grid-editor.js?v=0.14"></script>
+<script src="js/table-select.js?v=0.3"></script>
+<script src="js/table-merge.js?v=0.2"></script>
+<script src="js/editor.js?v=2.31"></script>
+<script src="js/export-common.js?v=0.13"></script>
+<script src="js/pdf-glyph-fallback.js?v=0.2"></script>
+<!-- Moteurs d'export : js/export-engines.js les charge au premier export (ExportEngines.ensure), pas à l'ouverture. Ces balises ne s'exécutent pas (le
+     navigateur ne connaît pas leur type) ; leur version de cache se monte comme celle de tout script. -->
+<script src="js/export-engines.js?v=0.1"></script>
+<script type="text/x-lazy-engine" data-engine="pdf" src="js/pdf-export.js?v=1.36"></script>
+<script type="text/x-lazy-engine" data-engine="sheets" src="js/sheet-layout.js?v=0.2"></script>
+<script type="text/x-lazy-engine" data-engine="merge" src="js/pdf-merge.js?v=0.5"></script>
+<script type="text/x-lazy-engine" data-engine="docx" src="js/docx-export.js?v=0.44"></script>
+<script type="text/x-lazy-engine" data-engine="xlsx" src="js/xlsx-export.js?v=0.16"></script>
+<script type="text/x-lazy-engine" data-engine="xlsxFormat" src="js/xlsx-number-format.js?v=0.3"></script>
+<script src="js/grid-xlsx-import.js?v=0.7"></script>
+<script src="js/mailto-export.js?v=0.11"></script>
+<script src="js/template-gallery.js?v=0.12"></script>
+<script src="js/template-gallery-modal.js?v=0.2"></script>
+<script src="js/settings.js?v=0.12"></script>
+<script src="js/condition-rules.js?v=0.10"></script>
+<script src="js/condition-fields.js?v=0.17"></script>
+<script src="js/modal-base.js?v=0.6"></script>
+<script src="js/dialogs.js?v=0.5"></script>
+<script src="js/first-contact.js?v=0.3"></script>
+<script src="js/external-images.js?v=0.4"></script>
+<script src="js/link-dialog.js?v=0.7"></script>
+<script src="js/find-replace.js?v=0.6"></script>
+<script src="js/callout.js?v=0.7"></script>
+<script src="js/caption.js?v=0.4"></script>
+<script src="js/keep-with-next.js?v=0.2"></script>
+<script src="js/qr-code.js?v=0.5"></script>
+<script src="js/text-expansion.js?v=0.8"></script>
+<script src="js/text-expansion-settings.js?v=0.2"></script>
+<script src="js/shortcuts-panel.js?v=0.2"></script>
+<script src="js/variable-modal.js?v=0.3"></script>
+<script src="js/variable-condition.js?v=0.13"></script>
+<script src="js/variable-linked-attrs.js?v=0.12"></script>
+<script src="js/loop-rules.js?v=0.11"></script>
+<script src="js/variable-loop.js?v=0.9"></script>
+<script src="js/variable-list.js?v=0.4"></script>
+<script src="js/list-split.js?v=0.2"></script>
+<script src="js/variable-calc.js?v=0.2"></script>
+<script src="js/variable-column.js?v=0.8"></script>
+<script src="js/conditional-text.js?v=0.6"></script>
+<script src="js/conditional-checkbox.js?v=0.4"></script>
+<script src="js/conditional-value.js?v=0.4"></script>
+<script src="js/macro-templates.js?v=0.9"></script>
+<script src="js/macro-editor.js?v=0.47"></script>
+<script src="js/view-template.js?v=0.6"></script>
+<script src="js/row-template.js?v=0.4"></script>
+<script src="js/row-template-panel.js?v=0.3"></script>
+<script src="js/template-organizer.js?v=0.4"></script>
+<script src="js/template-preferences.js?v=0.10"></script>
+<script src="js/template-organize-modal.js?v=0.11"></script>
+<script src="js/template-tree-select.js?v=0.19"></script>
+<script src="js/access-rights.js?v=0.7"></script>
+<script src="js/schema-renames.js?v=0.4"></script>
+<script src="js/settings-columns.js?v=0.4"></script>
+<script src="js/watermark-dialog.js?v=0.5"></script>
+<script src="js/saved-page-formats.js?v=0.4"></script>
+<script src="js/page-size-dialog.js?v=0.4"></script>
+<script src="js/sheet-assembly-dialog.js?v=0.4"></script>
+<script src="js/orientation-toggle.js?v=0.10"></script>
+<script src="js/clean-reading.js?v=0.4"></script>
+<script src="js/page-zoom.js?v=0.5"></script>
+<script src="js/main.js?v=0.122"></script>
+</body>
+</html>

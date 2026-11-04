@@ -1,0 +1,203 @@
+/* Condition, autres attributs et boucle d'une bulle #Variable : actions de la barre flottante (js/floating-toolbars.js), fenêtres de condition,
+   d'autres attributs et de boucle (js/variable-condition.js, js/variable-linked-attrs.js, js/variable-loop.js) et repères de boucle dans
+   l'éditeur. Les lignes de règle réutilisent les classes .macro-rule-* de css/toolbar-v2.css (mêmes champs que les macro-modèles,
+   js/condition-fields.js). */
+
+/* Bulle conditionnelle dans l'éditeur : bordure en pointillés. En lecture et à l'export, la bulle est remplacée par sa valeur ou retirée. */
+.tiptap .var-badge[data-condition] { border-style: dashed; border-color: #5b7fc0; }
+
+/* Bulle sélectionnée par un clic : ProseMirror pose `ProseMirror-selectednode` mais masque alors la sélection du navigateur
+   (`ProseMirror-hideselection`), rien ne la montrait. Le fond passe à un bleu plus soutenu (texte 6,9:1), liseré inchangé ; même teinte en sombre,
+   la page du document restant blanche. `background-color` seulement : le repère de boucle d'une bulle en ligne est un `background-image`. Une
+   bulle cassée garde son rouge, un cran plus soutenu. Même retour pour la bulle « Calcul » (css/variable-calc.css). */
+.tiptap .var-badge.ProseMirror-selectednode { background-color: #b9d2f8; }
+.tiptap .var-badge.var-badge-broken.ProseMirror-selectednode { background-color: #f3cccc; }
+
+/* Bulle dans une case de tableau ou une colonne de zone 2 colonnes : un nom trop long recouvrait la case voisine ou, avec `overflow-wrap:
+   anywhere` (css/style.css), passait sur 2 ou 3 lignes et rendait la zone plus haute dans l'éditeur qu'en Lecture et à l'export. Le nom y est
+   coupé au milieu par « … » (début tronqué, fin gardée), jamais rendu à la ligne ; le texte entier reste dans le DOM (js/editor-nodes.js,
+   addNodeView) et en info-bulle. `overflow` seulement sur le début et la fin, jamais sur la bulle : il rognerait le point bleu du format
+   (`::after`, hors de la boîte). Le début rétrécit d'abord (poids de rétrécissement énorme) mais garde la place de « #… » : sans ce plancher, une
+   case un peu trop étroite laissait une tranche de « # » sans « … », et le nom passait pour entier. Au-delà, la fin rétrécit en se coupant par la
+   gauche (boîte en flex, contenu calé à droite) : le bout du nom, qui distingue une variable d'une autre, reste visible. */
+.tiptap :where(td, th, .two-columns-column) .var-badge { display: inline-flex; max-width: 100%; box-sizing: border-box; }
+.tiptap :where(td, th, .two-columns-column) .var-badge-head { flex: 0 1000000 auto; min-width: min(1.3em, 40%); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tiptap :where(td, th, .two-columns-column) .var-badge-tail { flex: 0 1 auto; min-width: 0; display: flex; justify-content: flex-end; overflow: hidden; white-space: nowrap; }
+
+/* Barre flottante : actions à gauche, séparateur avant les réglages nombre/date (masqué pour une colonne sans réglage). */
+.v2-varfmt-toolbar .v2-varbadge-actions { display: flex; align-items: center; gap: 2px; }
+.v2-varfmt-toolbar .v2-floating-sep[data-var-sep] { align-self: stretch; width: 1px; margin: 3px 4px; background: var(--border, #d7dde3); }
+.v2-varfmt-toolbar .v2-floating-sep[data-var-sep][hidden] { display: none; }
+.v2-floating-toolbar button.is-disabled { opacity: .35; cursor: default; }
+.v2-floating-toolbar button.is-disabled:hover { background: transparent; }
+
+/* « vide » / « non vide » : le champ Valeur ne sert pas, il est grisé (partagé avec les macro-modèles, js/condition-fields.js:syncValueDisabled). */
+.macro-rule-value-slot.is-disabled { opacity: .45; }
+
+/* Fenêtres : le voile, le cadre, le titre, la zone qui défile et la ligne de boutons viennent de la base commune (js/modal-base.js,
+   css/modal-base.css), si bien que dans un panneau bas le titre et les boutons restent visibles et que seul le contenu défile. Ici : l'aspect du
+   contenu et des boutons. */
+.var-modal-intro { font-size: 12px; line-height: 1.5; color: var(--text-muted); margin: 0 0 12px; overflow-wrap: anywhere; }
+.var-modal-intro .var-badge { border-style: dashed; border-color: #5b7fc0; font-size: 11.5px; }
+.var-modal-actions .var-modal-spacer { flex: 1; }
+.var-modal-actions button { font-family: var(--font-ui); font-weight: 600; font-size: 13px; height: 30px; padding: 0 12px; border-radius: var(--radius-sm); border: 1px solid var(--border-strong); background: var(--surface); color: var(--text); cursor: pointer; white-space: nowrap; }
+.var-modal-actions button:hover { background: var(--surface-sunken); }
+.var-modal-actions button.var-modal-primary { background: var(--accent-solid); border-color: var(--accent-solid); color: #fff; }
+.var-modal-actions button.var-modal-primary:hover { background: var(--accent-solid-hover); }
+.var-modal-actions button:disabled { opacity: .45; cursor: default; }
+.var-modal-actions button:disabled:not(.var-modal-primary):hover { background: var(--surface); }
+/* Autres attributs : Annuler, Remplacer et « Insérer N attributs » ne tiennent pas côte à côte dans un panneau étroit (sous ~400 px) : « Insérer »
+   passe alors sur sa propre ligne, à droite, au lieu de sortir de la fenêtre. */
+.var-linked-modal-content .var-modal-actions { flex-wrap: wrap; justify-content: flex-end; row-gap: 8px; }
+.var-modal-actions button.var-modal-danger { border-color: transparent; background: transparent; color: var(--danger-ink); padding: 0 4px; }
+.var-modal-actions button.var-modal-danger:hover { background: var(--danger-soft, #fbe9e9); }
+.var-modal-actions button[hidden] { display: none; }
+/* « Défaire le bloc » (fenêtre de condition d'un bloc de texte) : bouton de retrait comme « Retirer la condition », mais le rouge de --danger
+   (4,4:1 sur blanc) est trop faible pour un texte. Il garde la couleur du texte, comme « Retirer l'encadré » et « Retirer le lien » : le rouge
+   vaut pour une condition qu'on retire, pas pour un texte qui reste. */
+.var-modal-actions button.var-modal-danger.var-modal-unwrap { color: var(--text); }
+.var-modal-actions button.var-modal-danger.var-modal-unwrap:hover { background: var(--surface-sunken); }
+
+/* Fenêtre de condition, ligne de boutons : les retraits (« Retirer la condition », « Défaire le bloc ») à gauche, Annuler et Enregistrer à droite
+   ; si les deux groupes ne tiennent pas sur une ligne, le second passe dessous, à droite, entier. */
+.var-condition-modal-content .var-modal-actions { flex-wrap: wrap; row-gap: 8px; }
+.var-modal-actions-start, .var-modal-actions-end { display: flex; align-items: center; gap: 8px; }
+.var-modal-actions-end { margin-left: auto; }
+.var-condition-mode { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 8px; font-size: 12px; font-weight: 600; color: var(--text); }
+.var-condition-mode[hidden] { display: none; }
+.var-condition-mode select { height: 26px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); font-size: 12px; padding: 0 4px; background: var(--surface); color: var(--text); font-family: var(--font-ui); }
+.var-condition-rules { display: flex; flex-direction: column; gap: 4px; padding: 10px; background: var(--surface-sunken); border: 1px solid var(--border); border-radius: 8px; }
+.var-condition-rules .macro-rule-column-type { padding-left: 39px; box-sizing: border-box; }
+.var-condition-link-hint { flex: 1 0 100%; padding-left: 39px; box-sizing: border-box; font-size: 10.5px; font-weight: 600; color: var(--text-muted); white-space: normal; }
+.var-condition-link-hint[hidden] { display: none; }
+.var-condition-link-hint button { font: inherit; font-weight: 700; color: var(--accent-ink); background: none; border: none; padding: 0; cursor: pointer; text-decoration: underline; }
+.var-condition-add { align-self: flex-start; margin-top: 4px; height: 26px; padding: 0 10px; border: 1px dashed var(--border-strong); border-radius: var(--radius-sm); background: transparent; font-family: var(--font-ui); font-size: 12px; font-weight: 700; color: var(--text-muted); cursor: pointer; }
+.var-condition-add:hover { color: var(--accent-ink); border-color: var(--accent); }
+/* Dernière ligne de la boîte des règles : « + Ajouter une condition » à gauche, Copier / Coller à droite, sur la même ligne pour ne pas ajouter de
+   hauteur dans un panneau bas ; elle passe à la ligne sous 350 px. Grisés par aria-disabled : le survol (info-bulle qui explique pourquoi) reste
+   possible. .var-condition-clip-status ne sert qu'aux lecteurs d'écran. */
+.var-condition-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 4px; }
+.var-condition-foot .var-condition-add { align-self: center; margin-top: 0; }
+.var-condition-clip { margin-left: auto; display: inline-flex; align-items: center; gap: 6px; }
+.var-condition-clip-btn { min-width: 62px; height: 26px; padding: 0 10px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); background: var(--surface); font-family: var(--font-ui); font-size: 12px; font-weight: 700; color: var(--text-muted); cursor: pointer; }
+.var-condition-clip-btn:hover { color: var(--accent); border-color: var(--accent); }
+.var-condition-clip-btn.is-disabled { opacity: .45; cursor: default; }
+.var-condition-clip-btn.is-disabled:hover { color: var(--text-muted); border-color: var(--border-strong); }
+.var-condition-clip-btn.is-done, .var-condition-clip-btn.is-done:hover { color: var(--good, #146c48); border-color: var(--good-soft-border, #bfe6d3); background: var(--good-soft, #e5f6ee); }
+.var-condition-clip-status { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+.var-condition-debug { display: flex; flex-direction: column; gap: 6px; margin-top: 12px; }
+.var-condition-debug-line { display: flex; align-items: flex-start; gap: 8px; padding: 7px 10px; border-radius: 6px; font-size: 12px; line-height: 1.45; background: var(--surface-sunken); border: 1px solid var(--border); color: var(--text-muted); overflow-wrap: anywhere; }
+.var-condition-debug-line[hidden] { display: none; }
+.var-condition-debug-line.is-good { background: var(--good-soft, #e5f6ee); border-color: var(--good-soft-border, #bfe6d3); color: var(--good, #146c48); }
+.var-condition-debug-line strong { color: var(--text); }
+.var-condition-debug-line.is-good strong { color: inherit; }
+
+.var-linked-filter { display: block; width: 100%; height: 28px; box-sizing: border-box; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); font-family: var(--font-ui); font-size: 12px; padding: 0 8px; margin-bottom: 8px; background: var(--surface); color: var(--text); }
+.var-linked-list { display: flex; flex-direction: column; max-height: min(220px, 38vh); overflow-y: auto; border: 1px solid var(--border); border-radius: 8px; }
+/* Autres attributs, une ligne : la case (nom et valeur) qui coche la colonne, puis, pour une colonne Référence, la flèche qui ouvre les colonnes
+   de la table désignée. La ligne grisée (la variable elle-même) ne grise que la case : sa flèche reste utilisable. */
+.var-linked-row { display: flex; align-items: stretch; font-size: 12.5px; border-top: 1px solid var(--border); color: var(--text); }
+.var-linked-row:first-child { border-top: none; }
+.var-linked-row:hover { background: var(--surface-sunken); }
+.var-linked-row[hidden] { display: none; }
+.var-linked-pick { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; padding: 6px 10px; cursor: pointer; }
+.var-linked-row.is-current .var-linked-pick { opacity: .55; cursor: default; }
+.var-linked-row.is-current:hover { background: transparent; }
+.var-linked-pick input { flex: none; margin: 0; }
+.var-linked-descend { flex: none; width: 30px; padding: 0; border: 0; border-left: 1px solid var(--border); background: transparent; color: var(--text-muted); font-family: var(--font-ui); font-size: 17px; line-height: 1; cursor: pointer; }
+.var-linked-descend:hover { background: var(--surface-sunken); color: var(--accent-ink); }
+.var-linked-descend:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+/* Fil d'Ariane des niveaux (« Projet › Accompagnateur ») : les niveaux du dessus sont des boutons qui y reviennent, le niveau affiché est en gras. */
+.var-linked-path { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 2px; margin: 0 0 8px; font-size: 12px; color: var(--text-muted); }
+.var-linked-path[hidden] { display: none; }
+.var-linked-crumb { padding: 2px 6px; border: 0; border-radius: 5px; background: none; font: inherit; color: var(--text-muted); overflow-wrap: anywhere; }
+button.var-linked-crumb { cursor: pointer; text-decoration: underline; text-underline-offset: 2px; }
+button.var-linked-crumb:hover { background: var(--surface-sunken); color: var(--text); }
+button.var-linked-crumb:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.var-linked-crumb.is-here { font-weight: 700; color: var(--text); }
+.var-linked-sep { color: var(--text-faint); }
+.var-linked-col { flex: none; max-width: 62%; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.var-linked-col small { font-weight: 600; color: var(--text-faint); }
+.var-linked-value { flex: 1; min-width: 0; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: right; }
+.var-linked-empty { padding: 8px 10px; font-size: 12px; color: var(--text-faint); }
+.var-linked-note { font-size: 11.5px; line-height: 1.45; color: var(--text-faint); margin: 8px 0 0; }
+/* « Reprendre la condition d'affichage » : seulement si la variable d'origine a une condition, cochée par défaut, sous le sous-titre : en haut,
+   donc visible à l'ouverture même quand une longue liste de colonnes fait défiler la fenêtre ; le résumé de la condition se coupe par « … » plutôt
+   que d'élargir la fenêtre. */
+.var-linked-inherit { display: flex; align-items: center; gap: 6px; margin: -4px 0 10px; font-size: 12px; font-weight: 700; color: var(--text); cursor: pointer; }
+.var-linked-inherit[hidden] { display: none; }
+.var-linked-inherit input { flex: none; margin: 0; }
+.var-linked-inherit-text { flex: none; }
+.var-linked-inherit-summary { flex: 0 1 auto; min-width: 0; font-weight: 600; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* Fenêtre de boucle (js/variable-loop.js) : mêmes champs que la fenêtre de condition ; la bulle de l'introduction garde son trait plein (pas de
+   condition ici). */
+.var-loop-modal-content .var-modal-intro .var-badge { border-style: solid; border-color: #b7cdf2; }
+.var-loop-label { display: block; margin: 12px 0 5px; font-size: 11px; font-weight: 700; color: var(--text-muted); }
+.var-loop-source { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; padding: 8px 10px; background: var(--surface-sunken); border: 1px solid var(--border); border-radius: 8px; font-size: 12px; font-weight: 600; color: var(--text); overflow-wrap: anywhere; }
+.var-loop-link { padding: 0; border: none; background: transparent; font-family: var(--font-ui); font-size: 12px; font-weight: 700; color: var(--accent-ink); text-decoration: underline; cursor: pointer; }
+.var-loop-link[hidden] { display: none; }
+.var-loop-seg { display: inline-flex; flex-wrap: wrap; max-width: 100%; border: 1px solid var(--border); border-radius: 7px; overflow: hidden; }
+.var-loop-seg button { height: 28px; padding: 0 11px; border: none; background: var(--surface); font-family: var(--font-ui); font-size: 12px; font-weight: 700; color: var(--text); cursor: pointer; white-space: nowrap; }
+.var-loop-seg button + button { border-left: 1px solid var(--border); }
+.var-loop-seg button:hover { background: var(--surface-sunken); }
+.var-loop-seg button.is-on { background: var(--accent-soft, #e8f0fe); color: var(--accent-hover, #2558c4); }
+/* Un choix qui n'a pas de sens ici (« La ligne du tableau » quand une case fusionnée sur plusieurs lignes la traverse) : grisé, jamais retiré, son
+   info-bulle dit pourquoi. */
+.var-loop-seg button[aria-disabled="true"] { opacity: .45; cursor: default; }
+.var-loop-seg button[aria-disabled="true"]:hover { background: var(--surface); }
+.var-loop-seps { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; margin-top: 8px; font-size: 12px; font-weight: 600; color: var(--text); }
+.var-loop-seps[hidden] { display: none; }
+.var-loop-seps label + input { margin-right: 6px; }
+.var-loop-seps input, .var-loop-empty-text input { height: 26px; box-sizing: border-box; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); font-family: var(--font-ui); font-size: 12px; padding: 0 6px; background: var(--surface); color: var(--text); }
+.var-loop-seps .var-loop-sep-input { width: 44px; }
+.var-loop-seps .var-loop-last-input { width: 52px; }
+.var-loop-hint { font-size: 11.5px; font-weight: 500; color: var(--text-muted); }
+.var-loop-filter-empty { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
+.var-loop-filter-empty .var-condition-add { margin-top: 0; }
+.var-loop-two { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.var-loop-sort-row { display: flex; gap: 6px; }
+.var-loop-two select { height: 26px; min-width: 0; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); font-family: var(--font-ui); font-size: 12px; padding: 0 6px; background: var(--surface); color: var(--text); }
+.var-loop-sort-row select:first-child { flex: 1; }
+.var-loop-two .var-loop-empty-select { width: 100%; }
+.var-loop-empty-text { display: flex; align-items: center; gap: 8px; margin-top: 8px; font-size: 12px; font-weight: 600; color: var(--text); }
+.var-loop-empty-text[hidden] { display: none; }
+.var-loop-empty-text input { flex: 1; min-width: 0; }
+
+/* Repères de boucle dans l'éditeur : la zone répétée (ligne de tableau, élément de liste, paragraphe ou titre qui contient une bulle en boucle)
+   est teintée, avec un onglet dans la marge de gauche ; une bulle en boucle « dans la phrase » porte une petite icône. CSS seul, lu sur l'attribut
+   data-loop-repeat de la bulle (js/editor-nodes.js) : rien n'est ajouté au document, et la Lecture comme l'export remplacent la bulle, donc aucun
+   repère. :where() garde la spécificité basse : la couleur choisie pour une cellule et la cellule sélectionnée l'emportent. L'onglet ne prend
+   aucune place (flottant de largeur extérieure nulle, ou position absolue dans la cellule, déjà position:relative) : la mise en page de l'aperçu
+   A4 ne bouge pas. */
+:root {
+  --pp-loop-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2312406b' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m17 2 4 4-4 4'/%3E%3Cpath d='M3 11v-1a4 4 0 0 1 4-4h14'/%3E%3Cpath d='m7 22-4-4 4-4'/%3E%3Cpath d='M21 13v1a4 4 0 0 1-4 4H3'/%3E%3C/svg%3E");
+  --pp-loop-icon-accent: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%232f6fed' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m17 2 4 4-4 4'/%3E%3Cpath d='M3 11v-1a4 4 0 0 1 4-4h14'/%3E%3Cpath d='m7 22-4-4 4-4'/%3E%3Cpath d='M21 13v1a4 4 0 0 1-4 4H3'/%3E%3C/svg%3E");
+}
+.tiptap :where(tr:has(> td .var-badge[data-loop-repeat="row"], > th .var-badge[data-loop-repeat="row"])) > :where(td, th) { background-color: #f5f9ff; box-shadow: inset 0 1px 0 #b7cdf2, inset 0 -1px 0 #b7cdf2; }
+.tiptap :where(tr:has(> td .var-badge[data-loop-repeat="row"], > th .var-badge[data-loop-repeat="row"])) > :where(td, th):first-child { box-shadow: inset 1px 0 0 #b7cdf2, inset 0 1px 0 #b7cdf2, inset 0 -1px 0 #b7cdf2; }
+.tiptap :where(tr:has(> td .var-badge[data-loop-repeat="row"], > th .var-badge[data-loop-repeat="row"])) > :where(td, th):last-child { box-shadow: inset -1px 0 0 #b7cdf2, inset 0 1px 0 #b7cdf2, inset 0 -1px 0 #b7cdf2; }
+.tiptap :where(tr:has(> td .var-badge[data-loop-repeat="row"], > th .var-badge[data-loop-repeat="row"])) > :where(td, th):only-child { box-shadow: inset 0 0 0 1px #b7cdf2; }
+.tiptap :where(li:has(> p .var-badge[data-loop-repeat="item"], > div > p .var-badge[data-loop-repeat="item"])),
+.tiptap :where(p, h1, h2, h3, h4, h5, h6):has(.var-badge[data-loop-repeat="paragraph"]) { background-color: #f5f9ff; box-shadow: inset 0 0 0 1px #b7cdf2; border-radius: 2px; }
+/* Onglet : ligne de tableau, dans la marge à gauche de la première cellule, centré sur la ligne. */
+.tiptap :where(tr:has(> td .var-badge[data-loop-repeat="row"], > th .var-badge[data-loop-repeat="row"])) > :where(td, th):first-child::before,
+.tiptap :where(ul:not([data-type="taskList"]), ol) > li:has(> p .var-badge[data-loop-repeat="item"])::before,
+.tiptap p:has(.var-badge[data-loop-repeat="paragraph"])::before,
+.tiptap :where(h1, h2, h3, h4, h5, h6):has(.var-badge[data-loop-repeat="paragraph"])::after {
+  content: ''; width: 20px; height: 20px; box-sizing: border-box; border: 1px solid #b7cdf2; border-radius: 4px;
+  background: #eaf2ff var(--pp-loop-icon) center / 12px 12px no-repeat; pointer-events: none;
+}
+.tiptap :where(tr:has(> td .var-badge[data-loop-repeat="row"], > th .var-badge[data-loop-repeat="row"])) > :where(td, th):first-child::before { position: absolute; left: -30px; top: 50%; margin-top: -10px; }
+/* Paragraphe et élément de liste : flottant « suspendu » dans la marge (marge gauche négative compensée à droite, largeur extérieure nulle : le
+   texte ne bouge pas). Le titre prend ::after, son ::before étant la numérotation des titres (css/editor-v2.css). Élément de liste : à gauche de
+   sa puce. */
+.tiptap p:has(.var-badge[data-loop-repeat="paragraph"])::before,
+.tiptap :where(h1, h2, h3, h4, h5, h6):has(.var-badge[data-loop-repeat="paragraph"])::after { float: left; margin: 0 10px 0 -30px; }
+.tiptap :where(ul:not([data-type="taskList"]), ol) > li:has(> p .var-badge[data-loop-repeat="item"])::before { float: left; margin: 0 calc(1.4em + 6px) 0 calc(-1.4em - 26px); }
+/* Mode classique (sans aperçu A4) : pas de marge de page, l'onglet serait coupé - un peu de place à gauche, seulement si le document a une zone
+   répétée, et le cadre défilant d'un tableau répété s'étend dans cette place. */
+#editor-container:not(.a4-preview) .tiptap:has(.var-badge[data-loop-repeat="row"], .var-badge[data-loop-repeat="item"], .var-badge[data-loop-repeat="paragraph"]) { padding-left: 22px; }
+#editor-container:not(.a4-preview) .tiptap .tableWrapper:has(.var-badge[data-loop-repeat="row"]) { padding-left: 32px; margin-left: -32px; }
+/* Bulle en boucle « dans la phrase » : petite icône bleue à droite dans la bulle (fond, pour laisser ::after aux autres repères de la bulle). */
+.tiptap .var-badge[data-loop-repeat="inline"], .var-modal-intro .var-badge[data-loop-repeat="inline"] { padding-right: 17px; background-image: var(--pp-loop-icon-accent); background-repeat: no-repeat; background-position: right 3px center; background-size: 10px 10px; }
