@@ -5,7 +5,7 @@
 ## Versions prises en charge
 
 Seule la dernière version publiée de Publipostage+ reçoit des correctifs de sécurité (aujourd'hui, la
-version 1.1.0). Le widget est une page statique : mettre à jour consiste à republier les fichiers,
+version 1.1.2). Le widget est une page statique : mettre à jour consiste à republier les fichiers,
 puis à recharger la page du document Grist.
 
 ## Signaler une vulnérabilité
@@ -63,7 +63,7 @@ vulnérabilités, mais des améliorations sont les bienvenues sous forme d'issue
 
 ## Supported versions
 
-Only the latest released version of Publipostage+ receives security fixes (today, version 1.1.0). The
+Only the latest released version of Publipostage+ receives security fixes (today, version 1.1.2). The
 widget is a static page: updating means republishing the files, then reloading the Grist document's
 page.
 
