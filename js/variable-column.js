@@ -21,7 +21,25 @@ const VariableColumn = (function () {
   // n'est plus une Référence.
   const isBroken = attrs => !!(attrs && attrs.column && Variables.badgeProblem(attrs.table, attrs.column));
 
+  // Une image liée à une colonne Pièces jointes (nœud `editorImage` aux attributs varTable / varColumn / varKey) se lit de même : sa table ou sa colonne a disparu dans Grist,
+  // son cadre devient rouge (Editor.markBadgeValidity) et sa barre a le même bouton « Colonne… », qui ne propose que les colonnes Pièces jointes.
+  const isImageSource = node => !!node && node.type.name === 'editorImage' && !!node.attrs.varTable;
+  const isImageBroken = attrs => !!(attrs && attrs.varTable && Variables.badgeProblem(attrs.varTable, attrs.varColumn));
   const sameVia = (a, b) => (!a && !b) || (!!a && !!b && a.table === b.table && a.column === b.column);
+  // Vrai quand la boucle `rawLoop` d'une bulle ou d'une image suit sa variable une fois celle-ci remplacée par `target` ({ table, column, key }) : une boucle sur toutes les lignes suit tant
+  // que la nouvelle colonne est de la même table, une boucle sur les lignes rattachées tant qu'elles se rattachent de la même façon.
+  function loopFollows(rawLoop, target) {
+    const loop = LoopRules.normalizeLoop(rawLoop);
+    const page = GristAPI.getCurrentTableId();
+    const source = loop && (loop.all ? LoopRules.allSourceFor(target, page, null) : LoopRules.sourceFor(target, page, LoopRules.enclosingOf(loop, page)));
+    return !(!source || source.table !== loop.table || (!loop.all && !sameVia(source.via, loop.via)));
+  }
+  // Les attributs de l'image une fois sa colonne remplacée par `item` : sa taille, son opacité, sa condition sont gardées, sa boucle aussi tant qu'elle y trouve ses lignes.
+  function replacementImageAttrs(node, item) {
+    const attrs = Object.assign({}, node.attrs, { varTable: item.table, varColumn: item.column, varKey: item.key });
+    if (node.attrs.loop && !loopFollows(node.attrs.loop, { table: item.table, column: item.column, key: item.key })) attrs.loop = null;
+    return attrs;
+  }
 
   // Les attributs de la bulle une fois sa colonne remplacée par `item` ({ table, column, key }) : tout le reste de la bulle est gardé, sauf ce qui ne
   // vaut plus.
@@ -29,13 +47,7 @@ const VariableColumn = (function () {
     const attrs = Object.assign({}, node.attrs, { table: item.table, column: item.column, key: item.key });
     const kind = VariableFormat.formatKindOf(node.attrs.format);
     if (kind && kind !== VariableFormat.columnKind(GristAPI.getColumnType(item.table, item.column))) attrs.format = null;
-    if (node.attrs.loop) {
-      const loop = LoopRules.normalizeLoop(node.attrs.loop);
-      const page = GristAPI.getCurrentTableId();
-      // Une boucle sur toutes les lignes suit la bulle tant que sa nouvelle colonne est de la même table.
-      const source = loop && (loop.all ? LoopRules.allSourceFor(attrs, page, null) : LoopRules.sourceFor(attrs, page, LoopRules.enclosingOf(loop, page)));
-      if (!source || source.table !== loop.table || (!loop.all && !sameVia(source.via, loop.via))) attrs.loop = null;
-    }
+    if (node.attrs.loop && !loopFollows(node.attrs.loop, attrs)) attrs.loop = null;
     return attrs;
   }
 
@@ -56,15 +68,31 @@ const VariableColumn = (function () {
   // Une ligne de liste avec recherche pour `variable` ({ table, column, key }) : sa clé, sa table et son libellé Grist pour la recherche, et - pour une
   // colonne Référence - la table que sa flèche ouvre : la liste descend dans les colonnes de cette table (`expand`), la bulle peut alors prendre pour
   // colonne un chemin, comme celles d'Autres attributs.
-  function optionOf(variable) {
+  function flatOptionOf(variable) {
     const option = Dom.option(variable.key, variable.key);
     option.dataset.search = Variables.columnSearchText(variable.table, variable.column);
+    return option;
+  }
+  function optionOf(variable) {
+    const option = flatOptionOf(variable);
     const target = Variables.referencedTable(variable.table, variable.column);
     if (target) option.dataset.expand = target;
     return option;
   }
+  // Une ligne de la liste d'une image : une colonne Pièces jointes, ou - grisée, avec sa flèche - une colonne Référence d'une table « en cours » (la page, la zone
+  // répétée : `leadsThrough`) qui mène à l'une d'elles.
+  function imageOptionOf(variable, leadsThrough) {
+    const option = flatOptionOf(variable);
+    const through = Variables.isAttachmentColumn(variable) || !leadsThrough(variable) ? null : Variables.attachmentReference(variable.table, variable.column);
+    if (through) {
+      option.dataset.expand = through;
+      option.dataset.unavailable = I18n.t('imageVarPicker.viaReference', { table: through });
+    }
+    return option;
+  }
   // Les lignes où mène la flèche d'une ligne de ces listes : option `expand` de SearchSelect.attachColumns.
   const expand = item => Variables.columnsBelow(item.value);
+  const imageExpand = item => Variables.attachmentColumnsBelow(item.value);
   // Le choix `key` d'une de ces listes : une variable de `choices`, ou - en descendant dans une colonne Référence (« Projet.Accompagnateur.Email ») - une
   // variable dont la colonne est le chemin, comme celles que pose Autres attributs (js/variables.js:pathItems).
   function itemOf(choices, key) {
@@ -105,12 +133,35 @@ const VariableColumn = (function () {
     }
   }
 
-  // `pos` : position de la bulle, capturée au clic sur l'icône de la barre flottante. Rend faux quand la liste ne s'ouvre pas (bulle introuvable,
-  // aucune colonne, composant indisponible).
+  // L'image reprend la colonne choisie : ses réglages (taille, alignement, calque, opacité) restent, seule la source change, en une seule transaction - un
+  // seul Annuler rend l'ancienne colonne. Même demande de clé que l'insertion d'une image de colonne (Variables.insertAttachmentImage) ; refusée, rien ne change.
+  async function pickImage(editor, pos, node, item) {
+    picking = true;
+    try {
+      if (!(await ensureLinked(editor, pos, item, null))) { editor.view.focus(); return; }
+      // La fenêtre de la clé a pu rester ouverte longtemps : l'image doit toujours être là, la même.
+      const current = editor.state.doc.nodeAt(pos);
+      if (!isImageSource(current) || current.attrs.varKey !== node.attrs.varKey || current.attrs.varTable !== node.attrs.varTable) return;
+      if (item.key !== current.attrs.varKey) EditorCore.patchNodeAndReselect(editor, pos, replacementImageAttrs(current, item));
+      editor.view.focus();
+    } catch (e) {
+      console.error('[VariableColumn] échec du changement de colonne de l\'image', e);
+    } finally {
+      picking = false;
+    }
+  }
+
+  // `pos` : position de la bulle (ou de l'image), capturée au clic sur l'icône de la barre flottante. Rend faux quand la liste ne s'ouvre pas (bulle
+  // introuvable, aucune colonne, composant indisponible).
   function openAt(editor, pos) {
     const node = editor && editor.state.doc.nodeAt(pos);
-    if (!node || node.type.name !== 'varBadge' || isOpen()) return false;
-    const choices = candidates(editor);
+    const image = isImageSource(node);
+    if (!node || (node.type.name !== 'varBadge' && !image) || isOpen()) return false;
+    // Une image ne prend qu'une colonne Pièces jointes, au bout d'un chemin de références comme celui de la liste des images de la barre du haut
+    // (js/main-toolbar.js) : les colonnes Référence qui y mènent sont grisées, leur flèche › ouvre la table suivante (Variables.attachmentColumnsBelow).
+    const current = Variables.currentTables(editor);
+    const leadsThrough = v => current.indexOf(v.table) !== -1 && !!Variables.attachmentReference(v.table, v.column);
+    const choices = image ? candidates(editor).filter(v => Variables.isAttachmentColumn(v) || leadsThrough(v)) : candidates(editor);
     if (!choices.length) return false;
     let host = null;
     let instance = null;
@@ -118,7 +169,7 @@ const VariableColumn = (function () {
       host = Dom.el('div');
       host.id = 'v2-var-column-search';
       const select = Dom.el('select');
-      select.append(...choices.map(optionOf));
+      select.append(...choices.map(image ? v => imageOptionOf(v, leadsThrough) : optionOf));
       host.appendChild(select);
       document.body.appendChild(host);
       select.selectedIndex = -1; // rien de choisi au départ : même la première ligne déclenche `change`
@@ -130,7 +181,7 @@ const VariableColumn = (function () {
       const search = SearchSelect.attachColumns(select, {
         popup: true,
         anchor,
-        expand,
+        expand: image ? imageExpand : expand,
         // Défait après la fin de l'évènement en cours (un blur ou un clic qui ferme le panneau ne doit pas retirer l'élément qui le porte). Le focus
         // revient à l'éditeur quand la fermeture vient du clavier (Échap) ou d'un choix ; après un clic ailleurs, il est déjà là où la personne a
         // cliqué.
@@ -140,7 +191,7 @@ const VariableColumn = (function () {
       session = instance;
       select.addEventListener('change', () => {
         const item = itemOf(choices, select.value);
-        if (item) pick(editor, pos, node, item);
+        if (item) (image ? pickImage : pick)(editor, pos, node, item);
       });
       search.open();
       return true;
@@ -152,5 +203,5 @@ const VariableColumn = (function () {
     }
   }
 
-  return { openAt, isBroken, isUnlinkedAt, replacementAttrs, ensureLinked };
+  return { openAt, isBroken, isImageBroken, isUnlinkedAt, replacementAttrs, replacementImageAttrs, ensureLinked };
 })();

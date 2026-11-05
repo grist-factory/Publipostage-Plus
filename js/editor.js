@@ -341,16 +341,34 @@ const Editor = (function () {
     refreshVariableBadgeValidity();
   }
 
+  // Ce que Windows ajoute autour du HTML d'un presse-papiers (Chrome, Edge et Firefox le rendent tel quel à `getData('text/html')`) : `<html><body>` puis `<!--StartFragment-->`, ce qui a été copié,
+  // `<!--EndFragment-->` et `</body></html>`, avec un retour à la ligne (\r\n) entre ces balises. Ce qui est copié par l'éditeur porte `data-pm-slice` : ProseMirror le lit alors en gardant les blancs,
+  // et un retour à la ligne laissé derrière une bulle de variable copiée seule (une sélection de nœud : aucun paragraphe autour) devient un saut de ligne forcé, un par retour - deux en tout, collés sous
+  // la bulle dans la case ou le paragraphe visé. Les blancs d'avant le repère de début et ceux d'après le repère de fin sont du remplissage, jamais du contenu : ils sont retirés, et ce qui est entre
+  // les repères reste tel quel (le HTML d'Excel garde ses styles, ils sont plus haut, dans `<head>`). Un HTML sans les deux repères n'est pas touché.
+  const FRAGMENT_START = '<!--StartFragment-->';
+  const FRAGMENT_END = '<!--EndFragment-->';
+  function withoutFragmentPadding(html) {
+    if (typeof html !== 'string') return html;
+    const start = html.indexOf(FRAGMENT_START);
+    const end = start < 0 ? -1 : html.indexOf(FRAGMENT_END, start + FRAGMENT_START.length);
+    if (end < 0) return html;
+    const stop = end + FRAGMENT_END.length;
+    return html.slice(0, start).replace(/\s+$/, '') + html.slice(start, stop) + html.slice(stop).replace(/>\s+</g, '><').trim();
+  }
+
   function clipboardProps() {
     return {
       // Copier une sélection de cases : le texte brut est un tableau tabulé (js/table-select.js), le HTML reste le tableau des cases ; tout le
       // reste garde le texte par défaut.
       clipboardTextSerializer: slice => TableSelect.clipboardText(slice),
+      // Le remplissage que Windows ajoute autour du HTML copié est retiré d'abord (withoutFragmentPadding : sans lui, une variable copiée seule se colle suivie de deux sauts de ligne).
       // Un tableau de tableur (Excel, Sheets, LibreOffice) collé dans un document devient un tableau du document, case par case
       // (js/grid-table.js) ; dans une grille, c'est le plugin de la grille (GridEditor.createExtension) qui le réécrit pour elle. Un exposant collé de
       // Google Docs perd d'abord la taille réduite de son <span> (js/script-marks.js : la marque réduit déjà le texte). Une diapositive copiée de la bande des diapositives devient du texte du
       // document, à sa taille (js/slide-text.js) ; ni une grille ni un e-mail n'en veulent.
-      transformPastedHTML: html => {
+      transformPastedHTML: pastedHtml => {
+        const html = withoutFragmentPadding(pastedHtml);
         const slide = GridEditor.isActive() || EmailPlainText.isActive() ? html : SlidesEntry.pastedInDocument(html);
         const pasted = ScriptMarks.cleanPastedHtml(slide);
         return GridEditor.isActive() ? pasted : GridTable.cleanPastedDocumentHtml(pasted);
@@ -744,6 +762,14 @@ const Editor = (function () {
       const title = problem || unlinked;
       if (title) badge.title = title; else badge.removeAttribute('title');
     });
+    // Le cadre d'une image liée à une colonne Pièces jointes (js/editor-nodes.js : `data-image-var-table` / `-column` sur le cadre) : rouge (`editor-image-broken`, le rouge d'une bulle cassée) quand sa table ou sa
+    // colonne n'existe plus, avec le message de la bulle en info-bulle ; sa barre a alors « Colonne… » (js/variable-column.js). Comme une bulle, la classe et le titre ne sont jamais
+    // enregistrés (le cadre n'a aucune autre info-bulle).
+    root.querySelectorAll('.editor-image-view[data-image-var-table]').forEach(view => {
+      const problem = badgeProblemText(view.dataset.imageVarTable, view.dataset.imageVarColumn);
+      view.classList.toggle('editor-image-broken', !!problem);
+      if (problem) view.title = problem; else view.removeAttribute('title');
+    });
     // Les pastilles « @ » : rouges quand leur fiche n'existe plus, nom à jour (js/mention.js).
     Mention.markChips(root);
   }
@@ -805,7 +831,7 @@ const Editor = (function () {
     // bulle n'est rouge, celle d'il y a moins d'une minute suffit (js/main.js la demande de même à l'ouverture) ; une bulle rouge peut venir d'un
     // schéma périmé (une colonne ajoutée depuis), la passe repart alors comme avant.
     refreshVariableBadgeValidity();
-    const looksBroken = !!editor.view.dom.querySelector('.var-badge-broken, .var-badge-unlinked, .calc-badge-broken, .calc-badge-unlinked');
+    const looksBroken = !!editor.view.dom.querySelector('.var-badge-broken, .var-badge-unlinked, .calc-badge-broken, .calc-badge-unlinked, .editor-image-broken');
     GristAPI.refreshSchema(looksBroken ? undefined : { maxAgeMs: SCHEMA_MAX_AGE_MS }).then(refreshVariableBadgeValidity)
       .catch(e => console.warn('[Editor] refreshSchema pour la validation des #Variable a échoué', e));
   }

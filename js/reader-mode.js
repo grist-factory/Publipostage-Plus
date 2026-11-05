@@ -52,17 +52,28 @@ const ReaderMode = (function () {
   // autour d'elle ne s'additionnent pas (js/space-gap.js) : « Bonjour #Prénom #Nom » sans prénom ne laisse pas deux espaces.
   function putValue(badge, node) {
     carryBoxLines(badge, node);
-    badge.replaceWith(node);
-    return SpaceGap.settle(node);
+    // La mise en forme selon la ligne (js/conditional-style.js) enveloppe la valeur écrite ; une valeur qui n'écrit rien reste telle quelle.
+    const shown = ConditionalStyle.carry(badge, node);
+    badge.replaceWith(shown);
+    return SpaceGap.settle(shown);
   }
   // Les nœuds à condition du modèle, défaits ou retirés avant que les bulles soient remplacées par leur valeur : les blocs de texte (js/conditional-text.js)
   // - les bulles d'un bloc retiré n'ont rien à résoudre -, les valeurs, les cases, puis le sinon des bulles (js/variable-otherwise.js : une bulle dont la
   // condition n'est pas remplie devient la variable de son sinon, sa seule valeur à lire ensuite). Une seule fois, pour la Lecture comme pour tous les exports.
   async function resolveConditionalNodes(wrapper, tableId, record) {
+    // La mise en forme selon la ligne d'abord : les blocs et les valeurs conditionnels ont encore leur cadre (js/conditional-style.js:prepare).
+    await ConditionalStyle.prepare(wrapper, tableId, record);
     await ConditionalText.resolve(wrapper, tableId, record);
     await ConditionalValue.resolve(wrapper, tableId, record);
     await ConditionalCheckbox.resolve(wrapper, tableId, record);
     await VariableOtherwise.resolve(wrapper, tableId, record);
+    await resolveImageConditions(wrapper, tableId, record);
+  }
+  // La condition d'affichage d'une image de colonne Pièces jointes (data-condition de son <img>, fenêtre de js/variable-condition.js) : l'image dont la condition n'est pas remplie
+  // pour la ligne affichée - ou celle du tour d'une zone répétée - disparaît de la Lecture et des exports, le texte autour reste ; sans condition, ou sans règle complète, elle reste.
+  // Avant resolveVariableImages : une image retirée ne lit pas ses pièces jointes.
+  function resolveImageConditions(wrapper, tableId, record) {
+    return ConditionRules.resolveElements(wrapper, 'img.editor-image[data-var-table][data-condition]', tableId, record, true, (img, holds) => { if (!holds) img.remove(); });
   }
   // === Aperçu paginé réel - mode Lecture ===
   // Parallèle à l'aperçu de l'éditeur (js/header-footer-preview.js:computePageBreaks, renderPaginationOverlay), sur du contenu statique déjà résolu :
@@ -1376,6 +1387,15 @@ const ReaderMode = (function () {
       });
     });
   }
+  // Une pièce jointe se dessine quand Grist ne dit pas qu'elle n'est pas une image (info inconnue : comme avant, tenue pour une image).
+  const isDrawable = info => !info || info.isImage;
+  // Le message qui prend la place d'une pièce jointe qui n'est pas une image (PDF, Word…) à la Lecture et dans tous les exports : en italique, le nom du fichier. Rien d'autre ne change.
+  function attachmentNotice(info, id) {
+    const notice = document.createElement('em');
+    notice.className = 'attachment-notice';
+    notice.textContent = I18n.t('reader.attachmentNotImage', { name: (info && info.fileName) || '#' + id });
+    return notice;
+  }
   async function resolveVariableImages(wrapper, tableId, record) {
     // Rattache le placeholder <img.editor-image> à la bonne pièce jointe pour que hydrateAttachmentImages lui pose un vrai src ; le retire s'il n'y
     // en a aucune.
@@ -1387,10 +1407,14 @@ const ReaderMode = (function () {
       try { ids = await Variables.resolveAttachmentIds(table, column, tableId, record, loopOpts(LoopRules.bindingOf(img))); }
       catch (e) { ids = []; }
       if (!ids.length) { img.remove(); return; }
+      // La première pièce jointe qui est une image : un PDF ou un Word n'en est pas une, le cadre est alors remplacé par un petit message qui dit le nom du fichier.
+      const infos = await GristAPI.getAttachmentInfos(ids);
+      const shown = ids.find(id => isDrawable(infos.get(Number(id))));
+      if (shown === undefined) { img.replaceWith(attachmentNotice(infos.get(Number(ids[0])), ids[0])); return; }
       // data-var-table/-column/-key restent posés : c'est le marqueur que pdf-export.js:pdfImageFromNode lit pour choisir `fit` (boîte fixe, image
       // mise à l'échelle sans déformation) plutôt que `width` seul.
       img.dataset.source = 'attachment';
-      img.dataset.attachmentId = String(ids[0]);
+      img.dataset.attachmentId = String(shown);
       img.style.objectFit = 'contain';
     }));
   }
@@ -1458,7 +1482,8 @@ const ReaderMode = (function () {
       span.textContent = text;
       span.className = 'resolved-var' + (isError ? ' error-msg' : '');
       carryReaderAtom(chip, span);
-      chip.replaceWith(span);
+      // La mise en forme selon la ligne d'une puce (js/conditional-style.js), calculée avant par `prepare` ; une pastille « @ » n'en a pas.
+      chip.replaceWith(ConditionalStyle.carry(chip, span));
     }));
   }
   function carryReaderAtom(from, to) {
@@ -1530,11 +1555,13 @@ const ReaderMode = (function () {
     span.textContent = text;
     return span;
   }
-  function attachmentImages(ids) {
+  async function attachmentImages(ids) {
     // Résout un badge #Variable en texte, ou en <img> si la colonne est de type Attachments ; les <img> produites réutilisent les classes/attributs
-    // déjà lus par GristAPI.hydrateAttachmentImages, appelé juste après.
+    // déjà lus par GristAPI.hydrateAttachmentImages, appelé juste après. Une pièce jointe qui n'est pas une image devient le message qui dit son nom (attachmentNotice).
     const frag = document.createDocumentFragment();
+    const infos = await GristAPI.getAttachmentInfos(ids);
     ids.forEach(id => {
+      if (!isDrawable(infos.get(Number(id)))) { frag.appendChild(attachmentNotice(infos.get(Number(id)), id)); return; }
       const img = document.createElement('img');
       img.className = 'editor-image';
       img.dataset.source = 'attachment';
@@ -1579,7 +1606,7 @@ const ReaderMode = (function () {
         });
         if (!res) return null;
         if (res.node) await resolveEmptyLoopText(res.node, tableId, record, loopCtx, textOpts);
-        return { node: res.node || attachmentImages(ids), isError: false };
+        return { node: res.node || await attachmentImages(ids), isError: false };
       }
       const res = await LoopRules.resolveInline(badge, loop, tableId, record, loopCtx,
         binding => Variables.resolveVariable(table, column, tableId, record, format, Object.assign({}, textOpts, loopOpts(binding))));
@@ -1621,7 +1648,7 @@ const ReaderMode = (function () {
       try { ids = await Variables.resolveAttachmentIds(table, column, tableId, record, loopOpts(binding)); }
       catch (e) { return { node: document.createTextNode(''), isError: true }; }
       if (!ids.length) return { node: document.createTextNode(''), isError: false };
-      return { node: attachmentImages(ids), isError: false };
+      return { node: await attachmentImages(ids), isError: false };
     }
     try {
       // isError vient de Variables.resolveVariableResult, jamais des premiers mots du texte : le message d'erreur suit la langue de l'interface.

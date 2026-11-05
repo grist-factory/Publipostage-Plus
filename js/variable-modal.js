@@ -4,7 +4,7 @@ const VariableModal = (function () {
   const el = Dom.el;
 
   // La bulle comme le texte la montre : la touche de déclenchement, puis sa clé.
-  const badgeText = node => Variables.triggerChar() + (node.attrs.key || '');
+  const badgeText = node => Variables.triggerChar() + (node.attrs.key || node.attrs.varKey || '');
   const shorten = (text, max) => (text.length > max ? text.slice(0, max - 1) + '…' : text);
 
   // Un champ et son libellé, reliés par `id`. Le texte du libellé se pose à l'ouverture, dans la langue du moment. `type` 'textarea' : un champ de plusieurs lignes.
@@ -97,6 +97,7 @@ const VariableModal = (function () {
     const sameAttrs = keys => keys.every(key => node.attrs[key] === original.attrs[key]);
     const same = node && node.type.name === name
       && (name !== 'varBadge' || sameAttrs(['table', 'column']))
+      && (name !== 'editorImage' || sameAttrs(['varTable', 'varColumn']))
       && (name !== 'mention' || sameAttrs(['table', 'row', 'column']));
     if (same) return node;
     console.warn('[' + tag + '] nœud introuvable à sa position d\'origine - rien n\'est écrit.');

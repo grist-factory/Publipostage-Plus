@@ -449,6 +449,9 @@ const SchemaRenames = (function () {
       if (typed) otherwiseTablesOf(typed, m, trigger).forEach(table => tables.add(table));
       for (const found of (el.getAttribute('data-formula') || '').matchAll(/\{([A-Za-z_][A-Za-z0-9_]*)\./g)) tables.add(found[1]);
       addRules(parseJson(el.getAttribute('data-condition')));
+      // La mise en forme conditionnelle (js/conditional-style.js) : chacune de ses règles porte une condition.
+      const styled = parseJson(el.getAttribute(ConditionalStyle.ATTR));
+      if (styled && Array.isArray(styled.rules)) styled.rules.forEach(rule => addRules(rule && rule.condition));
       const loop = parseJson(el.getAttribute('data-loop'));
       if (loop && loop.table) {
         tables.add(loop.table);
@@ -512,6 +515,12 @@ const SchemaRenames = (function () {
       const next = rewriteCondition(parseJson(rawCondition), m, page, true);
       if (next.count) { el.setAttribute('data-condition', JSON.stringify(next.condition)); count += next.count; }
     }
+    // La mise en forme conditionnelle (js/conditional-style.js) : la condition de chacune de ses règles suit le renommage comme celle d'une bulle.
+    const rawStyle = el.getAttribute(ConditionalStyle.ATTR);
+    if (rawStyle) {
+      const next = ConditionalStyle.rewriteConditions(parseJson(rawStyle), condition => rewriteCondition(condition, m, page, true));
+      if (next.count) { el.setAttribute(ConditionalStyle.ATTR, JSON.stringify(next.spec)); count += next.count; }
+    }
     const rawLoop = el.getAttribute('data-loop');
     if (rawLoop) {
       const next = rewriteLoop(parseJson(rawLoop), m, { page, trigger });
@@ -528,7 +537,7 @@ const SchemaRenames = (function () {
     const root = tpl.content;
     // Tout ce que le widget range dans un modèle et qui nomme une table ou une colonne : comme BOUND_SELECTOR de js/loop-rules.js, mais sans
     // restreindre les images.
-    const ELEMENT_SELECTOR = '.var-badge, .calc-badge, .mention-chip, img.editor-image, .conditional-text, .conditional-value, .conditional-checkbox';
+    const ELEMENT_SELECTOR = '.var-badge, .calc-badge, .mention-chip, img.editor-image, .smart-chip, .conditional-text, .conditional-value, .conditional-checkbox';
     // Un modèle qui nomme d'autres tables que celle de la page, et jamais celle-ci, n'est pas lu comme un modèle de cette page : ses colonnes sans
     // nom de table restent.
     const elements = root.querySelectorAll(ELEMENT_SELECTOR);

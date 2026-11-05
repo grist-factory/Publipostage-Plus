@@ -163,6 +163,8 @@ const EditorNodes = (function () {
       };
       if (nodeAttrs.format) attrs['data-format'] = JSON.stringify(nodeAttrs.format);
       if (nodeAttrs.condition) attrs['data-condition'] = JSON.stringify(nodeAttrs.condition);
+      // La mise en forme selon la ligne (js/conditional-style.js) : un seul attribut JSON, écrit seulement quand elle existe.
+      if (nodeAttrs.condStyle) attrs['data-cond-style'] = JSON.stringify(nodeAttrs.condStyle);
       // Le texte « Avant » / « Après » (js/variable-condition.js) : deux attributs simples, écrits seulement quand ils existent.
       const around = VariableFormat.affixes(nodeAttrs.before, nodeAttrs.after);
       if (around && around.before) attrs['data-before'] = around.before;
@@ -177,7 +179,7 @@ const EditorNodes = (function () {
     function varBadgeAttrsOf(el) {
       return {
         table: el.getAttribute('data-table'), column: el.getAttribute('data-column'), key: el.getAttribute('data-key'),
-        format: jsonAttr(el, 'data-format'), condition: jsonAttr(el, 'data-condition'), loop: jsonAttr(el, 'data-loop'),
+        format: jsonAttr(el, 'data-format'), condition: jsonAttr(el, 'data-condition'), condStyle: ConditionalStyle.parse(el.getAttribute('data-cond-style')), loop: jsonAttr(el, 'data-loop'),
         before: VariableFormat.affix(el.getAttribute('data-before')), after: VariableFormat.affix(el.getAttribute('data-after')),
         otherwise: VariableOtherwise.fromElement(el), otherwiseText: VariableOtherwise.typedFromElement(el),
       };
@@ -209,6 +211,7 @@ const EditorNodes = (function () {
           // `loop` : { table, via, repeat, filter, sort, empty, … } - boucle sur les lignes liées (js/variable-loop.js), déroulée en lecture et à
           // l'export par js/loop-rules.js ; `repeat` dit ce qui se répète autour de la bulle (sa ligne de tableau, son élément de liste, son
           // paragraphe, ou elle seule).
+          // `condStyle` : { rules: [{ condition, style }] } - la mise en forme selon la ligne (js/conditional-style.js), appliquée à la valeur en lecture et à l'export ; `null` = aucune.
           // `before` et `after` : le texte collé à la valeur, écrit seulement quand la bulle s'affiche avec une valeur (VariableFormat.withAffixes) ;
           // `null` = rien.
           // `otherwise` : { table, column, key, before, after } - la variable que la bulle écrit à sa place quand sa condition n'est pas remplie
@@ -216,7 +219,7 @@ const EditorNodes = (function () {
           // chose que cette seule variable - du texte et des variables, tel que le champ de la fenêtre l'enregistre (js/field-codec.js) ; jamais avec `otherwise`.
           return {
             table: internalAttr(null), column: internalAttr(null), key: internalAttr(null), format: internalAttr(null), condition: internalAttr(null), loop: internalAttr(null),
-            before: internalAttr(null), after: internalAttr(null), otherwise: internalAttr(null), otherwiseText: internalAttr(null),
+            condStyle: internalAttr(null), before: internalAttr(null), after: internalAttr(null), otherwise: internalAttr(null), otherwiseText: internalAttr(null),
           };
         },
         parseHTML() {
@@ -253,15 +256,16 @@ const EditorNodes = (function () {
       function badgeSpec(HTMLAttributes, node) {
         const attrs = mergeAttributes(HTMLAttributes, { class: 'calc-badge', contenteditable: 'false', 'data-formula': node.attrs.formula || '' });
         if (node.attrs.format) attrs['data-format'] = JSON.stringify(node.attrs.format);
+        if (node.attrs.condStyle) attrs['data-cond-style'] = JSON.stringify(node.attrs.condStyle);
         return ['span', attrs, calcBadgeLabel(node.attrs.formula)];
       }
       return inlineAtom(Node, {
         name: 'calcBadge',
         addAttributes() {
-          return { formula: internalAttr(''), format: internalAttr(null) };
+          return { formula: internalAttr(''), format: internalAttr(null), condStyle: internalAttr(null) };
         },
         parseHTML() {
-          return [{ tag: 'span.calc-badge', getAttrs: el => ({ formula: el.getAttribute('data-formula') || '', format: jsonAttr(el, 'data-format') }) }];
+          return [{ tag: 'span.calc-badge', getAttrs: el => ({ formula: el.getAttribute('data-formula') || '', format: jsonAttr(el, 'data-format'), condStyle: ConditionalStyle.parse(el.getAttribute('data-cond-style')) }) }];
         },
         renderHTML({ HTMLAttributes, node }) {
           return badgeSpec(HTMLAttributes, node);
@@ -353,16 +357,21 @@ const EditorNodes = (function () {
     // (js/field-codec.js) écrivent la même puce que l'éditeur.
     // `time` : l'écriture de l'heure d'une puce « Heure actuelle » (une clé de VariableFormat.TIME_STYLES, `data-chip-time`) ; absente, la puce écrit l'heure sur 24 heures comme avant ce réglage.
     // Aucune autre puce n'en porte.
-    const smartChipAttributes = (kind, time) => Object.assign({ class: 'smart-chip', contenteditable: 'false', 'data-chip-kind': kind }, kind === 'time' && time ? { 'data-chip-time': time } : {});
-    // Sans réglage, `time` n'est pas dans le résultat : la forme d'une puce d'avant ce réglage ({ kind }) ne change pas.
+    // `condStyle` : la mise en forme selon la ligne (js/conditional-style.js, `data-cond-style`), propre au document : un champ texte ne l'écrit pas.
+    const smartChipAttributes = (kind, time, condStyle) => Object.assign({ class: 'smart-chip', contenteditable: 'false', 'data-chip-kind': kind }, kind === 'time' && time ? { 'data-chip-time': time } : {},
+      condStyle ? { 'data-cond-style': JSON.stringify(condStyle) } : {});
+    // Sans réglage, ni `time` ni `condStyle` ne sont dans le résultat : la forme d'une puce d'avant ces réglages ({ kind }) ne change pas.
     function smartChipAttrsOf(el) {
       const attrs = { kind: el.getAttribute('data-chip-kind') || 'date' };
       const time = attrs.kind === 'time' && el.getAttribute('data-chip-time');
-      return time ? Object.assign(attrs, { time }) : attrs;
+      if (time) attrs.time = time;
+      const condStyle = ConditionalStyle.parse(el.getAttribute('data-cond-style'));
+      if (condStyle) attrs.condStyle = condStyle;
+      return attrs;
     }
     function smartChipElement(nodeAttrs) {
       const span = document.createElement('span');
-      setAttrs(span, smartChipAttributes(nodeAttrs.kind, nodeAttrs.time));
+      setAttrs(span, smartChipAttributes(nodeAttrs.kind, nodeAttrs.time, nodeAttrs.condStyle));
       span.textContent = smartChipLabel(nodeAttrs.kind);
       return span;
     }
@@ -373,13 +382,13 @@ const EditorNodes = (function () {
       return inlineAtom(Node, {
         name: 'smartChip',
         addAttributes() {
-          return { kind: internalAttr('date'), time: internalAttr(null) };
+          return { kind: internalAttr('date'), time: internalAttr(null), condStyle: internalAttr(null) };
         },
         parseHTML() {
           return [{ tag: 'span.smart-chip', getAttrs: smartChipAttrsOf }];
         },
         renderHTML({ node }) {
-          return ['span', mergeAttributes(smartChipAttributes(node.attrs.kind, node.attrs.time)), smartChipLabel(node.attrs.kind)];
+          return ['span', mergeAttributes(smartChipAttributes(node.attrs.kind, node.attrs.time, node.attrs.condStyle)), smartChipLabel(node.attrs.kind)];
         },
         // Vue de l'éditeur seulement : la même puce, avec la couleur, le surlignage, le souligné et le barré de ses marques (showTextMarks, que
         // css/variable-actions.css montre sous « Mise en forme » de Réglages). Pas de `update` : ProseMirror garde la vue tant que le nœud est
@@ -1078,14 +1087,15 @@ const EditorNodes = (function () {
         // Le premier paragraphe d'un bloc qu'on vide ou qu'on colle ailleurs garde son bloc autour de lui, comme une citation.
         defining: true,
         addAttributes() {
-          return { condition: internalAttr(null), otherwise: internalAttr(null) };
+          return { condition: internalAttr(null), otherwise: internalAttr(null), condStyle: internalAttr(null) };
         },
         parseHTML() {
-          return [{ tag: 'div.conditional-text', getAttrs: el => ({ condition: jsonAttr(el, 'data-condition'), otherwise: ConditionalText.otherwiseText(el.getAttribute('data-otherwise')) }) }];
+          return [{ tag: 'div.conditional-text', getAttrs: el => ({ condition: jsonAttr(el, 'data-condition'), otherwise: ConditionalText.otherwiseText(el.getAttribute('data-otherwise')), condStyle: ConditionalStyle.parse(el.getAttribute('data-cond-style')) }) }];
         },
         renderHTML({ HTMLAttributes, node }) {
           const attrs = mergeAttributes(HTMLAttributes, { class: 'conditional-text' });
           if (node.attrs.condition) attrs['data-condition'] = JSON.stringify(node.attrs.condition);
+          if (node.attrs.condStyle) attrs['data-cond-style'] = JSON.stringify(node.attrs.condStyle);
           const otherwise = ConditionalText.otherwiseText(node.attrs.otherwise);
           if (otherwise) attrs['data-otherwise'] = otherwise;
           return ['div', attrs, 0];
@@ -1204,7 +1214,7 @@ const EditorNodes = (function () {
         inline: true,
         content: 'inline*',
         addAttributes() {
-          return { condition: internalAttr(null), otherwise: internalAttr(null) };
+          return { condition: internalAttr(null), otherwise: internalAttr(null), condStyle: internalAttr(null) };
         },
         parseHTML() {
           return [{
@@ -1213,12 +1223,13 @@ const EditorNodes = (function () {
             // urgent</valeur> » relu, « urgent » collait au mot d'avant). Une valeur garde les siennes - c'est ce qui permet de masquer l'espace avec
             // le mot -, les retours à la ligne du source HTML devenant des espaces.
             preserveWhitespace: true,
-            getAttrs: el => ({ condition: jsonAttr(el, 'data-condition'), otherwise: ConditionalText.otherwiseText(el.getAttribute('data-otherwise')) }),
+            getAttrs: el => ({ condition: jsonAttr(el, 'data-condition'), otherwise: ConditionalText.otherwiseText(el.getAttribute('data-otherwise')), condStyle: ConditionalStyle.parse(el.getAttribute('data-cond-style')) }),
           }];
         },
         renderHTML({ HTMLAttributes, node }) {
           const attrs = mergeAttributes(HTMLAttributes, { class: 'conditional-value' });
           if (node.attrs.condition) attrs['data-condition'] = JSON.stringify(node.attrs.condition);
+          if (node.attrs.condStyle) attrs['data-cond-style'] = JSON.stringify(node.attrs.condStyle);
           const otherwise = ConditionalText.otherwiseText(node.attrs.otherwise);
           if (otherwise) attrs['data-otherwise'] = otherwise;
           return ['span', attrs, 0];
@@ -1723,6 +1734,14 @@ const EditorNodes = (function () {
         varTable: { default: null, parseHTML: el => el.getAttribute('data-var-table') || null, renderHTML: noBareRender },
         varColumn: { default: null, parseHTML: el => el.getAttribute('data-var-column') || null, renderHTML: noBareRender },
         varKey: { default: null, parseHTML: el => el.getAttribute('data-var-key') || null, renderHTML: noBareRender },
+        // La condition d'affichage de l'image d'une colonne Pièces jointes (js/variable-condition.js, bouton « Condition d'affichage » de sa barre) : { mode, rules }, la même que celle
+        // d'une bulle. Écrite en data-condition sur l'<img> d'une image de variable seulement (renderHTML) ; la Lecture et les exports retirent l'image quand elle n'est pas remplie
+        // (js/reader-mode.js:resolveImageConditions). `null` = toujours affichée.
+        condition: { default: null, parseHTML: el => jsonAttr(el, 'data-condition'), renderHTML: noBareRender },
+        // La boucle de l'image d'une colonne Pièces jointes (fenêtre « Boucle » de js/variable-loop.js, bouton « Boucle » de sa barre) : celle d'une bulle, { repeat, table, via, filter, sort, ... }
+        // (js/loop-rules.js). Écrite en data-loop sur l'<img> d'une image de variable seulement (renderHTML) : l'image est copiée pour chaque ligne en « dans la phrase », sinon c'est
+        // sa ligne de tableau, son élément de liste ou son paragraphe qui l'est. `null` = pas de boucle.
+        loop: { default: null, parseHTML: el => jsonAttr(el, 'data-loop'), renderHTML: noBareRender },
         // QR code (js/qr-code.js) : le texte à encoder, « #Table.Colonne » compris. Posé avec un `src`, l'image est le QR code déjà dessiné ; sans
         // `src`, le texte contient une colonne et le QR code n'est dessiné qu'à la Lecture et à l'export, pour la ligne affichée
         // (reader-mode.js:resolveQrCodes).
@@ -1817,6 +1836,10 @@ const EditorNodes = (function () {
       wrap.setAttribute('data-wrap', attrs.wrap || 'inline');
     }
 
+    // La ligne du libellé pour chaque sorte de boucle ; les clés s'écrivent en toutes lettres, pour que la recherche des clés sans usage (dev-tests/verify-code-hygiene.mjs) les voie.
+    const IMAGE_LOOP_TAGS = { inline: 'imgLoop.tag.inline', row: 'imgLoop.tag.row', item: 'imgLoop.tag.item', paragraph: 'imgLoop.tag.paragraph' };
+    // Une seule ligne (« Lignes affichées » de la fenêtre Boucle) : la ligne dit laquelle, à la place de « une image par ligne ».
+    const IMAGE_PICK_TAGS = { first: 'imgLoop.tag.onlyFirst', last: 'imgLoop.tag.onlyLast' };
     function applyImageAttrs(view, attrs) {
       // Le z-index négatif ("derrière le texte") est posé sur l'<img> seule, pas le wrapper : sinon la poignée de déplacement (enfant du wrapper)
       // serait entraînée derrière le texte avec lui, devenant impossible à re-sélectionner une fois cachée.
@@ -1847,11 +1870,27 @@ const EditorNodes = (function () {
       img.alt = attrs.alt || '';
       img.setAttribute('style', imageInnerStyle(attrs, isVarBox, isQrBox, isChartBox));
       wrap.classList.toggle('editor-image-var-placeholder', isVarBox || isQrBox || isChartBox);
+      // La colonne Pièces jointes du cadre, lue par Editor.markBadgeValidity pour le rouge d'une colonne disparue (jamais un attribut du nœud : le cadre n'écrit pas ces
+      // clés dans le HTML du modèle, c'est renderHTML qui le fait, sur l'<img>).
+      if (isVarBox) { wrap.dataset.imageVarTable = attrs.varTable; wrap.dataset.imageVarColumn = attrs.varColumn || ''; }
+      else { delete wrap.dataset.imageVarTable; delete wrap.dataset.imageVarColumn; wrap.classList.remove('editor-image-broken'); wrap.removeAttribute('title'); }
       wrap.classList.toggle('editor-image-qr-placeholder', isQrBox);
       wrap.classList.toggle('editor-image-chart-placeholder', isChartBox);
       // Le dessin est prêt : il prend la place du cadre pointillé et de son libellé (css/chart-frame.css).
       wrap.classList.toggle('editor-image-chart-drawn', !!drawn);
       varLabel.textContent = isVarBox ? ('#' + (attrs.varKey || '')) : (isQrBox ? attrs.qrText : (isChartBox ? (attrs.chartName || I18n.t('chart.frame')) : ''));
+      // Une condition d'affichage posée (images de colonne seulement) : le cadre passe en pointillés bleus, comme une bulle ou un bloc conditionnels ; une boucle posée dit ce qu'elle
+      // répète. Le libellé a une ligne de plus pour chacune (« Si … », « Une image par ligne de … »), `data-note` ; l'image reste visible. Rien n'est écrit dans le nœud : le cadre se
+      // relit à chaque mise à jour. `data-loop-repeat` du cadre : les repères de la zone répétée (css/variable-actions.css), les mêmes que ceux d'une bulle en boucle.
+      const condition = isVarBox ? ConditionRules.normalizeCondition(attrs.condition) : null;
+      const loop = isVarBox ? LoopRules.normalizeLoop(attrs.loop) : null;
+      wrap.classList.toggle('editor-image-conditional', !!condition);
+      wrap.classList.toggle('editor-image-looped', !!loop);
+      if (loop) wrap.dataset.loopRepeat = loop.repeat; else delete wrap.dataset.loopRepeat;
+      const notes = [];
+      if (condition) notes.push(I18n.t('condText.tag.if', { condition: VariableCondition.describe(condition) }));
+      if (loop) notes.push(I18n.t(loop.pick ? IMAGE_PICK_TAGS[loop.pick] : IMAGE_LOOP_TAGS[loop.repeat], { table: loop.table }));
+      if (notes.length) varLabel.dataset.note = notes.join('\n'); else delete varLabel.dataset.note;
       const layered = attrs.layer !== 'normal';
       wrap.classList.toggle('editor-image-layered', layered);
       wrap.classList.toggle('editor-image-repeated', PageLayer.isRepeatedAttrs(attrs));
@@ -2061,6 +2100,8 @@ const EditorNodes = (function () {
             attrs['data-var-table'] = nodeAttrs.varTable;
             attrs['data-var-column'] = nodeAttrs.varColumn;
             attrs['data-var-key'] = nodeAttrs.varKey;
+            if (nodeAttrs.condition) attrs['data-condition'] = JSON.stringify(nodeAttrs.condition);
+            if (nodeAttrs.loop) attrs['data-loop'] = JSON.stringify(nodeAttrs.loop);
           }
           if (nodeAttrs.qrText) attrs['data-qr-text'] = nodeAttrs.qrText;
           if (ChartEntry.isChartAttrs(nodeAttrs)) {

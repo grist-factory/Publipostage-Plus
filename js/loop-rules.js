@@ -2,9 +2,9 @@
 // tri, déroulé de la zone répétée en Lecture et à l'export (js/reader-mode.js, point d'entrée commun du mode Lecture, du PDF, du Word et de l'export
 // en lot). Aucune dépendance à l'éditeur.
 //
-// La boucle vit dans l'attribut `loop` du nœud varBadge (js/editor-nodes.js, sérialisé en data-loop), comme la condition d'affichage :
+// La boucle vit dans l'attribut `loop` du nœud varBadge - ou editorImage, l'image d'une colonne Pièces jointes, pour sa propre boucle - (js/editor-nodes.js, sérialisé en data-loop), comme la condition d'affichage :
 //   { repeat: 'inline'|'row'|'item'|'paragraph', table, via: null|{ table, column }, within: null|'Table', by: null|'Colonne', all: null|'view'|'table'|'linked',
-//     filter: null|{ mode, rules }, sort: { column, direction }, empty, emptyText, separator, lastSeparator }
+//     filter: null|{ mode, rules }, sort: { column, direction }, pick?: 'first'|'last', empty, emptyText, separator, lastSeparator }
 // - `table` : la table dont les lignes sont parcourues. `via` : une colonne Liste de références de la table de la page (les fiches qu'elle référence,
 //   dans l'ordre de la cellule) ; sans `via`, les lignes de `table` trouvées par la règle de liaison du document (Variables.resolveLinkedRows, la
 //   même que celle qui affiche aujourd'hui toutes les valeurs jointes par des virgules).
@@ -33,6 +33,8 @@
 // ligne » écrit (js/reader-mode.js:resolveSmartChips) ; dans une zone répétée dans une autre, celui de la zone la plus proche.
 const LoopRules = (function () {
   const REPEATS = ['inline', 'row', 'item', 'paragraph'];
+  // Les lignes retenues APRÈS le filtre et le tri : toutes (par défaut, rien n'est écrit), ou la première / la dernière seule (le choix « Une seule ligne » de la fenêtre d'une image).
+  const PICKS = ['first', 'last'];
   const ALL_SCOPES = ['view', 'table', 'linked'];
   // Choix « Si aucune ligne » proposés pour chaque zone, le premier étant celui par défaut (sauf 'inline' dans une cellule de tableau, cf.
   // defaultEmpty).
@@ -58,12 +60,15 @@ const LoopRules = (function () {
     // Choix absent ou inconnu (document modifié à la main) : 'blank' pour une bulle seule, le choix par défaut de la zone sinon - jamais un
     // paragraphe masqué que personne n'a demandé.
     const empty = EMPTY_MODES[repeat].indexOf(raw.empty) !== -1 ? raw.empty : defaultEmpty(repeat, repeat === 'inline');
-    return {
+    const loop = {
       repeat, table: String(raw.table), via, within, by: within && raw.by ? String(raw.by) : null, all, filter: ConditionRules.normalizeCondition(raw.filter), sort, empty,
       emptyText: raw.emptyText == null ? '' : String(raw.emptyText),
       separator: typeof raw.separator === 'string' ? raw.separator : ', ',
       lastSeparator: typeof raw.lastSeparator === 'string' ? raw.lastSeparator : null,
     };
+    // Absent pour « toutes les lignes » : une boucle d'avant ce choix se relit à l'identique.
+    if (PICKS.indexOf(raw.pick) !== -1) loop.pick = raw.pick;
+    return loop;
   }
   function parseLoop(json) {
     if (!json) return null;
@@ -312,7 +317,8 @@ const LoopRules = (function () {
       : await linkedItems(loop, tableId, record, fetchRows);
     if (found.error) return { error: found.error, items: [], total: 0 };
     const kept = loop.filter ? found.items.filter(item => filterHolds(loop, item.row)) : found.items;
-    const result = { items: sortItems(loop, kept), total: found.items.length };
+    const sorted = sortItems(loop, kept);
+    const result = { items: loop.pick === 'first' ? sorted.slice(0, 1) : loop.pick === 'last' ? sorted.slice(-1) : sorted, total: found.items.length };
     if (loop.all) { result.tableTotal = found.tableTotal; if (found.linked) result.linked = found.linked; }
     return result;
   }
@@ -320,8 +326,8 @@ const LoopRules = (function () {
   const bindings = new WeakMap();
   // Tout ce qui lit la ligne du tour dans une zone copiée : les bulles #Variable, les images liées à une variable, les bulles « Calcul » (« Prix ×
   // Quantité » dans une ligne répétée donne le total de cette ligne), les QR codes (le texte de leurs colonnes) et les blocs, valeurs et cases
-  // conditionnels (leur condition), et la puce « N° de ligne » (le rang du tour).
-  const BOUND_SELECTOR = '.var-badge, .calc-badge, img.editor-image[data-var-table], img.editor-image[data-qr-text], .conditional-text, .conditional-value, .conditional-checkbox, .smart-chip[data-chip-kind="rowNumber"]';
+  // conditionnels (leur condition), et les puces (le rang du tour pour « N° de ligne », la ligne que lit la mise en forme conditionnelle d'une puce).
+  const BOUND_SELECTOR = '.var-badge, .calc-badge, img.editor-image[data-var-table], img.editor-image[data-qr-text], .conditional-text, .conditional-value, .conditional-checkbox, .smart-chip';
   function bindingOf(el) { return (el && bindings.get(el)) || null; }
   // Les éléments qui prennent la place d'un autre APRÈS le déroulé des zones (le sinon d'un bloc ou d'une valeur conditionnels, qui porte des variables) lisent la
   // même ligne du tour que lui : ils reprennent sa liaison. Rien à faire hors d'une zone répétée.
@@ -348,6 +354,10 @@ const LoopRules = (function () {
     clone.querySelectorAll(BOUND_SELECTOR).forEach((el, i) => bindings.set(el, itemBinding(loop, item, src[i] ? bindings.get(src[i]) : null, turn)));
   }
 
+  // Ce qui peut porter la boucle d'une zone : une bulle #Variable, ou l'image d'une colonne Pièces jointes (data-loop sur son <img>). Une image en boucle « dans la phrase » ne
+  // répète pas de zone : ses copies se font après le déroulé des zones (expandInlineImages).
+  const LOOP_OWNER_SELECTOR = '.var-badge[data-loop], img.editor-image[data-var-table][data-loop]';
+  const IMAGE_LOOP_SELECTOR = 'img.editor-image[data-var-table][data-loop]';
   function zoneOf(badge, repeat, root) {
     let zone = null;
     if (repeat === 'row') zone = badge.closest('tr');
@@ -359,7 +369,7 @@ const LoopRules = (function () {
   // bulle redevient ordinaire).
   function zoneOwners(root) {
     const owners = [];
-    for (const badge of root.querySelectorAll('.var-badge[data-loop]')) {
+    for (const badge of root.querySelectorAll(LOOP_OWNER_SELECTOR)) {
       const loop = parseLoop(badge.getAttribute('data-loop'));
       if (!loop) { badge.removeAttribute('data-loop'); continue; }
       if (loop.repeat === 'inline') continue;
@@ -437,7 +447,7 @@ const LoopRules = (function () {
   // zone telle quelle.
   async function expandZone({ badge, loop, zone }, tableId, record, root, context) {
     // Une seule boucle par zone : celle-ci. Une autre bulle de la même zone qui en porte une (copiée-collée) redevient une bulle ordinaire.
-    zone.querySelectorAll('.var-badge[data-loop]').forEach(b => {
+    zone.querySelectorAll(LOOP_OWNER_SELECTOR).forEach(b => {
       const other = parseLoop(b.getAttribute('data-loop'));
       if (other && other.repeat === loop.repeat && zoneOf(b, other.repeat, root) === zone) b.removeAttribute('data-loop');
     });
@@ -466,11 +476,39 @@ const LoopRules = (function () {
     const context = ctx || createContext();
     for (let level = 0; level < MAX_NESTING; level++) {
       const owners = outermost(zoneOwners(root));
-      if (!owners.length) return;
+      if (!owners.length) break;
       for (const owner of owners) {
         // Une bulle de la même zone a pu déjà la dérouler (une seule boucle par zone) : sa boucle n'est plus là.
         if (owner.badge.hasAttribute('data-loop') && root.contains(owner.zone)) await expandZone(owner, tableId, record, root, context);
       }
+    }
+    // Les images en boucle « dans la phrase » en dernier : chacune lit la ligne du tour de la zone qui l'entoure, une fois cette zone déroulée.
+    await expandInlineImages(root, tableId, record, context);
+  }
+  // Une image de colonne Pièces jointes en boucle « dans la phrase » : copiée pour chaque ligne retenue, les copies côte à côte (une espace entre elles), chacune associée à sa
+  // ligne (bindingOf) - js/reader-mode.js:resolveVariableImages lit alors sa pièce jointe dans cette ligne. Sans ligne retenue : ce que dit « Si aucune ligne » (emptyInlineNode).
+  // Une boucle qui ne trouve plus sa source laisse l'image seule, comme avant la boucle. L'attribut s'en va avec la boucle déroulée : les copies n'en portent pas.
+  async function expandInlineImages(root, tableId, record, context) {
+    for (const img of Array.from(root.querySelectorAll(IMAGE_LOOP_SELECTOR))) {
+      if (!root.contains(img)) continue;
+      const loop = parseLoop(img.getAttribute('data-loop'));
+      img.removeAttribute('data-loop');
+      if (!loop || loop.repeat !== 'inline') continue;
+      const scope = scopeOf(loop, img, tableId, record);
+      let result;
+      try { result = await iterate(loop, scope.tableId, scope.record, context); }
+      catch (e) { console.error('[LoopRules] échec du calcul des lignes de la boucle d\'une image', loop, e); continue; }
+      if (result.error) { console.warn('[LoopRules] boucle d\'une image sur « ' + loop.table + ' » sans source (' + result.error + ') : image affichée une fois.'); continue; }
+      if (!result.items.length) { img.replaceWith(emptyInlineNode(loop, img)); continue; }
+      const inherited = bindingOf(img);
+      const copies = document.createDocumentFragment();
+      result.items.forEach((item, index) => {
+        const clone = img.cloneNode(true);
+        bindings.set(clone, itemBinding(loop, item, inherited));
+        if (index) copies.appendChild(document.createTextNode(' '));
+        copies.appendChild(clone);
+      });
+      img.replaceWith(copies);
     }
   }
 

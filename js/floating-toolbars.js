@@ -568,6 +568,14 @@ const FloatingToolbars = (function () {
 
     function imageToolbarHtml() {
       return [
+        // « Colonne… » : là seulement sur une image dont la colonne Pièces jointes a disparu (syncImageColumnButton), comme sur une variable cassée ; cachée sinon, pas grisée.
+        `<button data-action="var-column" title="${I18n.t('imgToolbar.columnBroken')}" aria-label="${I18n.t('imgToolbar.columnBroken')}" hidden>${Icons.svg('varColumn')}</button>`,
+        // Condition d'affichage : grisée, avec sa raison, sur une image qui n'est pas celle d'une colonne Pièces jointes (syncImageConditionButton) ; allumée quand une condition est posée.
+        `<button data-action="var-condition" title="${I18n.t('varToolbar.condition')}" aria-label="${I18n.t('varToolbar.condition')}">${Icons.svg('varCondition')}</button>`,
+        // Boucle : une image par ligne liée, ou la ligne, l'élément ou le paragraphe qui la contient (js/variable-loop.js) ; grisée avec sa raison hors image de colonne, allumée quand
+        // une boucle est posée (syncImageLoopButton).
+        `<button data-action="var-loop" title="${I18n.t('varToolbar.loop')}" aria-label="${I18n.t('varToolbar.loop')}">${Icons.svg('varLoop')}</button>`,
+        '<span class="v2-floating-sep"></span>',
         `<button data-action="zoom-out" title="${I18n.t('imgToolbar.shrink')}">${Icons.svg('zoomOut')}</button>`,
         `<button data-action="zoom-in" title="${I18n.t('imgToolbar.grow')}">${Icons.svg('zoomIn')}</button>`,
         `<button data-action="reset" title="${I18n.t('imgToolbar.originalSize')}">${Icons.svg('resetSize')}</button>`,
@@ -842,6 +850,12 @@ const FloatingToolbars = (function () {
         // Légende (js/caption.js) : pose la légende sous l'image et y met le curseur, ou y ramène le curseur ; grisé (cf. syncImageToolbar) pour
         // une image en calque ou habillée.
         caption: () => Caption.run(editor, 'image'),
+        // Choisir une autre colonne Pièces jointes pour l'image dont la colonne a disparu (js/variable-column.js) ; sans effet sur une image saine (bouton caché).
+        'var-column': () => { if (VariableColumn.isImageBroken(attrs)) VariableColumn.openAt(editor, editor.state.selection.from); },
+        // La condition d'affichage de l'image d'une colonne Pièces jointes (js/variable-condition.js) ; sans effet sur une autre image (bouton grisé).
+        'var-condition': () => { if (attrs.varTable) VariableCondition.openAt(editor, editor.state.selection.from); },
+        // La boucle de l'image d'une colonne Pièces jointes (js/variable-loop.js) ; sans effet sur une autre image ou quand ses lignes ne se parcourent pas (bouton grisé).
+        'var-loop': () => { if (attrs.varTable && VariableLoop.status(editor, editor.state.selection.from, selNode).enabled) VariableLoop.openAt(editor, editor.state.selection.from); },
         delete: () => {
           const pos = editor.state.selection.from;
           editor.chain().focus().deleteRange({ from: pos, to: pos + selNode.nodeSize }).run();
@@ -870,7 +884,44 @@ const FloatingToolbars = (function () {
       syncImageWrapButton(controls, node);
       syncImageLayerLocks(controls);
       syncImageRepeatButton(controls, attrs);
+      syncImageColumnButton(controls, attrs);
+      syncImageConditionButton(controls, attrs);
+      syncImageLoopButton(controls, node);
       Caption.syncButton(controls.button('caption'), editor, 'image');
+    }
+    // « Colonne… » : n'est dans la barre que d'une image dont la colonne Pièces jointes (ou sa table) a disparu de Grist - la même lecture que le rouge de son cadre
+    // (VariableColumn.isImageBroken) - ; relue à chaque ouverture de la barre : une image réparée la perd.
+    function syncImageColumnButton(controls, attrs) {
+      const btn = controls.button('var-column');
+      if (!btn) return;
+      const broken = VariableColumn.isImageBroken(attrs);
+      btn.hidden = !broken;
+      if (broken) {
+        const title = I18n.t('imgToolbar.columnBroken');
+        controls.setDisabled('var-column', false, title);
+        btn.setAttribute('aria-label', title);
+      }
+    }
+    // « Condition d'affichage » : réservée à l'image d'une colonne Pièces jointes - grisée avec sa raison pour une autre image (une photo, un QR code, un graphique), jamais retirée ;
+    // allumée (bleue) quand l'image a une condition.
+    function syncImageConditionButton(controls, attrs) {
+      const btn = controls.button('var-condition');
+      if (!btn) return;
+      const title = I18n.t(attrs.varTable ? 'varToolbar.condition' : 'imgToolbar.conditionNeedsColumn');
+      controls.setDisabled('var-condition', !attrs.varTable, title);
+      controls.setActive('var-condition', !!attrs.varTable && !!ConditionRules.normalizeCondition(attrs.condition));
+      btn.setAttribute('aria-label', title);
+    }
+    // « Boucle » : allumée quand l'image a une boucle ; grisée, avec sa raison, hors image de colonne Pièces jointes et quand ses lignes ne se parcourent pas (VariableLoop.status :
+    // colonne disparue, table sans lien, zone répétée par une autre variable sans rattachement).
+    function syncImageLoopButton(controls, node) {
+      const btn = controls.button('var-loop');
+      if (!btn) return;
+      const column = !!node.attrs.varTable;
+      const status = column ? VariableLoop.status(editor, editor.state.selection.from, node) : { active: false, enabled: false, title: I18n.t('imgToolbar.loopNeedsColumn') };
+      controls.setDisabled('var-loop', !status.enabled, status.title);
+      controls.setActive('var-loop', status.enabled && status.active);
+      btn.setAttribute('aria-label', status.title);
     }
     function syncImageWrapButton(controls, node) {
       // Grisé (jamais retiré) quand la bascule ne change rien ; .v2-hf-locked : css/toolbar-v2.css.
@@ -912,6 +963,8 @@ const FloatingToolbars = (function () {
         // hideFloatingContextToolbars (js/editor-core.js) ; ici, seule la sélection décide.
         document.querySelectorAll('.tiptap .editor-image-view.editor-image-selected').forEach(el => el.classList.remove('editor-image-selected'));
         if (!selectedImageNode()) { panel.hide(); return; }
+        // La fenêtre de condition ouverte sur l'image garde sa barre masquée, comme celle d'une bulle (variableWindowOpen).
+        if (variableWindowOpen()) { panel.hide(); return; }
         const dom = editor.view.nodeDOM(editor.state.selection.from);
         const img = dom && dom.querySelector && dom.querySelector('img');
         if (!img) { panel.hide(); return; }
@@ -937,7 +990,7 @@ const FloatingToolbars = (function () {
   // elle ne cache pas sa propre barre ; la fenêtre de condition ouverte par-dessus elle, pour une variable du champ, la cache. 'condition' : la fenêtre de condition ; 'loop' :
   // la fenêtre de la boucle (le texte « Si aucune ligne », js/variable-loop.js).
   function variableWindowOpen(except) {
-    return VariableCondition.isOpen(except === 'condition' ? 1 : 0) || VariableLinkedAttrs.isOpen() || (except !== 'loop' && VariableLoop.isOpen()) || VariableList.isOpen() || VariableCalc.isOpen();
+    return VariableCondition.isOpen(except === 'condition' ? 1 : 0) || VariableLinkedAttrs.isOpen() || (except !== 'loop' && VariableLoop.isOpen()) || VariableList.isOpen() || VariableCalc.isOpen() || ConditionalStyleWindow.isOpen();
   }
 
   // La barre flottante d'une bulle #Variable pour UN éditeur : celui du document (wireVariableFloatingToolbar) ou celui d'un champ texte (Objet, À, Cc,
@@ -966,13 +1019,13 @@ const FloatingToolbars = (function () {
 
     const { onVariableAction, onVariableInput } = createVariableHandlers({ editor, inField, loopWindowTaken, isFormatKind, variableTarget, patchVariableFormat, applyVariableFormat });
 
-    const { setLabeled, greyOut, syncColumnButton, syncListButton, syncConditionButton, showCalcEdit } = createVariableButtons({ editor });
+    const { setLabeled, greyOut, syncColumnButton, syncListButton, syncConditionButton, syncStyleButton, showCalcEdit } = createVariableButtons({ editor, inField });
 
     const { syncConditionalState, syncBoolButtons } = createConditionalState({ greyOut, syncColumnButton, syncListButton, syncConditionButton, showCalcEdit });
 
     const { syncVariableState } = createVariableState({ editor, rawText, loopWindowTaken, variableColumnType, gristFormatOf, setLabeled, greyOut, syncColumnButton, syncListButton, syncConditionButton, showCalcEdit, syncBoolButtons });
 
-    const { wireToolbar } = createVariableToolbarWiring({ editor, options, inField, rawText, setRefreshToolbar: value => { refreshToolbar = value; }, variableToolbarHtml, isFormatKind, variableTarget, variableColumnType, onVariableAction, onVariableInput, syncConditionalState, syncBoolButtons, syncVariableState });
+    const { wireToolbar } = createVariableToolbarWiring({ editor, options, inField, rawText, setRefreshToolbar: value => { refreshToolbar = value; }, variableToolbarHtml, isFormatKind, variableTarget, variableColumnType, onVariableAction, onVariableInput, syncConditionalState, syncBoolButtons, syncVariableState, syncStyleButton });
 
     return { wire: wireToolbar };
   }
@@ -988,6 +1041,7 @@ const FloatingToolbars = (function () {
         '<div class="v2-varbadge-actions">',
         `<button data-action="calc-edit" title="${I18n.t('varToolbar.calcEdit')}" aria-label="${I18n.t('varToolbar.calcEdit')}" hidden>${Icons.svg('calc')}</button>`,
         `<button data-action="var-condition" title="${I18n.t('varToolbar.condition')}" aria-label="${I18n.t('varToolbar.condition')}">${Icons.svg('varCondition')}</button>`,
+        `<button data-action="var-style" title="${I18n.t('varToolbar.style')}" aria-label="${I18n.t('varToolbar.style')}">${Icons.svg('varStyle')}</button>`,
         `<button data-action="var-linked" title="${I18n.t('varToolbar.linked')}" aria-label="${I18n.t('varToolbar.linked')}">${Icons.svg('varLinked')}</button>`,
         `<button data-action="var-loop" title="${I18n.t('varToolbar.loop')}" aria-label="${I18n.t('varToolbar.loop')}">${Icons.svg('varLoop')}</button>`,
         `<button data-action="var-list" title="${I18n.t('varToolbar.list')}" aria-label="${I18n.t('varToolbar.list')}">${Icons.svg('varList')}</button>`,
@@ -1148,6 +1202,7 @@ const FloatingToolbars = (function () {
     // ou colonne Référence de la table de la page, règle tenue par js/variable-linked-attrs.js.
     const WINDOWS = {
       'var-condition': (node, pos) => VariableCondition.openAt(editor, pos),
+      'var-style': (node, pos) => ConditionalStyleWindow.openAt(editor, pos),
       'var-linked': (node, pos) => { if (VariableLinkedAttrs.isAvailable(node.attrs)) VariableLinkedAttrs.openAt(editor, pos); },
       'var-loop': (node, pos) => { if (VariableLoop.status(editor, pos, node).enabled && !loopWindowTaken()) VariableLoop.openAt(editor, pos, { inlineOnly: inField }); },
       'var-list': (node, pos) => { if (VariableList.status(node).enabled) VariableList.openAt(editor, pos, { field: inField }); },
@@ -1160,8 +1215,10 @@ const FloatingToolbars = (function () {
       if (action === 'calc-edit') { if (kind === 'calc') VariableCalc.openAt(editor, pos); return; }
       const open = WINDOWS[action];
       if (open) {
-        // Un bloc, une valeur et une case n'ont que la condition ; un calcul aucun de ces boutons (grisés par syncVariableState).
-        if (kind === 'badge' || (kind !== 'calc' && action === 'var-condition')) open(node, pos);
+        // Un bloc, une valeur et une case n'ont que la condition ; un calcul aucun de ces boutons (grisés par syncVariableState). La mise en forme selon la ligne : tous sauf la
+        // case, et ni dans un champ texte (grisé par syncStyleButton).
+        const styled = action === 'var-style' && kind !== 'checkbox' && !inField;
+        if (kind === 'badge' || (kind !== 'calc' && action === 'var-condition') || styled) open(node, pos);
       } else if (kind === 'checkbox') {
         if (action.indexOf('bool-style:') === 0 && VariableFormat.isCheckboxStyle(action.slice(11))) {
           EditorCore.patchNodeAndReselect(editor, pos, Object.assign({}, node.attrs, { style: action.slice(11) }));
@@ -1183,7 +1240,7 @@ const FloatingToolbars = (function () {
     return { onVariableAction, onVariableInput };
   }
 
-  function createVariableButtons({ editor }) {
+  function createVariableButtons({ editor, inField }) {
     // Les boutons de gauche de la barre d'une bulle : grisés, actifs ou cachés selon la sélection. `ui` : les contrôles de la barre
 
     // Bouton grisé ou actif dont le nom accessible suit l'info-bulle.
@@ -1229,13 +1286,22 @@ const FloatingToolbars = (function () {
       const set = !!ConditionRules.normalizeCondition(node.attrs.condition) || !!VariableFormat.affixes(node.attrs.before, node.attrs.after);
       ui.setActive('var-condition', !reasonKey && set);
     }
+    // « Mise en forme conditionnelle » (js/conditional-style.js) : allumée quand l'élément a au moins une règle. Grisée - jamais retirée - avec sa raison pour une case
+    // conditionnelle (une case n'a ni texte ni couleur à régler ici) et dans un champ texte (objet d'un e-mail, « Sinon afficher » : il écrit une ligne de texte).
+    function syncStyleButton(ui, node, kind) {
+      const btn = ui.button('var-style');
+      if (!btn) return;
+      const reasonKey = inField ? 'varToolbar.styleInField' : (kind === 'checkbox' ? 'varToolbar.styleCheckbox' : null);
+      setLabeled(ui, 'var-style', !!reasonKey, I18n.t(reasonKey || 'varToolbar.style'));
+      ui.setActive('var-style', !reasonKey && ConditionalStyle.isSet(node.attrs.condStyle));
+    }
     // « Modifier le calcul » n'est là que pour un calcul : un calcul choisi juste avant l'a montré, l'autre sélection le cache.
     function showCalcEdit(ui, shown) {
       const btn = ui.button('calc-edit');
       if (btn) btn.hidden = !shown;
     }
 
-    return { setLabeled, greyOut, syncColumnButton, syncListButton, syncConditionButton, showCalcEdit };
+    return { setLabeled, greyOut, syncColumnButton, syncListButton, syncConditionButton, syncStyleButton, showCalcEdit };
   }
 
   function createConditionalState({ greyOut, syncColumnButton, syncListButton, syncConditionButton, showCalcEdit }) {
@@ -1369,7 +1435,7 @@ const FloatingToolbars = (function () {
     return { syncVariableState };
   }
 
-  function createVariableToolbarWiring({ editor, options, inField, rawText, setRefreshToolbar, variableToolbarHtml, isFormatKind, variableTarget, variableColumnType, onVariableAction, onVariableInput, syncConditionalState, syncBoolButtons, syncVariableState }) {
+  function createVariableToolbarWiring({ editor, options, inField, rawText, setRefreshToolbar, variableToolbarHtml, isFormatKind, variableTarget, variableColumnType, onVariableAction, onVariableInput, syncConditionalState, syncBoolButtons, syncVariableState, syncStyleButton }) {
     // Barre flottante d'une bulle #Variable : ce qu'elle montre selon la sélection, où elle se pose, et son câblage
 
     function showVariableFormatPanels(ui, panel, kind, node) {
@@ -1412,6 +1478,7 @@ const FloatingToolbars = (function () {
         if (!dom || !dom.getClientRects().length) { panel.hide(); return; }
         if (isFormatKind(kind)) syncVariableState(ui, node, pos);
         else syncConditionalState(ui, node, kind);
+        syncStyleButton(ui, node, kind);
         if (kind === 'checkbox') syncBoolButtons(ui, ConditionalCheckbox.styleOf(node.attrs.style));
         // Un bloc de texte conditionnel : la barre s'ancre sur son étiquette (en haut à gauche), pas au milieu de sa largeur.
         panel.show(kind === 'block' ? (dom.querySelector && dom.querySelector(':scope > .conditional-text-tag')) || dom : dom, inField ? undefined : anchoredBarOptions);
@@ -1450,38 +1517,53 @@ const FloatingToolbars = (function () {
     return panel;
   }
 
-  // La barre flottante de la puce « Heure actuelle » pour UN éditeur (celui du document ou celui d'un champ texte, comme createVariableToolbar) : la liste « Heure » d'une bulle sur une colonne
-  // « Date et heure » (VariableFormat.timeChoices : 14:30, 14 h 30, 2:30 PM, 2:30pm), sans « Sans heure » - une puce écrit toujours une heure. Une puce sans réglage écrit sur 24 heures
-  // (« 14:30 »), comme avant ce choix : choisir cette écriture retire le réglage (`data-chip-time`) au lieu de l'enregistrer, le modèle garde sa forme d'avant. Aucune autre puce n'a de barre.
+  // La barre flottante d'une puce (date, heure, email, nom, n° de ligne) pour UN éditeur (celui du document ou celui d'un champ texte, comme createVariableToolbar) : « Mise en forme
+  // conditionnelle » (js/conditional-style-window.js), et pour la puce « Heure actuelle » seule la liste « Heure » d'une bulle sur une colonne « Date et heure » (VariableFormat.timeChoices :
+  // 14:30, 14 h 30, 2:30 PM, 2:30pm), sans « Sans heure » - une puce écrit toujours une heure. Une puce sans réglage écrit sur 24 heures (« 14:30 »), comme avant ce choix : choisir cette écriture
+  // retire le réglage (`data-chip-time`) au lieu de l'enregistrer, le modèle garde sa forme d'avant. Dans un champ texte (Objet, À…), qui écrit une ligne sans mise en forme, seule la puce
+  // « Heure actuelle » a une barre, avec son bouton de mise en forme grisé et sa raison ; les autres puces n'y en ont pas.
   function createTimeChipToolbar(editor, options) {
     const inField = !!(options && options.field);
     const DEFAULT_STYLE = 'colon';
-    function selectedTimeChip() {
+    function selectedChip() {
       const node = editor.state.selection.node;
-      return node && node.type.name === 'smartChip' && node.attrs.kind === 'time' ? { node, pos: editor.state.selection.from } : null;
+      return node && node.type.name === 'smartChip' && (!inField || node.attrs.kind === 'time') ? { node, pos: editor.state.selection.from } : null;
     }
-    function timeChipToolbarHtml() {
+    function chipToolbarHtml() {
       const items = VariableFormat.timeChoices().map(t => `<option value="${t.key}">${VariableFormat.timeLabel(t)}</option>`).join('');
-      return `<select data-role="chip-time" title="${I18n.t('varFmt.time')}" aria-label="${I18n.t('varFmt.time')}">${items}</select>`;
+      const title = I18n.t('varToolbar.style');
+      return `<select data-role="chip-time" title="${I18n.t('varFmt.time')}" aria-label="${I18n.t('varFmt.time')}">${items}</select>`
+        + `<button data-action="chip-style" title="${title}" aria-label="${title}">${Icons.svg('varStyle')}</button>`;
     }
     function onTimeChipInput(role, value) {
-      const chip = selectedTimeChip();
-      if (!chip || role !== 'chip-time') return;
+      const chip = selectedChip();
+      if (!chip || chip.node.attrs.kind !== 'time' || role !== 'chip-time') return;
       EditorCore.patchNodeAndReselect(editor, chip.pos, Object.assign({}, chip.node.attrs, { time: value === DEFAULT_STYLE ? null : value }));
     }
+    function onAction(action) {
+      const chip = selectedChip();
+      if (chip && action === 'chip-style' && !inField) ConditionalStyleWindow.openAt(editor, chip.pos);
+    }
     function wire() {
-      const panel = EditorCore.createFloatingPanel('v2-floating-toolbar v2-timechip-toolbar', timeChipToolbarHtml(), () => {}, onTimeChipInput);
+      const panel = EditorCore.createFloatingPanel('v2-floating-toolbar v2-timechip-toolbar', chipToolbarHtml(), onAction, onTimeChipInput);
       EditorCore.registerFloatingPanel(panel, inField ? options.ownerEl : null);
+      const ui = controlsOf(panel);
       const select = panel.el.querySelector('select[data-role="chip-time"]');
       const check = ({ transaction } = {}) => {
         // Le blur de l'éditeur ne change ni la sélection ni le document : cf. wireImageFloatingToolbar.
         if (transaction && transaction.getMeta('blur')) return;
-        const chip = selectedTimeChip();
-        if (!chip) { panel.hide(); return; }
+        const chip = selectedChip();
+        if (!chip || variableWindowOpen()) { panel.hide(); return; }
         const dom = editor.view.nodeDOM(chip.pos);
         // Éditeur masqué (Lecture, résumé d'un macro-modèle) : cf. createVariableToolbar.
         if (!dom || !dom.getClientRects().length) { panel.hide(); return; }
-        select.value = VariableFormat.timeChoiceOf(chip.node.attrs.time) || DEFAULT_STYLE;
+        const isTime = chip.node.attrs.kind === 'time';
+        select.hidden = !isTime;
+        if (isTime) select.value = VariableFormat.timeChoiceOf(chip.node.attrs.time) || DEFAULT_STYLE;
+        const title = I18n.t(inField ? 'varToolbar.styleInField' : 'varToolbar.style');
+        ui.setDisabled('chip-style', inField, title);
+        ui.button('chip-style').setAttribute('aria-label', title);
+        ui.setActive('chip-style', !inField && ConditionalStyle.isSet(chip.node.attrs.condStyle));
         panel.show(dom, inField ? undefined : anchoredBarOptions);
       };
       editor.on('selectionUpdate', check);
